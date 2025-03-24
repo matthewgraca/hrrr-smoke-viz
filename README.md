@@ -1,23 +1,23 @@
 # hrrr-smoke-viz
-Visualizing smoke forecasts from HRRR.
+Working with HRRR data to eventually use to train a Convolutional LSTM
 
-# Running
+# Setup environment 
 Just pop a virtual environment and run the notebook.
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r pip_requirements.txt
 ```
 
-In order to run the notebooks that use `wgrib2`, you'll have to use conda:
+In order to run the notebooks that use `wgrib2`, you'll have to use conda. This is the recommended way to run all the notebooks in this repository.
 
 ```bash
 conda create hrrrenv
 conda activate hrrrenv
-conda install --file conda_reqs.txt
+conda install --file conda_requirements.txt
 ```
-# Output
+# Output of `hrrr_smoke_viz`: 12 hour forecast
 ![](images/full_forecast.gif)
 
 # Content
