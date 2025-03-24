@@ -2,7 +2,11 @@
 Working with HRRR data to eventually use to train a Convolutional LSTM
 
 # Setup environment 
-Just pop a virtual environment and run the notebook.
+You have two options:
+- Python virtual environment (only runs notebooks without `wgrib2`)
+- Conda environment (recommended)
+
+1. Python venv. Just pop a virtual environment and run the notebook.
 
 ```bash
 python3 -m venv venv
@@ -10,7 +14,7 @@ source venv/bin/activate
 pip install -r pip_requirements.txt
 ```
 
-In order to run the notebooks that use `wgrib2`, you'll have to use conda. This is the recommended way to run all the notebooks in this repository.
+2. Conda env. This is the recommended way to run all the notebooks in this repository.
 
 ```bash
 conda create hrrrenv
