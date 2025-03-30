@@ -11,15 +11,14 @@ You have two options:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r pip_requirements.txt
+pip install -r requirements.txt
 ```
 
 2. Conda env. This is the recommended way to run all the notebooks in this repository.
 
 ```bash
-conda create hrrrenv
+conda env create -f environment.yml
 conda activate hrrrenv
-conda install --file conda_requirements.txt
 ```
 # Output of `hrrr_smoke_viz`: 12 hour forecast
 ![](images/full_forecast.gif)
