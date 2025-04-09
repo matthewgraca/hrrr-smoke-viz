@@ -30,6 +30,7 @@ class AirNowData:
         extent,
         airnow_api_key=None,
         save_dir='data/airnow.json',
+        #save_dir="~/data/airnow.json",
         frames_per_sample=1,
         dim=40
     ):
@@ -109,7 +110,7 @@ class AirNowData:
             airnow_data = response.json()
             with open(save_dir, 'w') as file:
                 json.dump(airnow_data, file)
-                print("JSON data saved to data/airnow.json")
+                print("JSON data saved to '{save_dir}'")
 
         # open json file and convert to dataframe
         with open(save_dir, 'r') as file:
