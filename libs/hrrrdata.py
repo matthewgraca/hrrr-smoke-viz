@@ -33,12 +33,14 @@ class HRRRData:
         dim=40,
         verbose=False
     ):
+        # pipeline
         herbie_ds = self.__get_hrrr_data(start_date, end_date, product, verbose)
         subregion_grib_ds = self.__subregion_grib_files(herbie_ds, extent, product)
         subregion_frames = self.__grib_to_np(subregion_grib_ds)
         preprocessed_frames = self.__interpolate_and_add_channel_axis(subregion_frames, dim)
         processed_ds = self.__sliding_window_of(preprocessed_frames, frames_per_sample)
 
+        # attributes
         self.data = processed_ds
         self.herbie = herbie_ds
 
@@ -60,7 +62,7 @@ class HRRRData:
         FH.download(product)
 
         if verbose:
-            [print(H) for H in FH.objects]
+            [print(repr(H)) for H in FH.objects]
 
         return FH.objects
 
