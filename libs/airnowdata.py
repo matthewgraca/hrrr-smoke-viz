@@ -20,8 +20,10 @@ class AirNowData:
 
     Members:
         data: The complete processed AirNow data
+        ground_site_grids: The uninterpolated, ground-site gridded stations
+        target_stations: The station values each sample wants to predict
         air_sens_loc: A dictionary of air sensor locations:
-            - (x, y) : Location
+            - Location : (x, y)
     '''
     def __init__(
         self,
@@ -30,11 +32,13 @@ class AirNowData:
         extent,
         airnow_api_key=None,
         save_dir='data/airnow.json',
-        #save_dir="~/data/airnow.json",
+        #save_dir="~/data/airnow.json", # maybe local saving in the future?
         frames_per_sample=1,
         dim=40
     ):
         self.air_sens_loc = {}
+
+        # preprocessing pipeline
         list_df = self.__get_airnow_data(
             start_date, end_date, 
             extent, 
@@ -52,7 +56,10 @@ class AirNowData:
 
         self.data = processed_ds
         self.ground_site_grids = ground_site_grids
-        #self.interpolated_grids
+        self.target_stations = self.__get_target_stations(
+            self.data, self.ground_site_grids, self.air_sens_loc
+        )
+        #self.interpolated_grids # maybe return this in the future if there's a use for it
 
     '''
     Grabs the AirNow data.
@@ -160,7 +167,9 @@ class AirNowData:
                 unInter[x,y] = 0
             else:
                 unInter[x,y] = dfArr[i,2]
-                self.air_sens_loc[(x, y)] = dfArr[i,3]
+                # save sensor site name and location
+                sitename = dfArr[i,3]
+                self.air_sens_loc[sitename] = (x, y)
         return unInter
 
     '''
@@ -225,3 +234,34 @@ class AirNowData:
             samples[i] = np.array([frames[j] for j in range(i, i + frames_per_sample)])
             
         return samples
+
+    '''
+    Gets the desired target stations to predict for a given list of samples.
+    For example:
+        - At sample 0, with 5 frames per sample, we use the stations at frame 
+        5 as the target, as the sample contains frames [0, 4].
+        - At sample 30, with 5 frames per sample, we use the stations at frame
+        35 as the target, as the sample contains frames [30, 34].
+
+    Arguments:
+        X: The list of the samples
+        gridded_data: A list of the gridded data
+        sensor_locations: A map with the sensor locations mapped to the 
+            location of that sensor on the gridded data
+
+    Returns:
+        A numpy array of target stations, of the shape (n_samples, n_sensors)
+    '''
+    def __get_target_stations(self, X, gridded_data, sensor_locations):
+        n_samples, frames_per_sample = X.shape[0], X.shape[1] 
+        n_sensors = len(sensor_locations)
+        Y = np.empty((n_samples, n_sensors))
+        
+        for sample in range(len(Y)):
+            for sensor, loc in enumerate(sensor_locations):
+                x, y = sensor_locations[loc]
+                offset = sample + frames_per_sample
+
+                Y[sample][sensor] = gridded_data[offset][x][y]
+
+        return Y
