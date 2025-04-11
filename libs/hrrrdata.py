@@ -31,21 +31,63 @@ class HRRRData:
         product='MASSDEN',
         frames_per_sample=1,
         dim=40,
+        sample_setting=1,
         verbose=False
     ):
         # pipeline
-        herbie_ds = self.__get_hrrr_data(start_date, end_date, product, verbose)
-        subregion_grib_ds = self.__subregion_grib_files(herbie_ds, extent, product)
-        subregion_frames = self.__grib_to_np(subregion_grib_ds)
-        preprocessed_frames = self.__interpolate_and_add_channel_axis(subregion_frames, dim)
-        processed_ds = self.__sliding_window_of(preprocessed_frames, frames_per_sample)
+        # frame-by-frame sampling
+        if sample_setting == 1:
+            herbie_ds = self.__get_hrrr_data_frame_by_frame(
+                start_date, end_date, product, verbose
+            )
+            subregion_grib_ds = self.__subregion_grib_files(
+                herbie_ds, extent, product
+            )
+            subregion_frames = self.__grib_to_np(subregion_grib_ds)
+            preprocessed_frames = self.__interpolate_and_add_channel_axis(
+                subregion_frames, dim
+            )
+            processed_ds = self.__sliding_window_of(
+                preprocessed_frames, frames_per_sample
+            )
 
-        # attributes
-        self.data = processed_ds
-        self.herbie = herbie_ds
+            # attributes
+            self.data = processed_ds
+            self.herbie = herbie_ds
+
+        # offset-by-sample with forecast sampling
+        elif sample_setting == 2:
+            # generate a list of samples. each sample is n frames (forecasts)
+            # no sliding window needed; n frames already generated
+            herbie_ds = self.__get_hrrr_data_offset_by_forecast(
+                start_date, end_date, frames_per_sample, product, verbose
+            )
+            subregion_grib_ds = self.__subregion_grib_files(
+                herbie_ds, extent, product
+            )
+            subregion_frames = self.__grib_to_np(subregion_grib_ds)
+            preprocessed_frames = self.__interpolate_and_add_channel_axis(
+                subregion_frames, dim
+            )
+            # sliding window needs to be offset by the number of frames
+            processed_ds = self.__offset_window_of(
+                preprocessed_frames, frames_per_sample
+            )
+
+            # attributes
+            self.data = processed_ds
+            self.herbie = herbie_ds
+
+        else:
+            msg = (
+                "Argument \"sample_setting\" must be either:\n",
+                "1 - frame-by-frame\n",
+                "2 - offset-by-sample with forecasts\n"
+            )
+            raise ValueError(" ".join(msg))
 
     '''
-    Uses FastHerbie to grab the remote data, and download it.
+    Uses FastHerbie to grab the remote data, and download it; frame by frame.
 
     Arguments:
         start_date: The start date of the query, in the form "yyyy-mm-dd-hh"
@@ -53,10 +95,16 @@ class HRRRData:
         product: regex of the product to download 
         verbose: Determines if Herbie objects should be printed
 
-    Retunrs:
+    Returns:
         The list of Herbie objects of the downloaded data
     '''
-    def __get_hrrr_data(self, start_date, end_date, product, verbose):
+    def __get_hrrr_data_frame_by_frame(
+        self, 
+        start_date, 
+        end_date, 
+        product, 
+        verbose
+    ):
         dates = pd.date_range(start_date, end_date, freq="1h")
         FH = FastHerbie(dates, model="hrrr", fxx=[0])
         FH.download(product)
@@ -65,6 +113,39 @@ class HRRRData:
             [print(repr(H)) for H in FH.objects]
 
         return FH.objects
+
+    '''
+    Uses FastHerbie to grab the remote data, and download it; offset by the
+    number of frames per sample, and using forecasts.
+
+    Arguments:
+        start_date: The start date of the query, in the form "yyyy-mm-dd-hh"
+        end_date: The end date of the query (inclusive)
+        offset: The number of frames per sample we offset by
+        product: regex of the product to download 
+        verbose: Determines if Herbie objects should be printed
+
+    Returns:
+        The list of Herbie objects of the downloaded data
+
+    '''
+    def __get_hrrr_data_offset_by_forecast(
+        self, 
+        start_date,
+        end_date,
+        offset,
+        product,
+        verbose
+    ):
+        offset_start_date = pd.to_datetime(start_date) + pd.Timedelta(hours=offset)
+        dates = pd.date_range(offset_start_date, end_date, freq="1h")
+        FH = FastHerbie(dates, model="hrrr", fxx=[i for i in range(1, offset + 1)])
+        FH.download(product)
+
+        if verbose:
+            [print(repr(H)) for H in FH.objects]
+
+        return FH.objects 
 
     '''
     Takes a list of Herbie objects, and subregions the downloaded grib files
@@ -156,4 +237,31 @@ class HRRRData:
         for i in range(n_samples):
             samples[i] = np.array([frames[j] for j in range(i, i + frames_per_sample)])
             
+        return samples
+
+    '''
+    Uses a sliding window, offset by the number of frames per sample.
+    For example, with 15 frames and a 5 frames per sample, frames: 
+        - 1-5
+        - 6-10
+        - 11-15
+    will make up a total of 3 samples.
+
+    Arguments:
+        frames: A numpy array of the shape (num_frames, row, col, channels)
+        frames_per_sample: The desired number of frames for each sample
+
+    Returns:
+        A numpy array of the shape (num_samples, num_frames, row, col, channels)
+    '''
+    def __offset_window_of(self, frames, frames_per_sample):
+        n_frames, row, col, channels = frames.shape
+        n_samples = n_frames // frames_per_sample
+        samples = np.empty((n_samples, frames_per_sample, row, col, channels))
+        for i in range(n_samples):
+            offset = i * frames_per_sample
+            samples[i] = np.array(
+                [frames[j] for j in range(offset, offset + frames_per_sample)]
+            )
+
         return samples
