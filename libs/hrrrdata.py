@@ -70,8 +70,10 @@ class HRRRData:
                 subregion_frames, dim
             )
             # sliding window needs to be offset by the number of frames
-            processed_ds = self.__offset_window_of(
-                preprocessed_frames, frames_per_sample
+            processed_ds = self.__sliding_window_of(
+                frames=preprocessed_frames, 
+                window_size=frames_per_sample, 
+                step_size=frames_per_sample
             )
 
             # attributes
@@ -216,8 +218,17 @@ class HRRRData:
         return frames
 
     '''
-    Uses a sliding window to bundle frames into samples. 
-    For example, with 5 frames and a 3 frames per sample, frames: 
+    Uses a sliding window to create samples from frames.
+
+    For example, with a step size of 5, with 15 frames and a 5 frames per 
+    sample, frames: 
+        - 1-5
+        - 6-10
+        - 11-15
+    will make up a total of 3 samples.
+
+    For example, with a step size of 1, with 5 frames and a 3 frames per 
+    sample, frames: 
         - 1-3 
         - 2-4
         - 3-5 
@@ -225,43 +236,26 @@ class HRRRData:
 
     Arguments:
         frames: A numpy array of the shape (num_frames, row, col, channels)
-        frames_per_sample: The desired number of frames for each sample
+        window_size: The desired number of frames per sample
+        step_size: The size of each step for the sliding window
 
     Returns:
         A numpy array of the shape (num_samples, num_frames, row, col, channels)
     '''
-    def __sliding_window_of(self, frames, frames_per_sample):
+    def __sliding_window_of(self, frames, window_size, step_size=1):
         n_frames, row, col, channels = frames.shape
-        n_samples = n_frames - frames_per_sample 
-        samples = np.empty((n_samples, frames_per_sample, row, col, channels))
+        n_samples = (
+            n_frames - window_size 
+            if step_size == 1 
+            else n_frames // window_size
+        )
+
+        samples = np.empty((n_samples, window_size, row, col, channels))
+
         for i in range(n_samples):
-            samples[i] = np.array([frames[j] for j in range(i, i + frames_per_sample)])
-            
-        return samples
-
-    '''
-    Uses a sliding window, offset by the number of frames per sample.
-    For example, with 15 frames and a 5 frames per sample, frames: 
-        - 1-5
-        - 6-10
-        - 11-15
-    will make up a total of 3 samples.
-
-    Arguments:
-        frames: A numpy array of the shape (num_frames, row, col, channels)
-        frames_per_sample: The desired number of frames for each sample
-
-    Returns:
-        A numpy array of the shape (num_samples, num_frames, row, col, channels)
-    '''
-    def __offset_window_of(self, frames, frames_per_sample):
-        n_frames, row, col, channels = frames.shape
-        n_samples = n_frames // frames_per_sample
-        samples = np.empty((n_samples, frames_per_sample, row, col, channels))
-        for i in range(n_samples):
-            offset = i * frames_per_sample
+            offset = i if step_size == 1 else i * window_size 
             samples[i] = np.array(
-                [frames[j] for j in range(offset, offset + frames_per_sample)]
+                [frames[j] for j in range(offset, offset + window_size)]
             )
 
         return samples
