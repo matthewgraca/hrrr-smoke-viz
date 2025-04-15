@@ -1,23 +1,22 @@
-# Results
+# Experiments 
 ## Experiment set 1: week of April 7th, 2025
-Summary: 
+### Summary
 Three experiments with the goal of examining the effect of HRRR on the model's predicitive power for predicting next-frame AirNow PM2.5 stations.
 
-Settings:
+### Settings
 - Nearest neighbor interpolation for AirNow sensors.
 - ~0.7 degree square bounding box, with 40x40 dimensions.
 - 5 frames per sample, sliding window offset by 1 frame. Roughly 164 samples.
 - Basic ConvLSTM model.
 
-Experiment:
+### Experiment
 1. AirNow sensors as only channel.
 2. HRRR and AirNow, both matching frames.
 3. HRRR with 5-frame future forecast and AirNow \*
 
 \* For a sample, AirNow uses frames at time [0, 4]; HRRR uses forecasts initialized at time 4, forecasting frames at time [5, 9]
 
-Results:
-
+### Results
 1. AirNow
 ```
 RESULTS
@@ -156,7 +155,8 @@ All Days - Anaheim RMSE Percent Error of Mean: 37.03%
 ```
 ![](results/exp_01_c.png)
 
-Thoughts:
+### Thoughts
 - Long Beach Signal Hill being difficult to predict is likely due to elevation differences affecting how smoke is moving across the terrain. IDW interpolation will likely fix this.
 - The model failing to make predictions for Reseda may be due to boundary issues, though the data of Reseda seems fine. Will require more investigating.
-- Among the predictors, it seems like the predictions are lagging behind the actual. The idea here is that the model is waiting for the previous frame to come in, and use that to predict the current frame because it's close enough. That is, the model isn't making predictions, it's simply using last frame data as what the current frame data is.
+- Among the predictors, it seems like the predictions are lagging behind the actual. The idea here is that the model is waiting for the previous frame to come in, and use that to predict the current frame because it's close enough. That is, the model isn't making predictions, it's simply using last frame to "predict" the current frame.
+- In general, it does seem like HRRR is helping the model make better predictions, if only slightly.
