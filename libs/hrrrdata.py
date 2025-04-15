@@ -28,6 +28,7 @@ class HRRRData:
         start_date,
         end_date,
         extent=None,
+        extent_name='subset_region',
         product='MASSDEN',
         frames_per_sample=1,
         dim=40,
@@ -41,7 +42,7 @@ class HRRRData:
                 start_date, end_date, product, verbose
             )
             subregion_grib_ds = self.__subregion_grib_files(
-                herbie_ds, extent, product
+                herbie_ds, extent, extent_name, product
             )
             subregion_frames = self.__grib_to_np(subregion_grib_ds)
             preprocessed_frames = self.__interpolate_and_add_channel_axis(
@@ -63,7 +64,7 @@ class HRRRData:
                 start_date, end_date, frames_per_sample, product, verbose
             )
             subregion_grib_ds = self.__subregion_grib_files(
-                herbie_ds, extent, product
+                herbie_ds, extent, extent_name, product
             )
             subregion_frames = self.__grib_to_np(subregion_grib_ds)
             preprocessed_frames = self.__interpolate_and_add_channel_axis(
@@ -159,18 +160,19 @@ class HRRRData:
             - b: top longitude
             - c: bottom latitude
             - d: top latitude
+        extent_name: Desired name of the subregion
         product: Regex of the product that was downloaded
 
     Returns:
         A list of the subregioned grib files
     '''
-    def __subregion_grib_files(self, herbie_data, extent, product):
+    def __subregion_grib_files(self, herbie_data, extent, extent_name, product):
         subregion_grib_files = []
         for H in herbie_data:
             # subregion grib files
             file = H.get_localFilePath(product)
             idx_file = wgrib2.create_inventory_file(file)
-            subset_file = wgrib2.region(file, extent, name="la_region")
+            subset_file = wgrib2.region(file, extent, name=extent_name)
             subregion_grib_files.append(subset_file)
 
         return subregion_grib_files
