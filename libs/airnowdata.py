@@ -117,7 +117,7 @@ class AirNowData:
             airnow_data = response.json()
             with open(save_dir, 'w') as file:
                 json.dump(airnow_data, file)
-                print("JSON data saved to '{save_dir}'")
+                print(f"JSON data saved to '{save_dir}'")
 
         # open json file and convert to dataframe
         with open(save_dir, 'r') as file:
