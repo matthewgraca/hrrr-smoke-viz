@@ -240,6 +240,8 @@ class HRRRData:
         frames: A numpy array of the shape (num_frames, row, col, channels)
         window_size: The desired number of frames per sample
         step_size: The size of each step for the sliding window
+            - Currently 1 or the window_size; changing step to anything other 
+                than 0 has no effect
 
     Returns:
         A numpy array of the shape (num_samples, num_frames, row, col, channels)
@@ -247,7 +249,7 @@ class HRRRData:
     def __sliding_window_of(self, frames, window_size, step_size=1):
         n_frames, row, col, channels = frames.shape
         n_samples = (
-            n_frames - window_size 
+            n_frames - window_size + 1
             if step_size == 1 
             else n_frames // window_size
         )
