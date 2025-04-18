@@ -74,7 +74,7 @@ class HRRRData:
             processed_ds = self.__sliding_window_of(
                 frames=preprocessed_frames, 
                 window_size=frames_per_sample, 
-                step_size=frames_per_sample
+                full_slide=True 
             )
 
             # attributes
@@ -140,7 +140,8 @@ class HRRRData:
         product,
         verbose
     ):
-        offset_start_date = pd.to_datetime(start_date) + pd.Timedelta(hours=offset)
+        # if sample is t=0, pull init @ 00, fxx = 01 so we provide next-sample forecast
+        offset_start_date = pd.to_datetime(start_date) + pd.Timedelta(hours=offset - 1)
         dates = pd.date_range(offset_start_date, end_date, freq="1h")
         FH = FastHerbie(dates, model="hrrr", fxx=[i for i in range(1, offset + 1)])
         FH.download(product)
@@ -239,27 +240,28 @@ class HRRRData:
     Arguments:
         frames: A numpy array of the shape (num_frames, row, col, channels)
         window_size: The desired number of frames per sample
-        step_size: The size of each step for the sliding window
-            - Currently 1 or the window_size; changing step to anything other 
-                than 0 has no effect
+        full_slide: Whether the window should slide by 1 (false) or by the size
+            of the window (true)
 
     Returns:
         A numpy array of the shape (num_samples, num_frames, row, col, channels)
     '''
-    def __sliding_window_of(self, frames, window_size, step_size=1):
+    def __sliding_window_of(self, frames, window_size, full_slide=False):
         n_frames, row, col, channels = frames.shape
         n_samples = (
             n_frames - window_size + 1
-            if step_size == 1 
+            if full_slide == False
             else n_frames // window_size
         )
 
         samples = np.empty((n_samples, window_size, row, col, channels))
 
         for i in range(n_samples):
-            offset = i if step_size == 1 else i * window_size 
+            start_idx = i if full_slide == False else i * window_size 
+            end_idx = start_idx + window_size
+
             samples[i] = np.array(
-                [frames[j] for j in range(offset, offset + window_size)]
+                [frames[j] for j in range(start_idx, end_idx)]
             )
 
         return samples
