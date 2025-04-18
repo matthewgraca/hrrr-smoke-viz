@@ -128,3 +128,7 @@ All Days - Compton RMSE Percent Error of Mean: 35.50%
 - It's tough to say, but it may be better than Nearest Neighbors; but I changed batch size AND added IDW, so I'm not 100% sure which had a greater effect.
 - This is also compounded by the smaller bounding box resulting in less sensors to predict.
 - On the bright side, it seems like there's less "waiting for previous frame's results to set as current frame's results". Does imply some attempt at prediction.
+- It also looks like the model is very susceptible to initial conditions.
+    - On one run, every sensor would predict 0
+    - On another run, the first sensor would only predict 0.
+    - On the third run, the model did actually learn. Is there a way to adjust the intial conditions, or adjust learning rate on the fly based on loss per epoch?
