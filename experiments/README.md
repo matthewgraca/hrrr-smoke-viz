@@ -34,3 +34,19 @@ Three experiments with the goal of examining the effect of HRRR on the model's p
 1. AirNow sensors as only channel.
 2. HRRR and AirNow, both matching frames.
 3. HRRR with 5-frame future forecast and AirNow
+
+## Experiment 3 - week of April 14th, 2025
+[Link to experiment 3](results/experiment-3/README.md)
+### Summary
+Three experiments with the goal of examining the effect of HRRR on the model's predicitive power for predicting next-frame AirNow PM2.5 stations.
+### Settings
+- IDW interpolation for AirNow sensors.
+- **NEW** Batch size 16 -> 4.
+- ~0.3 degree square bounding box, with 200x200 dimensions.
+- 5 frames per sample, sliding window offset by 1 frame. 165 samples.
+- Basic ConvLSTM model.
+- Predicting 3 sensors
+### Experiment
+1. AirNow sensors as only channel.
+2. HRRR and AirNow, both matching frames.
+3. HRRR with 5-frame future forecast and AirNow
