@@ -7,7 +7,10 @@ Conda environment
 - GPU: `conda env create -f envs/gpu_environment.yml`
 
 # Output of `hrrr_smoke_viz`: 12 hour forecast
+## Mass density of smoke product
 ![](images/full_forecast.gif)
+## Vertically-integrated smoke product
+![](colmd_images/full_forecast.gif)
 
 # Content
 - `hrrr_smoke_viz` describes how to use `Herbie` to download HRRR data and visualize it.
