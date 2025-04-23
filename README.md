@@ -8,7 +8,7 @@ Conda environment
 
 # Output of `hrrr_smoke_viz`: 12 hour forecast
 ## Mass density of smoke product
-![](visualizations/images/full_forecast.gif)
+![](visualizations/mdens_images/full_forecast.gif)
 ## Vertically-integrated smoke product
 ![](visualizations/colmd_images/full_forecast.gif)
 
