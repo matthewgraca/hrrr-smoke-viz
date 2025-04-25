@@ -191,8 +191,20 @@ class HRRRData:
         np_of_grib = []
         for file in grib_files:
             hrrr_xarr = xr.open_dataset(file, engine="cfgrib", decode_timedelta=False)
+
+            # for now, we'll only accept Datasets with one variable
+            data_vars = [variable for variable in hrrr_xarr.data_vars]
+            if len(data_vars) != 1:
+                err_msg = (
+                    f"xarray Dataset should have only one data variable."
+                    f"Expected: 'unknown' for 'COLMD' or 'mdens' for 'MASSDEN',"
+                    f"Returned: {hrrr_xarr.data_vars.keys()}"
+                )
+                raise ValueError(" ".join(err_msg))
+            variable = data_vars[0]
+
             # hrrr data comes in (y, x), so it will need to be flipped for (x, y)
-            np_of_grib.append(np.flip(hrrr_xarr.mdens.to_numpy(), axis=0))
+            np_of_grib.append(np.flip(hrrr_xarr[variable].to_numpy(), axis=0))
 
         return np.array(np_of_grib)
 
