@@ -84,3 +84,34 @@ Two experiments with the goal of examining the effect of HRRR on the model's pre
 ### Experiment
 1. HRRR and AirNow, both matching frames.
 2. HRRR with 5-frame future forecast and AirNow
+
+## Experiment 6 - week of April 21st, 2025
+[Link to experiment 6](results/experiment-6/README.md)
+### Summary
+Two experiments with the goal of examining the effect of HRRR on the model's predicitive power for predicting next-frame AirNow PM2.5 stations.
+### Settings
+- IDW interpolation for AirNow sensors.
+- **NEW** returned `MASSDEN` variable back to kg/m^3 units.
+- **NEW** `COLMD` variable replacing `MASSDEN`.
+- Batch size 4.
+- ~0.3 degree square bounding box, with 200x200 dimensions.
+- 5 frames per sample, sliding window offset by 1 frame. 165 samples.
+- Basic ConvLSTM model.
+- Predicting 3 sensors
+
+## Experiment 7 - week of April 21st, 2025
+[Link to experiment 7](results/experiment-7/README.md)
+### Summary
+Two experiments with the goal of examining the effect of HRRR on the model's predicitive power for predicting next-frame AirNow PM2.5 stations.
+### Settings
+- IDW interpolation for AirNow sensors.
+- **NEW** Using 3 channels; HRRR COLMD and MASSDEN + AirNow data.
+- Batch size 4.
+- ~0.3 degree square bounding box, with 200x200 dimensions.
+- 5 frames per sample, sliding window offset by 1 frame. 165 samples.
+- Basic ConvLSTM model.
+- Predicting 3 sensors
+### Experiment
+1. HRRR-COLMD and HRRR-MASSDEN and AirNow, both matching frames.
+2. HRRR-COLMD and HRRR-MASSDEN with 5-frame future forecast and AirNow
+
