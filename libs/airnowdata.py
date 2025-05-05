@@ -39,7 +39,6 @@ class AirNowData:
         idw_power=2,
         elevation_path=None,
         mask_path=None,
-        create_elevation_mask=False,
         force_reprocess=False  # Flag to force reprocessing even if cache exists
     ):
         self.air_sens_loc = {}
@@ -59,7 +58,7 @@ class AirNowData:
         os.makedirs(os.path.dirname(self.mask_path), exist_ok=True)
         os.makedirs(os.path.dirname(processed_cache_dir), exist_ok=True)
         
-        # Load or create elevation data for 3D interpolation
+        # Load elevation data for 3D interpolation if available
         if os.path.exists(self.elevation_path):
             self.elevation = np.load(self.elevation_path)
             # Resize elevation to match dim if needed
@@ -67,25 +66,22 @@ class AirNowData:
                 self.elevation = cv2.resize(self.elevation, (dim, dim))
             # Normalize elevation to prevent overflow
             self.elevation = self._normalize_elevation(self.elevation)
-        elif create_elevation_mask:
-            print(f"Creating sample elevation data at {self.elevation_path}")
-            self._create_sample_elevation()
         else:
-            raise FileNotFoundError(f"Elevation data not found at {self.elevation_path}. "
-                                   f"Set create_elevation_mask=True to create sample data.")
+            print(f"Elevation data not found at {self.elevation_path}. Using flat elevation.")
+            # Create a flat elevation model (all zeros)
+            self.elevation = np.zeros((dim, dim), dtype=np.float32)
             
-        # Load or create mask data for interpolation boundary handling
+        # Load mask data if available
         if os.path.exists(self.mask_path):
             self.mask = np.load(self.mask_path)
             # Resize mask to match dim if needed
             if self.mask.shape != (dim, dim):
                 self.mask = cv2.resize(self.mask, (dim, dim))
-        elif create_elevation_mask:
-            print(f"Creating sample mask data at {self.mask_path}")
-            self._create_sample_mask()
+            print(f"Using mask from {self.mask_path}")
         else:
-            raise FileNotFoundError(f"Mask data not found at {self.mask_path}. "
-                                   f"Set create_elevation_mask=True to create sample data.")
+            # Create a full mask (all ones) if no mask file exists
+            print(f"Mask data not found at {self.mask_path}. Interpolating without mask.")
+            self.mask = np.ones((dim, dim), dtype=np.float32)
 
         # Create necessary directories
         os.makedirs(os.path.dirname(save_dir), exist_ok=True)
@@ -203,42 +199,6 @@ class AirNowData:
             
         normalized = (elevation_data - min_val) / (max_val - min_val) * 100
         return normalized.astype(np.float32)  # Use float32 to save memory
-    
-    def _create_sample_elevation(self):
-        """Create a simple elevation model with a central peak"""
-        x, y = np.mgrid[0:self.dim, 0:self.dim]
-        center_x, center_y = self.dim//2, self.dim//2
-        distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-        
-        # Create a Gaussian peak with some random noise (smaller values)
-        elevation = np.exp(-distance**2/(2*(self.dim/5)**2)) * 100  # Reduced from 1000 to 100
-        elevation += np.random.normal(0, 2, (self.dim, self.dim))   # Reduced noise from 20 to 2
-        
-        # Normalize to prevent overflow
-        elevation = self._normalize_elevation(elevation)
-        
-        # Save the elevation data
-        np.save(self.elevation_path, elevation)
-        self.elevation = elevation
-        print(f"Created sample elevation data at {self.elevation_path}")
-    
-    def _create_sample_mask(self):
-        """Create a circular mask with 1s inside the circle and 0s outside"""
-        mask = np.ones((self.dim, self.dim))
-        
-        # Create coordinates grid
-        x, y = np.mgrid[0:self.dim, 0:self.dim]
-        center_x, center_y = self.dim//2, self.dim//2
-        distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-        
-        # Create a circular mask
-        radius = self.dim * 0.45
-        mask[distance > radius] = 0
-        
-        # Save the mask data
-        np.save(self.mask_path, mask)
-        self.mask = mask
-        print(f"Created sample mask data at {self.mask_path}")
 
     def _get_airnow_data(
         self, 
