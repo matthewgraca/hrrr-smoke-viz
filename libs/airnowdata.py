@@ -33,12 +33,14 @@ class AirNowData:
         extent,
         airnow_api_key=None,
         save_dir='data/airnow.json',
+        processed_cache_dir='data/airnow_processed.npz',  # New parameter for processed data
         frames_per_sample=1,
         dim=200,
         idw_power=2,
         elevation_path=None,
         mask_path=None,
-        create_elevation_mask=False
+        create_elevation_mask=False,
+        force_reprocess=False  # Flag to force reprocessing even if cache exists
     ):
         self.air_sens_loc = {}
         self.start_date = start_date
@@ -55,6 +57,7 @@ class AirNowData:
         # Create directories for elevation and mask if they don't exist
         os.makedirs(os.path.dirname(self.elevation_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.mask_path), exist_ok=True)
+        os.makedirs(os.path.dirname(processed_cache_dir), exist_ok=True)
         
         # Load or create elevation data for 3D interpolation
         if os.path.exists(self.elevation_path):
@@ -87,6 +90,35 @@ class AirNowData:
         # Create necessary directories
         os.makedirs(os.path.dirname(save_dir), exist_ok=True)
         
+        # Check if processed cache exists and use it if available
+        if not force_reprocess and os.path.exists(processed_cache_dir):
+            print(f"Loading processed AirNow data from cache: {processed_cache_dir}")
+            try:
+                cached_data = np.load(processed_cache_dir, allow_pickle=True)
+                self.data = cached_data['data']
+                self.ground_site_grids = cached_data['ground_site_grids']
+                
+                # Load air_sens_loc dictionary from the cache
+                air_sens_loc_array = cached_data['air_sens_loc']
+                if isinstance(air_sens_loc_array, np.ndarray):
+                    self.air_sens_loc = air_sens_loc_array.item() if air_sens_loc_array.size == 1 else {}
+                
+                # Load target_stations if present
+                if 'target_stations' in cached_data:
+                    self.target_stations = cached_data['target_stations']
+                else:
+                    self.target_stations = None
+                
+                print(f"✓ Successfully loaded processed data from cache")
+                print(f"  - Data shape: {self.data.shape}")
+                print(f"  - Found {len(self.air_sens_loc)} sensor locations")
+                
+                # Return early as we've loaded everything from cache
+                return
+            except Exception as e:
+                print(f"Error loading from cache: {e}. Will reprocess data.")
+                # Continue with normal processing
+        
         # Get AirNow data
         list_df = self._get_airnow_data(
             start_date, end_date, 
@@ -98,11 +130,14 @@ class AirNowData:
         # Check if we have valid AirNow data
         if not list_df:
             raise ValueError("No valid AirNow data available.")
-            
+        
         # Process AirNow data
+        print("Processing AirNow data with IDW interpolation (this may take time)...")    
         ground_site_grids = [
             self._preprocess_ground_sites(df, dim, extent) for df in list_df
         ]
+        
+        print(f"Interpolating {len(ground_site_grids)} frames...")
         interpolated_grids = [
             self._interpolate_frame(frame) for frame in ground_site_grids
         ]
@@ -120,7 +155,29 @@ class AirNowData:
                 self.data, self.ground_site_grids, self.air_sens_loc
             )
         else:
-            raise ValueError("No air sensor locations found in the data.")
+            self.target_stations = None
+            print("Warning: No air sensor locations found in the data.")
+        
+        # Save processed data to cache
+        print(f"Saving processed AirNow data to cache: {processed_cache_dir}")
+        try:
+            # Convert air_sens_loc dictionary to a numpy array of one object for storage
+            air_sens_loc_array = np.array([self.air_sens_loc])
+            
+            # Create target_stations array (empty if None)
+            target_stations_array = self.target_stations if self.target_stations is not None else np.array([])
+            
+            # Save arrays to npz file
+            np.savez_compressed(
+                processed_cache_dir,
+                data=self.data,
+                ground_site_grids=np.array(self.ground_site_grids, dtype=object),
+                air_sens_loc=air_sens_loc_array,
+                target_stations=target_stations_array
+            )
+            print("✓ Successfully saved processed data to cache")
+        except Exception as e:
+            print(f"Warning: Could not save processed data to cache: {e}")
     
     def _normalize_elevation(self, elevation_data):
         """
@@ -222,6 +279,7 @@ class AirNowData:
 
             # Send request and save response
             try:
+                print("Requesting data from AirNow API...")
                 response = requests.get(url=URL, params=PARAMS)
                 airnow_data = response.json()
                 with open(save_dir, 'w') as file:
@@ -233,6 +291,7 @@ class AirNowData:
 
         # Load and process the data
         try:
+            print(f"Loading AirNow data from {save_dir}...")
             with open(save_dir, 'r') as file:
                 airnow_data = json.load(file)
             
@@ -269,6 +328,7 @@ class AirNowData:
             # Group by UTC
             try:
                 list_df = [group for name, group in airnow_df.groupby('UTC')]
+                print(f"Grouped AirNow data into {len(list_df)} time frames")
                 return list_df
             except Exception as e:
                 print(f"Error grouping by UTC: {e}")
