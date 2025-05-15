@@ -11,58 +11,27 @@ from bs4 import BeautifulSoup
 import json
 import warnings
 from dotenv import load_dotenv
+import io
+import time
+from urllib.parse import urlencode
+from xml.etree import ElementTree
+from pyhdf.SD import SD, SDC
+import netCDF4 as nc
 warnings.filterwarnings("ignore")
 
-# Try to import GDAL, but continue if not available
-try:
-    from osgeo import gdal
-    GDAL_AVAILABLE = True
-except ImportError:
-    GDAL_AVAILABLE = False
-    print("Warning: GDAL not available. Required for MAIAC data processing.")
-
-# Try to import pyhdf, but continue if not available
-try:
-    from pyhdf.SD import SD, SDC
-    PYHDF_AVAILABLE = True
-except ImportError:
-    PYHDF_AVAILABLE = False
-    print("Warning: pyhdf not available. May be needed as fallback for MAIAC data.")
-
-# Try to import skimage.io, but continue if not available
-try:
-    import skimage.io as io
-    from skimage.color import rgb2gray
-    SKIMAGE_AVAILABLE = True
-except ImportError:
-    SKIMAGE_AVAILABLE = False
-    print("Warning: skimage.io not available. Will use alternative methods for image reading.")
-
 class PWWBData:
-    """
-    PWWBData class for processing satellite imagery data for machine learning.
-    
-    This class handles:
-    - Landsat 8 data (3 bands): SR_B1, SR_B7, and SR_QA_AEROSOL
-    - MAIAC AOD data (1 band)
-    
-    Following the approach in pm25Script_noGCN.py, this implementation:
-    - Uses a single MAIAC observation from the start date for all timestamps
-    - Applies proper scaling to get physical AOD values
-    - Preserves data in physical units for standardization in ML pipeline
-    """
     def __init__(
         self,
-        start_date,
-        end_date,
-        extent=(-118.4, -118.0, 33.9, 34.2),  # LA area bounds from experiment template
-        frames_per_sample=5,
-        dim=200,
+        start_date="2018-01-01",
+        end_date="2020-12-31",
+        extent=(-118.75, -117.5, 33.5, 34.5),  # Default to LA County bounds from doc
+        frames_per_sample=24,  # One day of hourly data
+        dim=200,  # Spatial resolution
         cache_dir='data/pwwb_cache/',
         use_cached_data=True,
         verbose=False,
         env_file='.env',
-        output_dir="visualization_output"
+        output_dir=None
     ):
         self.start_date = pd.to_datetime(start_date)
         self.end_date = pd.to_datetime(end_date)
@@ -73,783 +42,1812 @@ class PWWBData:
         self.cache_dir = cache_dir
         self.use_cached_data = use_cached_data
         self.output_dir = output_dir
-        
-        # Create output directory if it doesn't exist
-        os.makedirs(self.output_dir, exist_ok=True)
+        # Create cache directory if it doesn't exist
         os.makedirs(cache_dir, exist_ok=True)
         
-        # Load environment variables
+        # Create output directory if specified
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        
+        # Load environment variables for API access
         if env_file and os.path.exists(env_file):
             load_dotenv(env_file)
         
-        # Get credentials from environment
-        self.m2m_credentials = {
-            'username': os.getenv('M2M_USERNAME'),
-            'token': os.getenv('M2M_TOKEN')
-        }
+        # Get EarthData token
+        self.earthdata_token = os.getenv('EARTHDATA_TOKEN')
         
-        self.maiac_credentials = {
-            'username': os.getenv('MAIAC_USERNAME'),
-            'password': os.getenv('MAIAC_PASSWORD')
-        }
+        # Get AirNow API key from environment
+        self.airnow_api_key = os.getenv('AIRNOW_API_KEY')
         
         # Generate timestamps at hourly intervals
         self.timestamps = pd.date_range(self.start_date, self.end_date, freq='H')
         self.n_timestamps = len(self.timestamps)
         
+        # Define sensor locations from documentation
+        self.metar_sensors = [
+            # Los Angeles area METAR stations
+            {'id': 'LAX', 'name': 'Los Angeles Intl', 'lat': 33.9382, 'lon': -118.3865},
+            {'id': 'BUR', 'name': 'Burbank/Glendale', 'lat': 34.2007, 'lon': -118.3587},
+            {'id': 'LGB', 'name': 'Long Beach Airport', 'lat': 33.8118, 'lon': -118.1472},
+            {'id': 'VNY', 'name': 'Van Nuys Airport', 'lat': 34.2097, 'lon': -118.4892},
+            {'id': 'SMO', 'name': 'Santa Monica Muni', 'lat': 34.0210, 'lon': -118.4471},
+            {'id': 'HHR', 'name': 'Hawthorne Municipal', 'lat': 33.9228, 'lon': -118.3352},
+            {'id': 'EMT', 'name': 'El Monte', 'lat': 34.0860, 'lon': -118.0350},
+            {'id': 'SNA', 'name': 'Santa Ana/John Wayne', 'lat': 33.6757, 'lon': -117.8682},
+            {'id': 'ONT', 'name': 'Ontario Intl', 'lat': 34.0560, 'lon': -117.6012},
+            {'id': 'PMD', 'name': 'Palmdale', 'lat': 34.6294, 'lon': -118.0846},
+            {'id': 'WJF', 'name': 'Lancaster/Fox Field', 'lat': 34.7411, 'lon': -118.2186},
+            {'id': 'CQT', 'name': 'Los Angeles Downtown/USC', 'lat': 34.0235, 'lon': -118.2912}
+        ]
+        
         if self.verbose:
             print(f"Initialized PWWBData with {self.n_timestamps} hourly timestamps")
             print(f"Date range: {self.start_date} to {self.end_date}")
-            print(f"Note: Following pattern in pm25Script_noGCN.py, MAIAC data will use a single observation from start date ({self.start_date.strftime('%Y-%m-%d')})")
         
+        # Initialize data containers
+        self.data = None
+        self.maiac_aod_data = None
+        self.tropomi_data = None
+        self.modis_fire_data = None
+        self.merra2_data = None
+        self.meteorological_data = None
+        
+        # Process all data sources
         self._process_pipeline()
     
     def _process_pipeline(self):
-        """Main processing pipeline"""
+        """Main processing pipeline to collect and integrate all data sources"""
+        # Initialize channels dict to store processed data
         channels = {}
         
-        if self.verbose:
-            print("Processing Landsat data...")
-        channels['landsat'] = self._get_landsat_data()
+        # NOTE: Ground-level air pollution sensor data (PM2.5) is provided by
+        # the separate AirNowData class and should be concatenated with this data.
+        # We don't process it here to avoid redundancy.
         
         if self.verbose:
-            print("Processing MAIAC AOD data (from start date only)...")
-        channels['maiac'] = self._get_maiac_data()
+            print("Processing remote-sensing satellite imagery...")
+        channels['maiac_aod'] = self._get_maiac_aod_data()
+        channels['tropomi'] = self._get_tropomi_data()
         
-        # Concatenate raw channels - no normalization
+        if self.verbose:
+            print("Processing wildfire/smoke data...")
+        channels['modis_fire'] = self._get_modis_fire_data()
+        channels['merra2'] = self._get_merra2_data()
+        
+        if self.verbose:
+            print("Processing meteorological data...")
+        channels['metar'] = self._get_metar_data()
+        
+        # Store individual channels for access
+        self.maiac_aod_data = channels['maiac_aod']
+        self.tropomi_data = channels['tropomi']
+        self.modis_fire_data = channels['modis_fire']
+        self.merra2_data = channels['merra2']
+        self.meteorological_data = channels['metar']
+        
+        # Concatenate all channels
         channel_list = [
-            channels['landsat'],  # 3 channels
-            channels['maiac'],    # 1 channel
+            # NOTE: Ground-level PM2.5 data is provided by AirNowData class
+            channels['maiac_aod'],    # MAIAC AOD data
+            channels['tropomi'],      # TROPOMI data
+            channels['modis_fire'],   # MODIS Fire data
+            channels['merra2'],       # MERRA-2 data
+            channels['metar']         # METAR meteorological data
         ]
         
         self.all_channels = np.concatenate(channel_list, axis=-1)
         
-        # Visualize combined channels
-        if self.verbose:
-            channel_names = self.get_channel_info()['channel_order']
-            self.visualize_combined_data(
-                np.expand_dims(np.expand_dims(self.all_channels, 0), 0),  # Add batch and time dimensions
-                channel_names
-            )
-        
+        # Create sliding window samples
         self.data = self._sliding_window_of(self.all_channels, self.frames_per_sample)
-        
-        # Store individual channels for access
-        self.landsat_data = channels['landsat']
-        self.maiac_data = channels['maiac']
         
         if self.verbose:
             print(f"Final data shape: {self.data.shape}")
             self._print_data_statistics()
     
-    def _get_landsat_data(self):
-        """Get Landsat data from USGS API or cache"""
-        cache_file = os.path.join(self.cache_dir, 'landsat_data.npy')
-        
-        if self.use_cached_data and os.path.exists(cache_file):
-            if self.verbose:
-                print(f"Loading cached Landsat data from {cache_file}")
-            return np.load(cache_file)
-        
-        if not self.m2m_credentials['username'] or not self.m2m_credentials['token']:
-            raise ValueError("M2M credentials not found in environment variables. Set M2M_USERNAME and M2M_TOKEN.")
-        
-        products_available = self._fetch_landsat_from_usgs()
-        if not products_available:
-            raise RuntimeError("No Landsat products available for the specified date range and extent.")
-        
-        landsat_raw = self._process_landsat_products(products_available)
-        
-        # Replicate the same frame for all timestamps (Landsat updates less frequently)
-        landsat_data = np.zeros((self.n_timestamps, self.dim, self.dim, 3))
-        for i in range(self.n_timestamps):
-            landsat_data[i] = landsat_raw
-        
-        np.save(cache_file, landsat_data)
-        return landsat_data
-    
-    def _fetch_landsat_from_usgs(self):
-        """Fetch Landsat data from USGS M2M API"""
-        products_available = []
-        
-        def send_request(url, data, api_key=None):
-            json_data = json.dumps(data)
-            if api_key == None:
-                response = requests.post(url, json_data)
-            else:
-                headers = {'X-Auth-Token': api_key}              
-                response = requests.post(url, json_data, headers=headers)    
-            
-            try:
-                output = json.loads(response.text)
-                if output.get('errorCode'):
-                    if self.verbose:
-                        print(f"API Error: {output['errorCode']} - {output.get('errorMessage', 'Unknown error')}")
-                    return None
-                response.close()
-                return output['data']
-            except Exception as e:
-                response.close()
-                if self.verbose:
-                    print(f"Request error: {e}")
-                return None
-        
-        service_url = "https://m2m.cr.usgs.gov/api/api/json/stable/"
-        
-        # Login with username and token
-        payload = {'username': self.m2m_credentials['username'], 
-                   'token': self.m2m_credentials['token']}
-        
-        if self.verbose:
-            print(f"Logging in to USGS M2M API with username: {self.m2m_credentials['username']}")
-        
-        api_key = send_request(service_url + "login-token", payload)
-        
-        if not api_key:
-            raise RuntimeError("Failed to login to USGS M2M API. Check credentials.")
-        
-        # Search for Landsat data
-        dataset_name = "landsat_ard_tile_c2"
-        spatial_filter = {'filterType': "mbr",
-                         'lowerLeft': {'latitude': self.extent[2], 'longitude': self.extent[0]},
-                         'upperRight': {'latitude': self.extent[3], 'longitude': self.extent[1]}}
-        
-        temporal_filter = {'start': self.start_date.strftime('%Y-%m-%d'), 
-                          'end': self.end_date.strftime('%Y-%m-%d')}
-        
-        if self.verbose:
-            print(f"Searching Landsat data for date range: {temporal_filter['start']} to {temporal_filter['end']}")
-            print(f"Spatial extent: Lat [{self.extent[2]}, {self.extent[3]}], Lon [{self.extent[0]}, {self.extent[1]}]")
-        
-        payload = {'datasetName': dataset_name,
-                   'spatialFilter': spatial_filter,
-                   'temporalFilter': temporal_filter}
-        
-        datasets = send_request(service_url + "dataset-search", payload, api_key)
-        
-        if datasets:
-            if self.verbose:
-                print(f"Found {len(datasets)} datasets")
-            
-            for dataset in datasets:
-                if dataset['datasetAlias'] == dataset_name:
-                    acquisition_filter = {"end": self.end_date.strftime('%Y-%m-%d'),
-                                        "start": self.start_date.strftime('%Y-%m-%d')}
-                    
-                    payload = {'datasetName': dataset['datasetAlias'], 
-                              'maxResults': 2,
-                              'startingNumber': 1, 
-                              'sceneFilter': {'spatialFilter': spatial_filter,
-                                            'acquisitionFilter': acquisition_filter}}
-                    
-                    scenes = send_request(service_url + "scene-search", payload, api_key)
-                    
-                    if scenes and scenes.get('recordsReturned', 0) > 0:
-                        if self.verbose:
-                            print(f"Found {scenes.get('recordsReturned', 0)} scenes")
-                            
-                        scene_ids = [result['entityId'] for result in scenes['results']]
-                        
-                        payload = {'datasetName': dataset['datasetAlias'], 
-                                  'entityIds': scene_ids}
-                        
-                        download_options = send_request(service_url + "download-options", payload, api_key)
-                        
-                        if download_options:
-                            downloads = []
-                            for product in download_options:
-                                if product.get('available') == True:
-                                    downloads.append({'entityId': product.get('entityId'),
-                                                    'productId': product.get('id')})
-                            
-                            if downloads:
-                                label = "download-sample"
-                                payload = {'downloads': downloads, 'label': label}
-                                request_results = send_request(service_url + "download-request", payload, api_key)
-                                
-                                if request_results and 'availableDownloads' in request_results:
-                                    for download in request_results['availableDownloads']:
-                                        url = download.get('url', '')
-                                        if url and url.split("&")[0][-2:] == "SR":
-                                            products_available.append(url)
-                                            if self.verbose:
-                                                print(f"Found download URL: {url}")
-        
-        # Logout
-        send_request(service_url + "logout", None, api_key)
-        
-        if self.verbose:
-            print(f"Found {len(products_available)} Landsat products available for download")
-        
-        return products_available
-    
-    def _process_landsat_products(self, products_available):
-        """Process downloaded Landsat products"""
-        landsat_data = np.zeros((self.dim, self.dim, 3))
-        
-        # Create landsatHarvested directory if it doesn't exist
-        os.makedirs("landsatHarvested", exist_ok=True)
-        
-        # Download and extract products
-        for url in products_available:
-            if self.verbose:
-                print(f"Downloading Landsat product: {url}")
-            
-            try:
-                urllib.request.urlretrieve(url, "landsat.tar")
-                break  # Just get one for now
-            except Exception as e:
-                if self.verbose:
-                    print(f"Error downloading Landsat product: {e}")
-                continue
-        
-        if not os.path.exists("landsat.tar"):
-            raise RuntimeError("Failed to download any Landsat products")
-        
-        # Extract specific bands
-        extracted_files = []
-        try:
-            t = tarfile.open('landsat.tar', 'r')
-            for member in t.getmembers():
-                fname = member.name
-                if ".TIF" in fname:
-                    band = fname.split(".")[0][-5:]
-                    if band == "SR_B1" or band == "SR_B7" or band == "ROSOL":
-                        if self.verbose:
-                            print(f"Extracting: {fname}")
-                        t.extract(member, "landsatHarvested")
-                        extracted_files.append(os.path.join("landsatHarvested", fname))
-            t.close()
-        except Exception as e:
-            if self.verbose:
-                print(f"Error extracting Landsat tar file: {e}")
-            if os.path.exists("landsat.tar"):
-                os.remove("landsat.tar")
-            raise RuntimeError(f"Error extracting Landsat tar file: {e}")
-        
-        if len(extracted_files) == 0:
-            if os.path.exists("landsat.tar"):
-                os.remove("landsat.tar")
-            raise RuntimeError("No Landsat band files found in the downloaded archive")
-        
-        # Read and resize bands
-        band_idx = 0
-        for filepath in sorted(extracted_files):
-            if ".TIF" in filepath:
-                try:
-                    if self.verbose:
-                        print(f"Processing: {filepath}")
-                    
-                    # Use plt.imread to read TIF files
-                    img = plt.imread(filepath)
-                    
-                    # Make sure img is 2D
-                    if len(img.shape) > 2:
-                        img = img[:,:,0]  # Take first channel
-                    
-                    img_resized = cv2.resize(img, (self.dim, self.dim))
-                    
-                    if band_idx < 3:  # Only use first 3 bands
-                        landsat_data[:, :, band_idx] = img_resized
-                    
-                    band_idx += 1
-                except Exception as e:
-                    if self.verbose:
-                        print(f"Error processing {filepath}: {e}")
-        
-        # Clean up
-        if os.path.exists("landsat.tar"):
-            os.remove("landsat.tar")
-        if os.path.exists("landsatHarvested"):
-            import shutil
-            shutil.rmtree("landsatHarvested")
-        
-        if band_idx == 0:
-            raise RuntimeError("Failed to process any Landsat bands")
-        
-        return landsat_data
-    
-    def _get_maiac_data(self):
+    def _get_ground_level_data(self):
         """
-        Get MAIAC AOD data from NASA or cache.
-        
-        Following the approach in pm25Script_noGCN.py, this method only retrieves
-        MAIAC data for the start date and uses it for all timestamps in the range.
-        This approach is appropriate because:
-        1. MAIAC data is only updated 1-2 times per day at most for a location
-        2. Cloud cover can result in many days without valid observations
-        3. AOD patterns generally change more slowly than other variables
-        """
-        cache_file = os.path.join(self.cache_dir, 'maiac_data.npy')
-        
-        if self.use_cached_data and os.path.exists(cache_file):
-            if self.verbose:
-                print(f"Loading cached MAIAC data from {cache_file}")
-            return np.load(cache_file)
-        
-        if not self.maiac_credentials['username'] or not self.maiac_credentials['password']:
-            raise ValueError("MAIAC credentials not found in environment variables. Set MAIAC_USERNAME and MAIAC_PASSWORD.")
-        
-        # Verify data processing capabilities
-        if not GDAL_AVAILABLE and not PYHDF_AVAILABLE and not SKIMAGE_AVAILABLE:
-            raise RuntimeError("Neither GDAL, pyhdf, nor skimage.io is available. At least one is required for MAIAC data processing.")
-        
-        # Get MAIAC data for the start date only (following pm25Script_noGCN.py)
-        if self.verbose:
-            print(f"Retrieving MAIAC data for start date: {self.start_date.strftime('%Y-%m-%d')}")
-        
-        aod_data = self._fetch_maiac_aod(self.start_date)
-        
-        if aod_data is None:
-            # Try the next day if the start date has no data
-            alt_date = self.start_date + timedelta(days=1)
-            if self.verbose:
-                print(f"No MAIAC data for start date, trying next day: {alt_date.strftime('%Y-%m-%d')}")
-            aod_data = self._fetch_maiac_aod(alt_date)
-            
-            # Try previous day if still no data
-            if aod_data is None:
-                alt_date = self.start_date - timedelta(days=1)
-                if self.verbose:
-                    print(f"Still no MAIAC data, trying previous day: {alt_date.strftime('%Y-%m-%d')}")
-                aod_data = self._fetch_maiac_aod(alt_date)
-        
-        if aod_data is None:
-            raise RuntimeError("Failed to fetch MAIAC AOD data for the start date or adjacent days.")
-        
-        # Create a 4D array with the same MAIAC data for all timestamps (n_timestamps, height, width, 1)
-        maiac_data = np.zeros((self.n_timestamps, self.dim, self.dim, 1))
-        for i in range(self.n_timestamps):
-            maiac_data[i, :, :, 0] = aod_data
-        
-        if self.verbose:
-            print(f"Successfully retrieved MAIAC data. Replicating for all {self.n_timestamps} timestamps.")
-            # Calculate statistics on the AOD data
-            non_zero = np.count_nonzero(aod_data)
-            total = aod_data.size
-            coverage = (non_zero / total) * 100
-            print(f"MAIAC data coverage: {coverage:.2f}% ({non_zero}/{total} pixels)")
-            print(f"MAIAC value range: {np.min(aod_data):.5f} to {np.max(aod_data):.5f}")
-            print(f"MAIAC mean: {np.mean(aod_data):.5f}")
-        
-        np.save(cache_file, maiac_data)
-        return maiac_data
-    
-    def _fetch_maiac_aod(self, date):
-        """
-        Fetch MAIAC AOD data from NASA for a specific date
-        
-        Parameters:
-        -----------
-        date : datetime
-            The specific date to fetch MAIAC data for
+        Get ground-level air pollution sensor data from EPA AirNow.
         
         Returns:
         --------
-        aod_data : numpy.ndarray
-            The processed AOD data for the specified date, or None if no data available
+        numpy.ndarray
+            Ground-level PM2.5 data with shape (n_timestamps, dim, dim, n_features)
         """
-        url_base = "https://e4ftl01.cr.usgs.gov/MOTA/MCD19A2.061/"
-        aod_date = date.strftime("%Y.%m.%d")
-        url = url_base + aod_date
-        ext = 'hdf'
+        cache_file = os.path.join(self.cache_dir, 'ground_level_data.npy')
+        
+        if self.use_cached_data and os.path.exists(cache_file):
+            if self.verbose:
+                print(f"Loading cached ground-level data from {cache_file}")
+            return np.load(cache_file)
+        
+        # Initialize empty array for sensor data
+        # Single channel for PM2.5
+        ground_data = np.zeros((self.n_timestamps, self.dim, self.dim, 1))
+        
+        # Check if API key is available
+        if not self.airnow_api_key:
+            if self.verbose:
+                print("No AirNow API key found. Returning empty ground-level data.")
+            np.save(cache_file, ground_data)
+            return ground_data
+        
+        # Define LA County PM2.5 sensor locations from notebook
+        ground_sensors = [
+            {'name': 'Lancaster', 'lat': 34.6867, 'lon': -118.1542, 'grid_x': 35, 'grid_y': 25},
+            {'name': 'Santa Clarita', 'lat': 34.3833, 'lon': -118.5289, 'grid_x': 24, 'grid_y': 13},
+            {'name': 'Reseda', 'lat': 34.1992, 'lon': -118.5332, 'grid_x': 18, 'grid_y': 12},
+            {'name': 'Glendora', 'lat': 34.1442, 'lon': -117.9501, 'grid_x': 16, 'grid_y': 34},
+            {'name': 'Los Angeles Main', 'lat': 34.0664, 'lon': -118.2267, 'grid_x': 13, 'grid_y': 22},
+            {'name': 'Long Beach', 'lat': 33.8192, 'lon': -118.1887, 'grid_x': 5, 'grid_y': 23},
+            {'name': 'Long Beach - RT 710', 'lat': 33.8541, 'lon': -118.2012, 'grid_x': 5, 'grid_y': 26}
+        ]
         
         if self.verbose:
-            print(f"Looking for MAIAC data on date: {aod_date}")
-            print(f"URL: {url}")
+            print(f"Fetching PM2.5 data for {len(ground_sensors)} sensors...")
+            print(f"Time range: {self.start_date.date()} to {self.end_date.date()}")
         
-        def listFD(url, ext=''):
+        # Process each timestamp
+        for t_idx, timestamp in enumerate(self.timestamps):
+            date_str = timestamp.strftime('%Y-%m-%d')
+            hour = timestamp.hour
+            
+            if self.verbose and t_idx % 1000 == 0:
+                print(f"Processing timestamp {t_idx}/{self.n_timestamps}: {date_str} {hour:02d}:00")
+            
+            # Collect data from each sensor for this timestamp
+            pm25_values = []
+            
+            for sensor in ground_sensors:
+                pm25_value = self._fetch_airnow_data(
+                    lat=sensor['lat'],
+                    lon=sensor['lon'],
+                    date=date_str,
+                    hour=hour
+                )
+                
+                pm25_values.append({
+                    'lat': sensor['lat'],
+                    'lon': sensor['lon'],
+                    'value': pm25_value,
+                    'grid_x': sensor['grid_x'],
+                    'grid_y': sensor['grid_y']
+                })
+            
+            # First, populate the exact sensor locations
+            for sensor_data in pm25_values:
+                if sensor_data['value'] > 0:  # Only use valid readings
+                    x, y = sensor_data['grid_x'], sensor_data['grid_y']
+                    ground_data[t_idx, y, x, 0] = sensor_data['value']
+            
+            # Then interpolate to fill the grid
+            valid_points = [p for p in pm25_values if p['value'] > 0]
+            if valid_points:
+                try:
+                    interp_data = self._interpolate_to_grid(valid_points, self.dim, self.dim, self.extent)
+                    # Where we have exact sensor readings, keep those; otherwise use interpolated values
+                    for y in range(self.dim):
+                        for x in range(self.dim):
+                            if ground_data[t_idx, y, x, 0] == 0:
+                                ground_data[t_idx, y, x, 0] = interp_data[y, x]
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Error interpolating PM2.5 data for timestamp {date_str} {hour:02d}:00: {e}")
+        
+        if self.verbose:
+            print(f"Created ground-level data with shape {ground_data.shape}")
+        
+        np.save(cache_file, ground_data)
+        return ground_data
+    
+    def _get_maiac_aod_data(self):
+        """
+        Get MAIAC AOD data from NASA.
+        
+        Returns:
+        --------
+        numpy.ndarray
+            MAIAC AOD data with shape (n_timestamps, dim, dim, n_features)
+        """
+        cache_file = os.path.join(self.cache_dir, 'maiac_aod_data.npy')
+        
+        if self.use_cached_data and os.path.exists(cache_file):
+            if self.verbose:
+                print(f"Loading cached MAIAC AOD data from {cache_file}")
+            return np.load(cache_file)
+        
+        # Initialize empty array for MAIAC data
+        # Single channel for AOD
+        maiac_data = np.zeros((self.n_timestamps, self.dim, self.dim, 1))
+        
+        # Check if EarthData token is available
+        if not self.earthdata_token:
+            if self.verbose:
+                print("NASA EarthData token not found. Returning empty MAIAC AOD data.")
+            np.save(cache_file, maiac_data)
+            return maiac_data
+        
+        # MAIAC data is typically available 1-2 times per day, not hourly
+        # We'll need to fetch daily data and replicate it for hourly timestamps
+        
+        # Get unique dates from timestamps
+        unique_dates = pd.Series([ts.date() for ts in self.timestamps]).unique()
+        
+        if self.verbose:
+            print(f"Fetching MAIAC AOD data for {len(unique_dates)} unique dates")
+        
+        # Set up headers with bearer token
+        headers = {"Authorization": f"Bearer {self.earthdata_token}"}
+        
+        # Define our geographic bounds
+        min_lon, max_lon, min_lat, max_lat = self.extent
+        
+        # Define the MAIAC AOD collection parameters
+        # Using the Version 061 (current version)
+        maiac_params = {
+            "short_name": "MCD19A2",
+            "version": "061",
+            "cmr_id": "C2324689816-LPCLOUD"  # From search results
+        }
+        
+        # NASA CMR API endpoint
+        cmr_url = "https://cmr.earthdata.nasa.gov/search/granules.json"
+        
+        # For each day, try to fetch MAIAC data
+        daily_maiac_data = {}
+        
+        for date in unique_dates:
+            date_str = date.strftime('%Y-%m-%d')
+            day_next = (date + timedelta(days=1)).strftime('%Y-%m-%d')
+            
             try:
-                page = requests.get(url).text
-                soup = BeautifulSoup(page, 'html.parser')
-                files = [url + '/' + node.get('href') for node in soup.find_all('a') 
-                       if node.get('href').endswith(ext) and "h08v05" in node.get('href')]
-                if self.verbose:
-                    print(f"Found {len(files)} HDF files")
-                return files
+                # Define search parameters
+                params = {
+                    "collection_concept_id": maiac_params["cmr_id"],
+                    "temporal": f"{date_str}T00:00:00Z,{day_next}T00:00:00Z",
+                    "bounding_box": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+                    "page_size": 10
+                }
+                
+                # Make the request to CMR API
+                response = requests.get(cmr_url, params=params, headers=headers)
+                
+                if response.status_code != 200:
+                    if self.verbose:
+                        print(f"Error searching for MAIAC AOD granules: HTTP {response.status_code}")
+                    continue
+                
+                # Parse the results
+                results = response.json()
+                granules = results.get("feed", {}).get("entry", [])
+                
+                if not granules:
+                    if self.verbose:
+                        print(f"No MAIAC AOD data found for {date_str}")
+                    continue
+                
+                # Process the first valid granule
+                for granule in granules:
+                    # Get download URL - use the same approach as in TROPOMI function
+                    download_url = next((link["href"] for link in granule.get("links", []) 
+                                        if link.get("rel") == "http://esipfed.org/ns/fedsearch/1.1/data#"), None)
+                    
+                    if not download_url:
+                        continue
+                    
+                    # Download the HDF file
+                    temp_file = os.path.join(self.cache_dir, f"maiac_temp_{date_str}.hdf")
+                    
+                    try:
+                        # Download with token authentication
+                        response = requests.get(download_url, headers=headers, stream=True)
+                        if response.status_code != 200:
+                            if self.verbose:
+                                print(f"Error downloading MAIAC file: {response.status_code}")
+                            continue
+                                
+                        with open(temp_file, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                        
+                        if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
+                            raise Exception("Failed to download file or file is empty")
+                        
+                        # Process the HDF file to extract AOD data
+                        hdf_file = SD(temp_file, SDC.READ)
+                        
+                        # Get the AOD dataset (Optical_Depth_055)
+                        try:
+                            aod_dataset = hdf_file.select('Optical_Depth_055')
+                            aod_data = aod_dataset[:]
+                            
+                            # Check if aod_data is not empty and has valid dimensions
+                            if aod_data.size == 0:
+                                if self.verbose:
+                                    print(f"Empty AOD data for {date_str}")
+                                continue
+                            
+                            # Print detailed information about the AOD data
+                            if self.verbose:
+                                print(f"AOD data shape before resize: {aod_data.shape}")
+                                print(f"AOD data type: {aod_data.dtype}")
+                                print(f"AOD data min/max: {np.nanmin(aod_data)}/{np.nanmax(aod_data)}")
+                            
+                            # Handle multi-dimensional data - take the first band or average 
+                            # if there are multiple time steps or bands
+                            if len(aod_data.shape) == 3:
+                                aod_data_2d = np.nanmean(aod_data, axis=0)
+                                if self.verbose:
+                                    print(f"Averaged AOD data to shape: {aod_data_2d.shape}")
+                            else:
+                                aod_data_2d = aod_data
+                            
+                            # Use simple resize method with scipy zoom for 2D data
+                            from scipy.ndimage import zoom
+                            
+                            # Calculate zoom factors
+                            zoom_y = self.dim / aod_data_2d.shape[0]
+                            zoom_x = self.dim / aod_data_2d.shape[1]
+                            
+                            # Apply zoom (handles NaN values automatically)
+                            aod_grid = zoom(aod_data_2d, (zoom_y, zoom_x), order=1, mode='nearest')
+                            
+                            if self.verbose:
+                                print(f"Resized AOD data to shape: {aod_grid.shape}")
+                            
+                            # Store the processed AOD data for this date
+                            daily_maiac_data[date] = aod_grid
+                            
+                            if self.verbose:
+                                print(f"Successfully processed AOD data for {date_str}")
+                        
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"Error selecting or processing AOD dataset: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                        finally:
+                            # Close the HDF file
+                            hdf_file.end()
+                        
+                        # Successfully processed, break the granule loop
+                        if date in daily_maiac_data:
+                            break
+
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"Error processing MAIAC AOD data for {date_str}: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    finally:
+                        # Clean up the temporary file
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                        
             except Exception as e:
                 if self.verbose:
-                    print(f"Error listing files: {e}")
-                return []
+                    print(f"Error fetching MAIAC AOD data for {date_str}: {e}")
+                    import traceback
+                    traceback.print_exc()
         
-        files = listFD(url, ext)
-        if not files:
-            if self.verbose:
-                print(f"No MAIAC files found for date {aod_date}")
-            return None
+        # Assign daily data to hourly timestamps
+        for t_idx, timestamp in enumerate(self.timestamps):
+            date = timestamp.date()
+            if date in daily_maiac_data:
+                maiac_data[t_idx, :, :, 0] = daily_maiac_data[date]
         
-        file_url = files[0]
         if self.verbose:
-            print(f"Attempting to download: {file_url}")
+            print(f"Created MAIAC AOD data with shape {maiac_data.shape}")
         
-        # Create a temporary directory for the MAIAC file
-        temp_dir = "maiac_temp"
-        os.makedirs(temp_dir, exist_ok=True)
-        output_file = os.path.join(temp_dir, f'aod_{date.strftime("%Y%m%d")}.hdf')
+        np.save(cache_file, maiac_data)
+        return maiac_data
         
-        try:
-            with requests.Session() as session:
-                session.auth = (self.maiac_credentials['username'], 
-                               self.maiac_credentials['password'])
-                r1 = session.request('get', file_url)
-                if self.verbose:
-                    print(f"Initial request status: {r1.status_code}")
-                
-                r = session.get(r1.url, auth=(self.maiac_credentials['username'], 
-                                             self.maiac_credentials['password']))
-                
-                if not r.ok:
-                    if self.verbose:
-                        print(f"Failed to download MAIAC file. Status code: {r.status_code}")
-                    return None
-                
-                if self.verbose:
-                    print(f"Download successful, file size: {len(r.content)} bytes")
-                
-                with open(output_file, 'wb') as f:
-                    for data in r.iter_content(chunk_size=8192):
-                        f.write(data)
-                
-                # Process the HDF file
+    def _get_tropomi_data(self):
+        """
+        Get TROPOMI data from NASA Earthdata for methane, nitrogen dioxide, and carbon monoxide.
+        
+        Returns:
+        --------
+        numpy.ndarray
+            TROPOMI data with shape (n_timestamps, dim, dim, n_features)
+        """
+        cache_file = os.path.join(self.cache_dir, 'tropomi_data.npy')
+        
+        if self.use_cached_data and os.path.exists(cache_file):
+            if self.verbose:
+                print(f"Loading cached TROPOMI data from {cache_file}")
+            return np.load(cache_file)
+        
+        # Initialize empty array for TROPOMI data
+        # 3 channels: methane, nitrogen dioxide, and carbon monoxide
+        tropomi_data = np.zeros((self.n_timestamps, self.dim, self.dim, 3))
+        
+        # Check if Earth Data token is available
+        if not self.earthdata_token:
+            if self.verbose:
+                print("NASA EarthData token not found. Returning empty TROPOMI data.")
+            np.save(cache_file, tropomi_data)
+            return tropomi_data
+        
+        # Get unique dates from timestamps
+        unique_dates = pd.Series([ts.date() for ts in self.timestamps]).unique()
+        
+        if self.verbose:
+            print(f"Fetching TROPOMI data for {len(unique_dates)} unique dates")
+        
+        # Define our geographic bounds
+        min_lon, max_lon, min_lat, max_lat = self.extent
+        
+        # Set up headers with bearer token
+        headers = {"Authorization": f"Bearer {self.earthdata_token}"}
+        
+        # Define the TROPOMI products we want with corrected variable paths
+        products = [
+            {
+                "name": "NO2",  # Nitrogen Dioxide
+                "index": 1,
+                "cmr_id": "C2089270961-GES_DISC",  # Your current ID appears to be working
+                "var_name": "PRODUCT/nitrogendioxide_tropospheric_column",
+                "lat_var": "PRODUCT/latitude",
+                "lon_var": "PRODUCT/longitude",
+                "qa_var": "PRODUCT/qa_value"
+            },
+            {
+                "name": "CH4",  # Methane - Updated with correct ID
+                "index": 0, 
+                "cmr_id": "C2087216530-GES_DISC",  # Updated to HiR V2 collection
+                "var_name": "PRODUCT/methane_mixing_ratio",  # Will need flexible variable lookup
+                "lat_var": "PRODUCT/latitude",
+                "lon_var": "PRODUCT/longitude",
+                "qa_var": "PRODUCT/qa_value"
+            },
+            {
+                "name": "CO",  # Carbon Monoxide - Updated with correct ID
+                "index": 2,
+                "cmr_id": "C2087132178-GES_DISC",  # Updated to HiR V2 collection
+                "var_name": "PRODUCT/carbonmonoxide_total_column",  # Will need flexible variable lookup
+                "lat_var": "PRODUCT/latitude",
+                "lon_var": "PRODUCT/longitude",
+                "qa_var": "PRODUCT/qa_value"
+            }
+        ]
+        
+        # For each day, try to fetch TROPOMI data for each product
+        daily_tropomi_data = {}
+        
+        for date in unique_dates:
+            date_str = date.strftime('%Y-%m-%d')
+            day_next = (date + timedelta(days=1)).strftime('%Y-%m-%d')
+            
+            if self.verbose:
+                print(f"Processing TROPOMI data for date: {date_str}")
+            
+            # Initialize the day's data
+            day_data = np.zeros((self.dim, self.dim, 3))
+            
+            # For each product (NO2, CH4, CO)
+            for product in products:
                 try:
-                    if GDAL_AVAILABLE:
-                        aod_data = self._process_hdf_with_gdal(output_file)
-                        if aod_data is not None:
-                            return aod_data
+                    # NASA CMR API endpoint
+                    cmr_url = "https://cmr.earthdata.nasa.gov/search/granules.json"
                     
-                    if PYHDF_AVAILABLE:
-                        aod_data = self._process_hdf_with_pyhdf(output_file)
-                        if aod_data is not None:
-                            return aod_data
+                    # Define search parameters
+                    params = {
+                        "collection_concept_id": product["cmr_id"],
+                        "temporal": f"{date_str}T00:00:00Z,{day_next}T00:00:00Z",
+                        "bounding_box": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+                        "page_size": 10,  # Limit to 10 granules per day
+                        "sort_key": "-start_date"  # Sort by start date descending
+                    }
                     
-                    if SKIMAGE_AVAILABLE:
-                        aod_data = self._process_hdf_with_skimage(output_file)
-                        if aod_data is not None:
-                            return aod_data
+                    # Make the request to CMR API with token
+                    response = requests.get(cmr_url, params=params, headers=headers)
                     
-                    # If we reach here, all methods failed
+                    if response.status_code != 200:
+                        if self.verbose:
+                            print(f"Error searching for TROPOMI {product['name']} data: {response.status_code}")
+                        continue
+                    
+                    # Parse the results
+                    results = response.json()
+                    granules = results.get("feed", {}).get("entry", [])
+                    
+                    if not granules:
+                        if self.verbose:
+                            print(f"No TROPOMI {product['name']} data found for {date_str}")
+                        continue
+                    
+                    # Process the first valid granule
+                    for granule in granules:
+                        # Get download URL
+                        download_url = next((link["href"] for link in granule.get("links", []) 
+                                            if link.get("rel") == "http://esipfed.org/ns/fedsearch/1.1/data#"), None)
+                        
+                        if not download_url:
+                            continue
+                        
+                        # Download the file
+                        temp_file = os.path.join(self.cache_dir, f"tropomi_{product['name']}_{date_str}.nc")
+                        
+                        try:
+                            # Download with token authentication
+                            response = requests.get(download_url, headers=headers, stream=True)
+                            if response.status_code != 200:
+                                if self.verbose:
+                                    print(f"Error downloading TROPOMI file: {response.status_code}")
+                                continue
+                                    
+                            with open(temp_file, 'wb') as f:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                            
+                            if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
+                                raise Exception("Failed to download or empty file")
+                            
+                            # Process the NetCDF file - UPDATED to handle grouped variables
+                            dataset = nc.Dataset(temp_file, 'r')
+                            
+                            # Get the data variables
+                            try:
+                                # Extract group path and variable name
+                                var_path = product["var_name"].split('/')
+                                lat_path = product["lat_var"].split('/')
+                                lon_path = product["lon_var"].split('/')
+                                qa_path = product["qa_var"].split('/')
+                                
+                                # Access data from the correct group
+                                if len(var_path) > 1:
+                                    # Variable is in a group
+                                    group_name = var_path[0]
+                                    var_name = var_path[1]
+                                    group = dataset.groups[group_name]
+                                    data_var = group.variables[var_name][:]
+                                else:
+                                    # Variable is in root
+                                    data_var = dataset.variables[var_path[0]][:]
+                                
+                                # Get lat/lon variables
+                                if len(lat_path) > 1:
+                                    group_name = lat_path[0]
+                                    var_name = lat_path[1]
+                                    group = dataset.groups[group_name]
+                                    lat_var = group.variables[var_name][:]
+                                else:
+                                    lat_var = dataset.variables[lat_path[0]][:]
+                                    
+                                if len(lon_path) > 1:
+                                    group_name = lon_path[0]
+                                    var_name = lon_path[1]
+                                    group = dataset.groups[group_name]
+                                    lon_var = group.variables[var_name][:]
+                                else:
+                                    lon_var = dataset.variables[lon_path[0]][:]
+                                
+                                # Get quality flags if available
+                                qa_var = None
+                                if len(qa_path) > 1:
+                                    group_name = qa_path[0]
+                                    var_name = qa_path[1]
+                                    if group_name in dataset.groups and var_name in dataset.groups[group_name].variables:
+                                        group = dataset.groups[group_name]
+                                        qa_var = group.variables[var_name][:]
+                                
+                                # Close the dataset
+                                dataset.close()
+                                
+                                # Remove time dimension if present (first dimension)
+                                if data_var.ndim > 2 and data_var.shape[0] == 1:
+                                    data_var = data_var[0]
+                                    lat_var = lat_var[0] if lat_var.ndim > 2 else lat_var
+                                    lon_var = lon_var[0] if lon_var.ndim > 2 else lon_var
+                                    if qa_var is not None and qa_var.ndim > 2 and qa_var.shape[0] == 1:
+                                        qa_var = qa_var[0]
+                                
+                                # Filter data by quality if available
+                                if qa_var is not None:
+                                    # Apply quality threshold - keep only high quality data (>0.75 typically)
+                                    quality_mask = qa_var > 0.75
+                                    data_var = np.where(quality_mask, data_var, np.nan)
+                                
+                                # Interpolate to our grid
+                                from scipy.interpolate import griddata
+                                
+                                # Create grid of lat/lon points
+                                grid_x, grid_y = np.meshgrid(
+                                    np.linspace(min_lon, max_lon, self.dim),
+                                    np.linspace(min_lat, max_lat, self.dim)
+                                )
+                                
+                                # Prepare points for interpolation
+                                points = np.column_stack((lon_var.flatten(), lat_var.flatten()))
+                                values = data_var.flatten()
+                                
+                                # Remove NaN values
+                                valid_mask = ~np.isnan(values)
+                                points = points[valid_mask]
+                                values = values[valid_mask]
+                                
+                                # Interpolate to regular grid
+                                if len(points) > 3:  # Need at least a few points
+                                    grid_z = griddata(points, values, (grid_x, grid_y), method='linear', fill_value=0)
+                                    
+                                    # Store in the daily data
+                                    day_data[:, :, product["index"]] = grid_z
+                                    
+                                    if self.verbose:
+                                        print(f"Successfully processed {product['name']} data")
+                                    
+                                    # Successfully processed, break the granule loop
+                                    break
+                                
+                            except Exception as e:
+                                if self.verbose:
+                                    print(f"Error extracting TROPOMI data variables: {e}")
+                                
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"Error processing TROPOMI file: {e}")
+                        
+                        finally:
+                            # Clean up the temporary file
+                            if os.path.exists(temp_file):
+                                os.remove(temp_file)
+                        
+                except Exception as e:
                     if self.verbose:
-                        print("All methods failed to process MAIAC data")
-                    return None
+                        print(f"Error in TROPOMI processing for {product['name']} on {date_str}: {e}")
+            
+            # Store the day's data if we have at least some non-zero values
+            if np.sum(np.abs(day_data)) > 0:
+                daily_tropomi_data[date] = day_data
+        
+        # Assign daily data to hourly timestamps
+        for t_idx, timestamp in enumerate(self.timestamps):
+            date = timestamp.date()
+            if date in daily_tropomi_data:
+                tropomi_data[t_idx] = daily_tropomi_data[date]
+        
+        if self.verbose:
+            print(f"Created TROPOMI data with shape {tropomi_data.shape}")
+        
+        np.save(cache_file, tropomi_data)
+        return tropomi_data
+    
+    def _get_modis_fire_data(self):
+        """
+        Get MODIS Fire Radiative Power (FRP) data.
+        
+        Returns:
+        --------
+        numpy.ndarray
+            MODIS FRP data with shape (n_timestamps, dim, dim, n_features)
+        """
+        cache_file = os.path.join(self.cache_dir, 'modis_fire_data.npy')
+        
+        if self.use_cached_data and os.path.exists(cache_file):
+            if self.verbose:
+                print(f"Loading cached MODIS fire data from {cache_file}")
+            return np.load(cache_file)
+        
+        # Initialize empty array for MODIS fire data
+        # Single channel for FRP
+        modis_fire_data = np.zeros((self.n_timestamps, self.dim, self.dim, 1))
+        
+        # Check if Earth Data token is available
+        if not self.earthdata_token:
+            if self.verbose:
+                print("NASA Earth Data token not found. Returning empty MODIS fire data.")
+            np.save(cache_file, modis_fire_data)
+            return modis_fire_data
+        
+        # Get unique dates from timestamps
+        unique_dates = pd.Series([ts.date() for ts in self.timestamps]).unique()
+        
+        if self.verbose:
+            print(f"Fetching MODIS fire data for {len(unique_dates)} unique dates")
+        
+        # Define headers with bearer token
+        headers = {"Authorization": f"Bearer {self.earthdata_token}"}
+        
+        # Define the collection ID for MODIS Land Surface Temperature
+        collection_id = "C1748058432-LPCLOUD"  # Correct Collection ID for MOD11A1.061
+        
+        # For each day, try to fetch MODIS data
+        daily_fire_data = {}
+        
+        for date in unique_dates:
+            date_str = date.strftime('%Y-%m-%d')
+            
+            if self.verbose:
+                print(f"Processing MODIS fire data for date: {date_str}")
+            
+            # Define our geographic bounds
+            min_lon, max_lon, min_lat, max_lat = self.extent
+            bbox = f"{min_lon},{min_lat},{max_lon},{max_lat}"
+            
+            try:
+                # CMR API endpoint
+                cmr_url = "https://cmr.earthdata.nasa.gov/search/granules.json"
+                
+                # Define search parameters
+                params = {
+                    "collection_concept_id": collection_id,
+                    "temporal": f"{date_str}T00:00:00Z,{date_str}T23:59:59Z",
+                    "bounding_box": bbox,
+                    "page_size": 10  # Limit to 10 granules per day
+                }
+                
+                # Make the request to CMR API with token
+                response = requests.get(cmr_url, params=params, headers=headers)
+                
+                if response.status_code != 200:
+                    if self.verbose:
+                        print(f"Error searching for MODIS data: {response.status_code}")
+                    continue
+                
+                # Parse the results
+                results = response.json()
+                granules = results.get("feed", {}).get("entry", [])
+                
+                if not granules:
+                    if self.verbose:
+                        print(f"No MODIS data found for {date_str}")
+                    continue
+                
+                # Process the first valid granule
+                for granule in granules:
+                    # Get download URL
+                    download_url = next((link["href"] for link in granule.get("links", []) 
+                                    if link.get("rel") == "http://esipfed.org/ns/fedsearch/1.1/data#"), None)
+                    
+                    if not download_url:
+                        continue
+                    
+                    # Download the file (HDF format)
+                    temp_file = os.path.join(self.cache_dir, f"modis_temp_{date_str}.hdf")
+                    hdf_file = None
+                    
+                    try:
+                        # Download with token authentication
+                        response = requests.get(download_url, headers=headers, stream=True)
+                        if response.status_code != 200:
+                            if self.verbose:
+                                print(f"Error downloading MODIS file: {response.status_code}")
+                            continue
+                            
+                        with open(temp_file, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                        
+                        if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
+                            raise Exception("Failed to download or empty file")
+                        
+                        # Process the HDF file
+                        hdf_file = SD(temp_file, SDC.READ)
+                        
+                        try:
+                            # For MOD11A1, use Land Surface Temperature
+                            dataset_name = 'LST_Day_1km'
+                            
+                            # Try to get the dataset
+                            try:
+                                dataset = hdf_file.select(dataset_name)
+                                lst_data = dataset[:]
+                                
+                                # Print info about the data
+                                if self.verbose:
+                                    print(f"Found LST data with shape: {lst_data.shape}")
+                                    print(f"Data type: {lst_data.dtype}")
+                                    print(f"Min value: {np.min(lst_data)}, Max value: {np.max(lst_data)}")
+                                
+                                # Get attributes
+                                attrs = dataset.attributes()
+                                scale_factor = float(attrs.get('scale_factor', 0.02))
+                                add_offset = float(attrs.get('add_offset', 0.0))
+                                
+                                # Apply scale factor and offset
+                                # MOD11A1 LST values are typically stored as integers and need to be scaled
+                                # LST = scale_factor * digital_number + add_offset
+                                lst_data = lst_data * scale_factor + add_offset
+                                
+                                # Replace fill values with NaN
+                                # MOD11A1 uses 0 as a fill value for LST
+                                lst_data = np.where(lst_data > 100, lst_data, np.nan)  # Filter unrealistic values (< 100K)
+                                
+                                # Check if we have any valid data after filtering
+                                if np.all(np.isnan(lst_data)):
+                                    if self.verbose:
+                                        print(f"No valid LST data found for {date_str} after filtering")
+                                    continue
+                                    
+                                # Normalize to 0-1 scale (for temperatures between 270K and 330K)
+                                min_temp = 270  # 270 Kelvin (approx 26°F)
+                                max_temp = 330  # 330 Kelvin (approx 134°F)
+                                normalized_lst = np.clip((lst_data - min_temp) / (max_temp - min_temp), 0, 1)
+                                
+                                # Handle NaN values for resize
+                                normalized_lst = np.nan_to_num(normalized_lst, nan=0)
+                                
+                                # Make sure dimensions are valid
+                                if self.dim <= 0:
+                                    raise ValueError(f"Invalid dimension size: {self.dim}")
+                                if normalized_lst.shape[0] == 0 or normalized_lst.shape[1] == 0:
+                                    raise ValueError(f"Invalid source dimensions: {normalized_lst.shape}")
+                                    
+                                # Use scipy zoom instead of OpenCV resize (more robust)
+                                from scipy.ndimage import zoom
+                                
+                                # Calculate zoom factors
+                                zoom_y = self.dim / normalized_lst.shape[0]
+                                zoom_x = self.dim / normalized_lst.shape[1]
+                                
+                                # Apply zoom
+                                grid_lst = zoom(normalized_lst, (zoom_y, zoom_x), order=1, mode='nearest')
+                                
+                                # Make sure resized array has the expected dimensions
+                                if grid_lst.shape != (self.dim, self.dim):
+                                    if self.verbose:
+                                        print(f"Warning: Resized dimensions {grid_lst.shape} don't match expected {(self.dim, self.dim)}")
+                                        
+                                    # Force resize to exact dimensions if needed
+                                    from skimage.transform import resize as skimage_resize
+                                    grid_lst = skimage_resize(grid_lst, (self.dim, self.dim), 
+                                                            preserve_range=True, anti_aliasing=True)
+                                    
+                                # Store the data
+                                daily_fire_data[date] = grid_lst
+                                
+                                if self.verbose:
+                                    print(f"Successfully processed LST data for {date_str}")
+                                    
+                                # Successfully processed this granule
+                                break
+                                
+                            except Exception as e:
+                                if self.verbose:
+                                    print(f"Error processing dataset {dataset_name}: {e}")
+                                continue
+                        
+                        finally:
+                            # Make sure to close the HDF file safely
+                            if hdf_file is not None:
+                                try:
+                                    hdf_file.end()
+                                except Exception as e:
+                                    if self.verbose:
+                                        print(f"Warning: Error closing HDF file: {e}")
+                    
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"Error downloading or processing MODIS data: {e}")
+                    
+                    finally:
+                        # Clean up the temporary file
+                        if os.path.exists(temp_file):
+                            try:
+                                os.remove(temp_file)
+                            except Exception as e:
+                                if self.verbose:
+                                    print(f"Warning: Failed to remove temp file: {e}")
+            
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error in MODIS data processing for {date_str}: {e}")
+        
+        # Assign daily data to hourly timestamps
+        for t_idx, timestamp in enumerate(self.timestamps):
+            date = timestamp.date()
+            if date in daily_fire_data:
+                modis_fire_data[t_idx, :, :, 0] = daily_fire_data[date]
+        
+        # Add spatial smoothing to simulate fire spread
+        from scipy.ndimage import gaussian_filter
+        for t_idx in range(self.n_timestamps):
+            if np.max(modis_fire_data[t_idx, :, :, 0]) > 0:
+                modis_fire_data[t_idx, :, :, 0] = gaussian_filter(modis_fire_data[t_idx, :, :, 0], sigma=1.0)
+        
+        # Add temporal coherence - make neighboring timestamps similar
+        for t_idx in range(1, self.n_timestamps):
+            # If the current timestamp has no fire data but the previous one does
+            if np.max(modis_fire_data[t_idx, :, :, 0]) == 0 and np.max(modis_fire_data[t_idx-1, :, :, 0]) > 0:
+                # Decay the previous timestamp's fire data (fires don't disappear instantly)
+                modis_fire_data[t_idx, :, :, 0] = modis_fire_data[t_idx-1, :, :, 0] * 0.9
+            # If both have fire data, add some temporal coherence
+            elif np.max(modis_fire_data[t_idx, :, :, 0]) > 0 and np.max(modis_fire_data[t_idx-1, :, :, 0]) > 0:
+                modis_fire_data[t_idx, :, :, 0] = (
+                    modis_fire_data[t_idx-1, :, :, 0] * 0.3 + 
+                    modis_fire_data[t_idx, :, :, 0] * 0.7
+                )
+        
+        if self.verbose:
+            print(f"Created MODIS fire data with shape {modis_fire_data.shape}")
+        
+        np.save(cache_file, modis_fire_data)
+        return modis_fire_data
+        
+    def _get_merra2_data(self):
+        """
+        Get MERRA-2 data for PBL Height, Surface Air Temperature, and Surface Exchange Coefficient.
+        
+        Returns:
+        --------
+        numpy.ndarray
+            MERRA-2 data with shape (n_timestamps, dim, dim, n_features)
+        """
+        cache_file = os.path.join(self.cache_dir, 'merra2_data.npy')
+        
+        if self.use_cached_data and os.path.exists(cache_file):
+            if self.verbose:
+                print(f"Loading cached MERRA-2 data from {cache_file}")
+            return np.load(cache_file)
+        
+        # Initialize empty array for MERRA-2 data
+        # 3 channels: PBL Height, Surface Air Temperature, Surface Exchange Coefficient for Heat
+        merra2_data = np.zeros((self.n_timestamps, self.dim, self.dim, 3))
+        
+        # Check if M2M token is available - first try dedicated M2M token, fallback to Earthdata token
+        m2m_token = os.getenv('M2M_TOKEN')
+        if not m2m_token:
+            m2m_token = self.earthdata_token  # Try using the regular Earthdata token as fallback
+            if not m2m_token:
+                if self.verbose:
+                    print("No M2M or Earthdata token found. Returning empty MERRA-2 data.")
+                np.save(cache_file, merra2_data)
+                return merra2_data
+        
+        # MERRA-2 data is available hourly, which matches our timestamps
+        if self.verbose:
+            print(f"Fetching MERRA-2 data for {self.n_timestamps} timestamps")
+        
+        # Group timestamps by day to process them efficiently
+        days_to_process = pd.Series([ts.date() for ts in self.timestamps]).unique()
+        
+        # Define the MERRA-2 data access methods - try different approaches
+        # Method 1: GES DISC API endpoint
+        api_url_gesdisc = "https://disc.gsfc.nasa.gov/service/subset/jsonwsp/api"
+        
+        # Method 2: CMR API endpoint (similar to MODIS)
+        api_url_cmr = "https://cmr.earthdata.nasa.gov/search/granules.json"
+        
+        # Method 3: Direct MERRA-2 API
+        api_url_direct = "https://api.earthdata.nasa.gov/m2m/data/api/dataset/MERRA2/granule/search"
+        
+        # Define the variables we need
+        variables = ["PBLH", "T2M", "CDH"]
+        
+        # Process each day
+        for day in days_to_process:
+            day_str = day.strftime('%Y-%m-%d')
+            
+            if self.verbose:
+                print(f"Processing MERRA-2 data for day: {day_str}")
+            
+            # Define our geographic bounds
+            min_lon, max_lon, min_lat, max_lat = self.extent
+            
+            # Try Method 1: CMR API (similar to what worked for MODIS)
+            try:
+                if self.verbose:
+                    print("Trying CMR API method...")
+                    
+                # Set up headers with token
+                headers = {"Authorization": f"Bearer {m2m_token}"}
+                
+                # Define search parameters
+                params = {
+                    "short_name": "M2T1NXFLX",
+                    "version": "5.12.4",
+                    "temporal": f"{day_str}T00:00:00Z,{day_str}T23:59:59Z",
+                    "bounding_box": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+                    "page_size": 10
+                }
+                
+                # Make the request
+                response = requests.get(api_url_cmr, params=params, headers=headers)
+                
+                if response.status_code == 200:
+                    results = response.json()
+                    granules = results.get("feed", {}).get("entry", [])
+                    
+                    if granules:
+                        if self.verbose:
+                            print(f"Found {len(granules)} MERRA-2 granules via CMR API")
+                        
+                        # Get download URL
+                        for granule in granules:
+                            download_url = next((link["href"] for link in granule.get("links", []) 
+                                            if link.get("rel") == "http://esipfed.org/ns/fedsearch/1.1/data#"), None)
+                            
+                            if download_url:
+                                # Process this granule
+                                success = self._process_merra2_granule(download_url, headers, day, merra2_data)
+                                if success:
+                                    break  # Successfully processed a granule, no need to try more
+                    else:
+                        if self.verbose:
+                            print("No granules found via CMR API")
+                else:
+                    if self.verbose:
+                        print(f"CMR API error: {response.status_code}")
+            
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error with CMR API method: {e}")
+            
+            # Try Method 2: Direct MERRA-2 API (original approach)
+            if np.all(merra2_data[np.array([ts.date() == day for ts in self.timestamps])] == 0):
+                try:
+                    if self.verbose:
+                        print("Trying direct MERRA-2 API method...")
+                    
+                    # Set up authentication headers
+                    headers = {
+                        "Authorization": f"Bearer {m2m_token}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    # Construct parameters
+                    params = {
+                        "short_name": "M2T1NXFLX",
+                        "temporal": f"{day_str}T00:00:00Z,{day_str}T23:59:59Z",
+                        "bounding_box": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+                        "variables": ",".join(variables),
+                        "format": "json"
+                    }
+                    
+                    # Make the request
+                    response = requests.get(api_url_direct, params=params, headers=headers)
+                    
+                    if response.status_code == 200:
+                        results = response.json()
+                        granules = results.get("granules", [])
+                        
+                        if granules:
+                            if self.verbose:
+                                print(f"Found {len(granules)} MERRA-2 granules via direct API")
+                            
+                            for granule in granules:
+                                download_url = granule.get("downloadUrl")
+                                
+                                if download_url:
+                                    # Process this granule
+                                    success = self._process_merra2_granule(download_url, headers, day, merra2_data)
+                                    if success:
+                                        break  # Successfully processed a granule
+                        else:
+                            if self.verbose:
+                                print("No granules found via direct API")
+                    else:
+                        if self.verbose:
+                            print(f"Direct API error: {response.status_code} - {response.text[:200]}")
                 
                 except Exception as e:
-                    # Clean up before re-raising
                     if self.verbose:
-                        print(f"Error processing HDF file: {e}")
-                    return None
-                finally:
-                    # Clean up after processing
-                    if os.path.exists(output_file):
-                        os.remove(output_file)
-            
-        except Exception as e:
-            if self.verbose:
-                print(f"Error in MAIAC download process: {e}")
-            if os.path.exists(output_file):
-                os.remove(output_file)
-            return None
-    
-    def _process_hdf_with_gdal(self, hdf_file):
-        """Process MAIAC HDF file using GDAL"""
-        if not GDAL_AVAILABLE:
-            return None
+                        print(f"Error with direct MERRA-2 API method: {e}")
+        
+        # Add temporal coherence - make neighboring timestamps similar
+        for t_idx in range(1, self.n_timestamps):
+            # If the current timestamp has all zeros, use the previous timestamp's data
+            if np.sum(merra2_data[t_idx]) == 0 and np.sum(merra2_data[t_idx-1]) > 0:
+                merra2_data[t_idx] = merra2_data[t_idx-1]
+            # Otherwise, if both have data, add some temporal smoothing
+            elif np.sum(merra2_data[t_idx]) > 0 and np.sum(merra2_data[t_idx-1]) > 0:
+                merra2_data[t_idx] = merra2_data[t_idx-1] * 0.2 + merra2_data[t_idx] * 0.8
+        
+        if self.verbose:
+            print(f"Created MERRA-2 data with shape {merra2_data.shape}")
+        
+        np.save(cache_file, merra2_data)
+        return merra2_data
+
+    def _process_merra2_granule(self, download_url, headers, day, merra2_data):
+        """
+        Process a MERRA-2 granule file.
+        
+        Parameters:
+        -----------
+        download_url : str
+            URL to download the granule file
+        headers : dict
+            Headers to use for the download request
+        day : datetime.date
+            The day for this granule
+        merra2_data : numpy.ndarray
+            Array to store the processed data
+        
+        Returns:
+        --------
+        bool
+            True if processing was successful, False otherwise
+        """
+        # Download the NetCDF file
+        temp_file = os.path.join(self.cache_dir, f"merra2_temp_{day.strftime('%Y-%m-%d')}.nc4")
         
         try:
-            if self.verbose:
-                print("Processing HDF file with GDAL")
-                
-            gdal.UseExceptions()
-            
-            # Open HDF file
-            hdf_ds = gdal.Open(hdf_file)
-            if not hdf_ds:
+            # Download with authentication
+            r = requests.get(download_url, headers=headers, stream=True)
+            if r.status_code != 200:
                 if self.verbose:
-                    print("Failed to open HDF file with GDAL")
-                return None
+                    print(f"Error downloading MERRA-2 file: {r.status_code}")
+                return False
+                
+            with open(temp_file, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
             
-            # Get subdatasets
-            subdatasets = hdf_ds.GetSubDatasets()
+            # Check if file was downloaded correctly
+            if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
+                if self.verbose:
+                    print("Downloaded file is empty or does not exist")
+                return False
             
-            if self.verbose:
-                print(f"Found {len(subdatasets)} subdatasets")
-                for i, subds in enumerate(subdatasets):
-                    print(f"  {i}: {subds[0]} - {subds[1]}")
-            
-            # Find AOD subdataset
-            aod_subds = None
-            for subds in subdatasets:
-                if 'Optical_Depth_055' in subds[1]:
-                    aod_subds = subds[0]
-                    if self.verbose:
-                        print(f"Found AOD subdataset: {subds[1]}")
-                    break
-            
-            # If not found, try other common names
-            if aod_subds is None:
-                for subds in subdatasets:
-                    if any(term in subds[1] for term in ['AOD', 'Optical', 'Aerosol']):
-                        aod_subds = subds[0]
-                        if self.verbose:
-                            print(f"Found alternative AOD subdataset: {subds[1]}")
+            # Process the NetCDF file to extract data
+            try:
+                import netCDF4 as nc
+                dataset = nc.Dataset(temp_file, 'r')
+                
+                # List all variables to debug
+                if self.verbose:
+                    print("Variables in MERRA-2 file:")
+                    for var_name in dataset.variables:
+                        print(f"  {var_name}: {dataset.variables[var_name].shape}")
+                
+                # Try to extract the variables
+                # Variable names might differ - try different possibilities
+                var_names = {
+                    'PBLH': ['PBLH', 'PBL', 'ZPBL'],
+                    'T2M': ['T2M', 'T2', 'TLML'],
+                    'CDH': ['CDH', 'CH', 'CN']
+                }
+                
+                # Initialize data arrays
+                var_data = {}
+                
+                # Try to find each variable
+                for var_key, possible_names in var_names.items():
+                    for name in possible_names:
+                        if name in dataset.variables:
+                            var_data[var_key] = dataset.variables[name][:]
+                            if self.verbose:
+                                print(f"Found {var_key} as {name}")
+                            break
+                
+                # Extract time, lat, lon information
+                # First find time variable
+                time_var = None
+                for name in ['time', 'TIME', 'Time']:
+                    if name in dataset.variables:
+                        time_var = name
                         break
-            
-            # If not found, use first subdataset as fallback
-            if aod_subds is None and subdatasets:
-                aod_subds = subdatasets[0][0]
-                if self.verbose:
-                    print(f"Using first subdataset as fallback: {subdatasets[0][1]}")
-            
-            if aod_subds:
-                # Open subdataset
-                ds = gdal.Open(aod_subds)
-                if ds:
-                    # Get metadata to find scale factor
-                    metadata = ds.GetMetadata()
-                    scale_factor = 0.001  # Default scale factor for MAIAC AOD
-                    
+                
+                # Find lat/lon variables
+                lat_var = None
+                lon_var = None
+                for name in ['lat', 'LAT', 'latitude', 'LATITUDE']:
+                    if name in dataset.variables:
+                        lat_var = name
+                        break
+                
+                for name in ['lon', 'LON', 'longitude', 'LONGITUDE']:
+                    if name in dataset.variables:
+                        lon_var = name
+                        break
+                
+                if time_var is None or lat_var is None or lon_var is None:
                     if self.verbose:
-                        print("Metadata keys:", list(metadata.keys()))
+                        print("Could not find time, lat, or lon variables")
+                    dataset.close()
+                    return False
+                
+                times = dataset.variables[time_var][:]
+                lats = dataset.variables[lat_var][:]
+                lons = dataset.variables[lon_var][:]
+                
+                # Close the dataset now that we've extracted everything we need
+                dataset.close()
+                
+                # Check if we have all the required variables
+                if not all(key in var_data for key in ['PBLH', 'T2M', 'CDH']):
+                    if self.verbose:
+                        print(f"Missing required variables. Found: {list(var_data.keys())}")
+                    return False
+                
+                # Get the data arrays
+                pblh = var_data['PBLH']
+                t2m = var_data['T2M']
+                cdh = var_data['CDH']
+                
+                # For each timestamp in this day
+                day_timestamps = [ts for ts in self.timestamps if ts.date() == day]
+                
+                for ts in day_timestamps:
+                    # Find the closest time index in the MERRA-2 data
+                    hour = ts.hour
+                    t_idx = self.timestamps.get_loc(ts)
+                    
+                    # Ensure the hour index is valid
+                    if hour >= len(times):
+                        if self.verbose:
+                            print(f"Hour {hour} exceeds available time steps {len(times)}")
+                        continue
+                    
+                    try:
+                        # Use scipy zoom instead of OpenCV resize
+                        from scipy.ndimage import zoom
                         
-                    # Look for scale factor in metadata
-                    for key in metadata:
-                        if 'scale' in key.lower():
-                            try:
-                                scale_factor = float(metadata[key])
-                                if self.verbose:
-                                    print(f"Found scale factor in metadata: {scale_factor}")
-                            except:
-                                if self.verbose:
-                                    print(f"Could not convert scale factor '{metadata[key]}' to float")
-                    
-                    # Read data
-                    band = ds.GetRasterBand(1)
-                    img = band.ReadAsArray()
-                    
-                    # Find fill value or invalid value in metadata
-                    fill_value = -9999  # Default fill value
-                    for key in metadata:
-                        if any(term in key.lower() for term in ['fill', 'nodata', '_fillvalue']):
-                            try:
-                                fill_value = float(metadata[key])
-                                if self.verbose:
-                                    print(f"Found fill value in metadata: {fill_value}")
-                            except:
-                                if self.verbose:
-                                    print(f"Could not convert fill value '{metadata[key]}' to float")
-                    
-                    # Close datasets
-                    band = None
-                    ds = None
-                    hdf_ds = None
-                    
-                    # Convert multi-dimensional to 2D if needed
-                    if len(img.shape) > 2:
-                        if self.verbose:
-                            print(f"Converting multi-dimensional data {img.shape} to 2D")
-                        img = img[:,:,0]  # Take first layer
-                    
-                    # Handle fill values - set to 0 as is standard for AOD missing data
-                    img = img.astype(np.float32)
-                    img[img == fill_value] = 0
-                    
-                    # Handle negative values - set to 0 as AOD cannot be negative
-                    img[img < 0] = 0
-                    
-                    # Apply scale factor to get physical AOD values
-                    # AOD values are typically between 0 and 5
-                    if np.max(img) > 10:  # If values are still in raw count form
-                        img = img * scale_factor
-                        if self.verbose:
-                            print(f"Applied scale factor {scale_factor} to AOD data")
-                    
-                    # Print statistics for debugging
-                    if self.verbose:
-                        print(f"AOD data statistics:")
-                        print(f"  Min: {np.min(img)}")
-                        print(f"  Max: {np.max(img)}")
-                        print(f"  Mean: {np.mean(img)}")
-                        zero_percent = np.sum(img == 0) / img.size * 100
-                        print(f"  Zero pixels: {zero_percent:.1f}%")
-                        unique_vals = np.unique(img)
-                        print(f"  Unique values: {len(unique_vals)} " + 
-                              (f"(first 10: {unique_vals[:10]})" if len(unique_vals) > 10 else f"({unique_vals})"))
-                    
-                    # Resize to target dimensions
-                    aod_resized = cv2.resize(img, (self.dim, self.dim))
-                    
-                    return aod_resized
-        
-        except Exception as e:
-            if self.verbose:
-                print(f"Error in GDAL processing: {e}")
-                import traceback
-                traceback.print_exc()
-            return None
-    
-    def _process_hdf_with_pyhdf(self, hdf_file):
-        """Process MAIAC HDF file using pyhdf"""
-        if not PYHDF_AVAILABLE:
-            return None
-        
-        try:
-            if self.verbose:
-                print("Processing HDF file with pyhdf")
-            
-            # Open the HDF file
-            hdf = SD(hdf_file, SDC.READ)
-            
-            # List all datasets
-            datasets = hdf.datasets()
-            
-            if self.verbose:
-                print(f"Found {len(datasets)} datasets:")
-                for idx, (dsname, dsinfo) in enumerate(datasets.items()):
-                    print(f"  {idx}: {dsname} - {dsinfo}")
-            
-            # Look for AOD dataset
-            aod_ds_name = None
-            for dsname in datasets.keys():
-                if any(term in dsname for term in ['Optical_Depth_055', 'AOD', 'Optical', 'Aerosol']):
-                    aod_ds_name = dsname
-                    if self.verbose:
-                        print(f"Found AOD dataset: {dsname}")
-                    break
-            
-            # If not found, use first dataset as fallback
-            if aod_ds_name is None and len(datasets) > 0:
-                aod_ds_name = list(datasets.keys())[0]
-                if self.verbose:
-                    print(f"Using first dataset as fallback: {aod_ds_name}")
-            
-            if aod_ds_name:
-                # Get the dataset
-                aod_ds = hdf.select(aod_ds_name)
-                
-                # Get attributes to find scale factor and fill value
-                attrs = aod_ds.attributes()
-                
-                if self.verbose:
-                    print("Dataset attributes:", attrs)
-                
-                # Look for scale factor
-                scale_factor = 0.001  # Default scale factor for MAIAC AOD
-                for attr_name, attr_value in attrs.items():
-                    if 'scale' in attr_name.lower():
+                        # Extract the data for this hour
                         try:
-                            scale_factor = float(attr_value)
+                            # Check if data has a time dimension
+                            if len(pblh.shape) > 2:  # Has time dimension
+                                pblh_hour = pblh[hour]
+                                t2m_hour = t2m[hour]
+                                cdh_hour = cdh[hour]
+                            else:  # No time dimension
+                                pblh_hour = pblh
+                                t2m_hour = t2m
+                                cdh_hour = cdh
+                        except IndexError:
                             if self.verbose:
-                                print(f"Found scale factor in attributes: {scale_factor}")
-                        except:
+                                print(f"Index error for hour {hour}")
+                            continue
+                        
+                        # Check for valid dimensions
+                        if pblh_hour.shape[0] == 0 or pblh_hour.shape[1] == 0:
                             if self.verbose:
-                                print(f"Could not convert scale factor '{attr_value}' to float")
+                                print(f"Invalid dimensions: {pblh_hour.shape}")
+                            continue
+                        
+                        # Calculate zoom factors
+                        zoom_y = self.dim / pblh_hour.shape[0]
+                        zoom_x = self.dim / pblh_hour.shape[1]
+                        
+                        # Apply zoom to resize the data
+                        pblh_grid = zoom(pblh_hour, (zoom_y, zoom_x), order=1, mode='nearest')
+                        t2m_grid = zoom(t2m_hour, (zoom_y, zoom_x), order=1, mode='nearest')
+                        cdh_grid = zoom(cdh_hour, (zoom_y, zoom_x), order=1, mode='nearest')
+                        
+                        # Store the data
+                        merra2_data[t_idx, :, :, 0] = pblh_grid  # PBL Height
+                        merra2_data[t_idx, :, :, 1] = t2m_grid   # Surface Air Temperature
+                        merra2_data[t_idx, :, :, 2] = cdh_grid   # Surface Exchange Coefficient
+                        
+                        if self.verbose:
+                            print(f"Processed MERRA-2 data for timestamp {ts}")
+                    
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"Error processing timestamp {ts}: {e}")
+                        continue
                 
-                # Look for fill value
-                fill_value = -9999  # Default fill value
-                for attr_name, attr_value in attrs.items():
-                    if any(term in attr_name.lower() for term in ['fill', 'nodata', '_fillvalue']):
-                        try:
-                            fill_value = float(attr_value)
-                            if self.verbose:
-                                print(f"Found fill value in attributes: {fill_value}")
-                        except:
-                            if self.verbose:
-                                print(f"Could not convert fill value '{attr_value}' to float")
+                return True  # Successfully processed the granule
                 
-                # Read the data
-                img = aod_ds.get()
-                
-                # Close the file
-                hdf.end()
-                
-                # Handle multi-dimensional data
-                if len(img.shape) > 2:
-                    if self.verbose:
-                        print(f"Converting multi-dimensional data {img.shape} to 2D")
-                    img = img[:,:,0]  # Take first layer
-                
-                # Handle fill values - set to 0 as is standard for AOD missing data
-                img = img.astype(np.float32)
-                img[img == fill_value] = 0
-                
-                # Handle negative values - set to 0 as AOD cannot be negative
-                img[img < 0] = 0
-                
-                # Apply scale factor to get physical AOD values
-                if np.max(img) > 10:  # If values are still in raw count form
-                    img = img * scale_factor
-                    if self.verbose:
-                        print(f"Applied scale factor {scale_factor} to AOD data")
-                
-                # Print statistics for debugging
+            except ImportError:
                 if self.verbose:
-                    print(f"AOD data statistics:")
-                    print(f"  Min: {np.min(img)}")
-                    print(f"  Max: {np.max(img)}")
-                    print(f"  Mean: {np.mean(img)}")
-                    zero_percent = np.sum(img == 0) / img.size * 100
-                    print(f"  Zero pixels: {zero_percent:.1f}%")
-                    unique_vals = np.unique(img)
-                    print(f"  Unique values: {len(unique_vals)} " + 
-                          (f"(first 10: {unique_vals[:10]})" if len(unique_vals) > 10 else f"({unique_vals})"))
+                    print("netCDF4 library not available. Cannot process MERRA-2 data.")
+                return False
                 
-                # Resize to target dimensions
-                aod_resized = cv2.resize(img, (self.dim, self.dim))
-                
-                return aod_resized
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error processing MERRA-2 NetCDF file: {e}")
+                    import traceback
+                    traceback.print_exc()
+                return False
         
         except Exception as e:
             if self.verbose:
-                print(f"Error in pyhdf processing: {e}")
+                print(f"Error downloading or processing MERRA-2 data: {e}")
                 import traceback
                 traceback.print_exc()
-            return None
+            return False
+        
+        finally:
+            # Clean up the temporary file
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Warning: Failed to remove temp file: {e}")
+            
+            return False  # If we reach here, something went wrong
     
-    def _process_hdf_with_skimage(self, hdf_file):
-        """Process MAIAC HDF file using skimage - matches approach in pm25Script_noGCN.py"""
-        if not SKIMAGE_AVAILABLE:
-            return None
+    def _get_metar_data(self):
+        """
+        Get meteorological data from Iowa State University METAR ASOS Dataset.
         
-        try:
+        This function fetches meteorological data from the Iowa Environmental Mesonet (IEM)
+        ASOS/AWOS/METAR database, which provides hourly weather observations from airports
+        around the world. For Los Angeles County, we use several key stations.
+        
+        The data includes:
+        - Wind Speed (mph)
+        - Wind Direction (deg)
+        - Precipitation (inch)
+        - Relative Humidity (%)
+        - Heat Index/Wind Chill (F)
+        - Air Temperature (F)
+        - Air Pressure (mb)
+        - Dew Point (F)
+        - AQI (derived from other parameters)
+        
+        Returns:
+        --------
+        numpy.ndarray
+            METAR meteorological data with shape (n_timestamps, dim, dim, n_features)
+        """
+        cache_file = os.path.join(self.cache_dir, 'metar_data.npy')
+        
+        if self.use_cached_data and os.path.exists(cache_file):
             if self.verbose:
-                print("Processing HDF file with skimage (same as pm25Script_noGCN.py)")
-            
-            # This is the exact approach used in pm25Script_noGCN.py
-            img = io.imread(hdf_file)
+                print(f"Loading cached METAR data from {cache_file}")
+            return np.load(cache_file)
+        
+        # Initialize empty array for METAR data
+        # 9 channels: Wind Speed, Wind Direction, Precipitation, AQI, Humidity, Heat Index, 
+        # Air Temperature, Air Pressure, Dew Point
+        metar_data = np.zeros((self.n_timestamps, self.dim, self.dim, 9))
+        
+        # Define Los Angeles area ASOS/AWOS stations that are within our geographic bounds
+        la_stations = self.metar_sensors
+        
+        # Filter stations to only those within our geographic bounds
+        min_lon, max_lon, min_lat, max_lat = self.extent
+        stations_in_bounds = [
+            station for station in la_stations
+            if min_lon <= station['lon'] <= max_lon and min_lat <= station['lat'] <= max_lat
+        ]
+        
+        if not stations_in_bounds:
+            if self.verbose:
+                print("Warning: No METAR stations found within the specified geographic bounds!")
+                print("Using stations closest to the bounds instead.")
+            # Use all stations if none are in bounds
+            stations_in_bounds = la_stations
+        
+        if self.verbose:
+            print(f"Using {len(stations_in_bounds)} METAR stations for meteorological data:")
+            for station in stations_in_bounds:
+                print(f"  {station['id']} - {station['name']} ({station['lat']}, {station['lon']})")
+        
+        # Extract station IDs for API request
+        station_ids = [station['id'] for station in stations_in_bounds]
+        
+        # Create a station lookup dictionary for quick reference
+        station_lookup = {station['id']: station for station in stations_in_bounds}
+        
+        # Break the full date range into chunks to avoid too large requests
+        # IEM recommends not requesting more than a few months at a time
+        chunk_size = pd.Timedelta(days=90)  # 3 months chunks
+        current_start = self.start_date
+        
+        # Dictionary to store all fetched data
+        all_station_data = {}
+        
+        # Fetch data in chunks
+        while current_start < self.end_date:
+            current_end = min(current_start + chunk_size, self.end_date)
             
             if self.verbose:
-                print(f"Image shape after reading: {img.shape}")
-                print(f"Image dtype: {img.dtype}")
+                print(f"Fetching METAR data chunk: {current_start.date()} to {current_end.date()}")
             
-            if len(img.shape) > 2:
-                # Use rgb2gray if image has multiple channels
-                img = rgb2gray(img)
+            # Fetch data for this chunk
+            chunk_data = self._fetch_iem_metar_data(station_ids, current_start, current_end)
+            
+            # Merge with overall data
+            for station_id, data in chunk_data.items():
+                if station_id not in all_station_data:
+                    all_station_data[station_id] = []
+                all_station_data[station_id].extend(data)
+            
+            # Move to next chunk
+            current_start = current_end
+        
+        if self.verbose:
+            print("METAR data fetching complete")
+            for station_id, data in all_station_data.items():
+                print(f"  Station {station_id}: {len(data)} total records")
+        
+        # Process the station data into timestamp-keyed data
+        timestamp_data = self._process_timestamp_data(all_station_data, station_lookup)
+        
+        # Now process each timestamp in our sequence
+        for t_idx, timestamp in enumerate(self.timestamps):
+            ts_key = timestamp.strftime('%Y-%m-%d-%H')
+            
+            # Get data for this timestamp
+            ts_data = timestamp_data.get(ts_key, [])
+            
+            if not ts_data and self.verbose:
+                print(f"No METAR data available for timestamp {ts_key}")
+                
+            # For each meteorological variable, extract values and interpolate
+            for v_idx, var_name in enumerate(['sknt', 'drct', 'p01i', 'aqi', 'relh', 'feel', 'tmpf', 'mslp', 'dwpf']):
+                # Special handling for AQI which is not in METAR data
+                if var_name == 'aqi':
+                    # Skip AQI as it's not available in METAR data
+                    # We'll leave it as zeros
+                    continue
+                
+                # Extract point data for this variable
+                point_data = []
+                for station_data in ts_data:
+                    # Check if this station has data for this variable
+                    value = station_data['values'].get(var_name)
+                    if value is not None and not np.isnan(value):
+                        point_data.append({
+                            'lat': station_data['lat'],
+                            'lon': station_data['lon'],
+                            'value': value
+                        })
+                
+                # Skip interpolation if no data points available
+                if not point_data:
+                    continue
+                
+                # Interpolate to grid
+                try:
+                    grid = self._interpolate_to_grid(point_data, self.dim, self.dim, self.extent)
+                    metar_data[t_idx, :, :, v_idx] = grid
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Error interpolating {var_name} at {ts_key}: {e}")
+                    continue
+                    
+            # Units conversion if needed
+            # Convert knots to mph for wind speed
+            metar_data[t_idx, :, :, 0] *= 1.15078  # knots to mph conversion
+        
+        if self.verbose:
+            print(f"Created METAR data with shape {metar_data.shape}")
+        
+        # Save to cache
+        np.save(cache_file, metar_data)
+        return metar_data
+    
+    def _fetch_iem_metar_data(self, stations, start_date, end_date):
+        """
+        Fetch METAR data from the Iowa Environmental Mesonet (IEM) API.
+        
+        Parameters:
+        -----------
+        stations : list of str
+            List of station IDs to fetch data for
+        start_date : datetime
+            Start date for data collection
+        end_date : datetime
+            End date for data collection
+        
+        Returns:
+        --------
+        dict
+            Dictionary with station IDs as keys and lists of data records as values
+        """
+        if not stations:
+            if self.verbose:
+                print("No stations specified for IEM METAR data fetch")
+            return {}
+        
+        # Convert station list to comma-separated string
+        station_str = ",".join(stations)
+        
+        # Format dates for API request
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+        
+        # Build API URL for IEM's ASOS/AWOS data service
+        api_url = (
+            'http://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?'
+            f'station={station_str}&'
+            'data=tmpf,dwpf,relh,drct,sknt,p01i,alti,mslp,feel&'
+            f'year1={start_date.year}&month1={start_date.month}&day1={start_date.day}&'
+            f'year2={end_date.year}&month2={end_date.month}&day2={end_date.day}&'
+            'tz=Etc/UTC&format=comma&latlon=yes'
+        )
+        
+        if self.verbose:
+            print(f"Requesting METAR data for {len(stations)} stations from {start_str} to {end_str}")
+            print(f"API URL: {api_url}")
+        
+        # Use the robust download approach with multiple attempts
+        max_attempts = 6
+        attempt = 0
+        
+        while attempt < max_attempts:
+            try:
+                if self.verbose and attempt > 0:
+                    print(f"Attempt {attempt+1}/{max_attempts} to fetch METAR data")
+                    
+                response = requests.get(api_url, timeout=300)  # 5-minute timeout
+                
+                if response.status_code == 200:
+                    csv_data = response.text
+                    
+                    # Check if we got an error message
+                    if csv_data.startswith("#ERROR"):
+                        if self.verbose:
+                            print(f"Error from IEM API: {csv_data}")
+                        attempt += 1
+                        time.sleep(5)  # Wait before retry
+                        continue
+                    
+                    # Save raw data for debugging
+                    raw_file = os.path.join(self.cache_dir, f"metar_raw_{start_str}_to_{end_str}.csv")
+                    with open(raw_file, 'w', encoding='utf-8') as f:
+                        f.write(csv_data)
+                    
+                    if self.verbose:
+                        print(f"Raw METAR data saved to {raw_file}")
+                    
+                    # Process the CSV data into station dictionaries
+                    try:
+                        # Parse CSV using pandas with more robust options
+                        df = pd.read_csv(
+                            io.StringIO(csv_data),
+                            comment='#',           # Skip comment lines
+                            skip_blank_lines=True,  # Skip blank lines
+                            on_bad_lines='warn'    # Be more forgiving with malformed lines
+                        )
+                        
+                        # Initialize the station data dictionary
+                        station_data = {station: [] for station in stations}
+                        
+                        # Group by station
+                        for station_id in stations:
+                            station_df = df[df['station'] == station_id]
+                            if len(station_df) > 0:
+                                # Convert to list of dictionaries
+                                station_data[station_id] = station_df.to_dict('records')
+                                if self.verbose:
+                                    print(f"  Received {len(station_data[station_id])} records for station {station_id}")
+                            else:
+                                if self.verbose:
+                                    print(f"  No data received for station {station_id}")
+                        
+                        return station_data
+                        
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"Error using pandas to parse CSV: {e}")
+                            print("Falling back to manual CSV parsing")
+                        
+                        # Manual CSV parsing as fallback
+                        lines = csv_data.strip().split('\n')
+                        if len(lines) <= 1:
+                            if self.verbose:
+                                print("No data returned from IEM API")
+                            return {station: [] for station in stations}
+                            
+                        # Get header line
+                        header = lines[0].split(',')
+                        
+                        # Process data lines
+                        station_data = {station: [] for station in stations}
+                        for line in lines[1:]:
+                            if not line.strip() or line.startswith('#'):
+                                continue
+                                
+                            values = line.split(',')
+                            if len(values) != len(header):
+                                continue
+                                
+                            # Create data row
+                            row = dict(zip(header, values))
+                            
+                            # Get station ID
+                            station_id = row.get('station')
+                            if not station_id or station_id not in stations:
+                                continue
+                                
+                            # Add data to station dict
+                            station_data[station_id].append(row)
+                        
+                        if self.verbose:
+                            for station_id, data in station_data.items():
+                                print(f"  Received {len(data)} records for station {station_id}")
+                                
+                        return station_data
+                else:
+                    if self.verbose:
+                        print(f"Error fetching IEM METAR data: HTTP {response.status_code}")
+                    attempt += 1
+                    time.sleep(5)  # Wait before retry
+                    continue
+                    
+            except Exception as e:
                 if self.verbose:
-                    print(f"Converted to grayscale: {img.shape}")
+                    print(f"Exception when fetching IEM METAR data: {e}")
+                    import traceback
+                    traceback.print_exc()
+                attempt += 1
+                time.sleep(5)  # Wait before retry
+                continue
+        
+        if self.verbose:
+            print("Exhausted attempts to download METAR data, returning empty data")
+        return {station: [] for station in stations}  # Return empty lists for all stations
+
+
+    def _process_timestamp_data(self, all_station_data, station_lookup):
+        """
+        Process station data into a dictionary keyed by timestamp.
+        
+        Parameters:
+        -----------
+        all_station_data : dict
+            Dictionary with station IDs as keys and lists of data records as values
+        station_lookup : dict
+            Dictionary mapping station IDs to station information
             
-            # Apply scale factor (0.001 is standard for MAIAC AOD)
-            scale_factor = 0.001
-            img = img.astype(np.float32) * scale_factor
+        Returns:
+        --------
+        dict
+            Dictionary with timestamp keys and lists of station data for each timestamp
+        """
+        timestamp_data = {}
+        
+        for station_id, records in all_station_data.items():
+            station_info = station_lookup.get(station_id)
+            if not station_info:
+                continue
+                
+            for record in records:
+                # Extract timestamp from record
+                try:
+                    timestamp_str = record.get('valid', '')
+                    timestamp = pd.to_datetime(timestamp_str)
+                    
+                    # Round to nearest hour to match our timestamps
+                    timestamp = timestamp.round('H')
+                    
+                    # Create a key for this timestamp
+                    ts_key = timestamp.strftime('%Y-%m-%d-%H')
+                    
+                    # Initialize this timestamp's data if not exists
+                    if ts_key not in timestamp_data:
+                        timestamp_data[ts_key] = []
+                    
+                    # Extract values and convert to float where possible
+                    values = {}
+                    for field in ['tmpf', 'dwpf', 'relh', 'drct', 'sknt', 'p01i', 'mslp', 'feel']:
+                        try:
+                            # Check if the value is already a float
+                            field_value = record.get(field, 'M')
+                            if isinstance(field_value, float):
+                                values[field] = field_value if not np.isnan(field_value) else float('nan')
+                            else:
+                                # It's a string, do the string replacement
+                                values[field] = float(str(field_value).replace('M', 'nan'))
+                        except (ValueError, TypeError):
+                            values[field] = float('nan')
+                    
+                    # Add this station's data to the timestamp
+                    timestamp_data[ts_key].append({
+                        'lat': station_info['lat'],
+                        'lon': station_info['lon'],
+                        'values': values
+                    })
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Error processing record from {station_id}: {e}")
+                    continue
+                    
+        if self.verbose:
+            print(f"Processed data for {len(timestamp_data)} unique hourly timestamps")
             
-            # Handle negative values - set to 0 as AOD cannot be negative
-            img[img < 0] = 0
+        return timestamp_data
+    
+    def _process_metar_csv(self, csv_data, stations):
+        """
+        Process CSV data from IEM METAR API into structured dictionary.
+        
+        Parameters:
+        -----------
+        csv_data : str
+            CSV data from IEM API
+        stations : list of str
+            List of station IDs
             
-            if self.verbose:
-                print(f"Applied scale factor {scale_factor}. New range: {np.min(img)} to {np.max(img)}")
+        Returns:
+        --------
+        dict
+            Dictionary with station IDs as keys and lists of data records as values
+        """
+        # Initialize empty data dictionaries for each station
+    def _process_metar_csv(self, csv_data, stations):
+            """
+            Process CSV data from IEM METAR API into structured dictionary.
             
-            # Resize to the desired dimensions
-            maiac = cv2.resize(img, (self.dim, self.dim))
+            Parameters:
+            -----------
+            csv_data : str
+                CSV data from IEM API
+            stations : list of str
+                List of station IDs
+                
+            Returns:
+            --------
+            dict
+                Dictionary with station IDs as keys and lists of data records as values
+            """
+            # Initialize empty data dictionaries for each station
+            station_data = {station: [] for station in stations}
             
-            return maiac
-            
-        except Exception as e:
-            if self.verbose:
-                print(f"Error in skimage processing: {e}")
-                import traceback
-                traceback.print_exc()
-            return None
+            try:
+                # Try using pandas for efficient CSV parsing
+                df = pd.read_csv(io.StringIO(csv_data))
+                
+                # Group by station
+                for station_id in stations:
+                    station_df = df[df['station'] == station_id]
+                    if len(station_df) > 0:
+                        # Convert to list of dictionaries
+                        station_data[station_id] = station_df.to_dict('records')
+                        if self.verbose:
+                            print(f"  Received {len(station_data[station_id])} records for station {station_id}")
+                    else:
+                        if self.verbose:
+                            print(f"  No data received for station {station_id}")
+                
+                return station_data
+                
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error using pandas to parse CSV: {e}")
+                    print("Falling back to manual CSV parsing")
+                
+                # Manual CSV parsing as fallback
+                lines = csv_data.strip().split('\n')
+                if len(lines) <= 1:
+                    if self.verbose:
+                        print("No data returned from IEM API")
+                    return station_data
+                    
+                # Get header line
+                header = lines[0].split(',')
+                
+                # Process data lines
+                for line in lines[1:]:
+                    if not line.strip() or line.startswith('#'):
+                        continue
+                        
+                    values = line.split(',')
+                    if len(values) != len(header):
+                        continue
+                        
+                    # Create data row
+                    row = dict(zip(header, values))
+                    
+                    # Get station ID
+                    station_id = row.get('station')
+                    if not station_id or station_id not in stations:
+                        continue
+                        
+                    # Add data to station dict
+                    station_data[station_id].append(row)
+                
+                if self.verbose:
+                    for station_id, data in station_data.items():
+                        print(f"  Received {len(data)} records for station {station_id}")
+                        
+                return station_data
     
     def _sliding_window_of(self, frames, window_size):
-        """Create sliding window samples"""
+        """
+        Create sliding window samples from sequential frames.
+        
+        Parameters:
+        -----------
+        frames : numpy.ndarray
+            Sequential frames with shape (n_timestamps, height, width, channels)
+        window_size : int
+            Number of consecutive frames to include in each sample
+        
+        Returns:
+        --------
+        numpy.ndarray
+            Sliding window samples with shape (n_samples, window_size, height, width, channels)
+        """
         n_frames, row, col, channels = frames.shape
         n_samples = n_frames - window_size + 1
         
@@ -863,126 +1861,281 @@ class PWWBData:
         
         return samples
     
-    def get_channel_info(self):
-        """Return information about the channels in the dataset"""
-        channel_order = [
-            'Landsat_SR_B1',       # 0
-            'Landsat_SR_B7',       # 1
-            'Landsat_QA_AEROSOL',  # 2
-            'MAIAC_AOD',           # 3
-        ]
+    def _interpolate_to_grid(self, point_data, rows, cols, extent, method='cubic'):
+        """
+        Interpolate point data to a regular grid.
         
-        return {
-            'landsat_bands': ['SR_B1', 'SR_B7', 'SR_QA_AEROSOL'],
-            'maiac_bands': ['AOD_550nm'],
-            'total_channels': len(channel_order),
-            'channel_order': channel_order
-        }
-    
-    def visualize_combined_data(self, data, channel_names):
-        """Visualize all channels in the combined data with physical value ranges."""
-        if not self.verbose:
-            return
+        Parameters:
+        -----------
+        point_data : list of dict
+            List of dictionaries with 'lat', 'lon', and 'value' keys
+        rows : int
+            Number of rows in the output grid
+        cols : int
+            Number of columns in the output grid
+        extent : tuple
+            Geographic bounds in format (min_lon, max_lon, min_lat, max_lat)
+        method : str, optional
+            Interpolation method to use: 'nearest', 'linear', or 'cubic'
             
-        num_channels = data.shape[-1]
-        
-        # Calculate subplot grid dimensions
-        cols = min(3, num_channels)
-        rows = (num_channels + cols - 1) // cols
-        
-        fig, axes = plt.subplots(rows, cols, figsize=(cols*5, rows*4))
-        
-        # Convert to 1D array for easier indexing
-        axes = np.array(axes).ravel()
-        
-        for i, channel_name in enumerate(channel_names):
-            if i < num_channels:
-                ax = axes[i]
-                channel_data = data[0, 0, :, :, i]
+        Returns:
+        --------
+        numpy.ndarray
+            Interpolated grid with shape (rows, cols)
+        """
+        try:
+            from scipy.interpolate import griddata
+            
+            # Check if we have enough points for the requested method
+            if method == 'cubic' and len(point_data) < 4:
+                method = 'linear'
+            if method == 'linear' and len(point_data) < 3:
+                method = 'nearest'
+            if len(point_data) < 1:
+                return np.zeros((rows, cols))
                 
-                # Calculate appropriate min/max based on physical meaning of the data
-                if "MAIAC" in channel_name or "AOD" in channel_name:
-                    # AOD values typically range from 0 to 5
-                    vmin = 0
-                    vmax = min(5.0, np.max(channel_data)) if np.max(channel_data) > 0 else 1.0
-                else:
-                    # For Landsat data, use data-driven approach
-                    non_zero = channel_data[channel_data != 0]
-                    if len(non_zero) > 0:
-                        vmin = np.min(non_zero)
-                        vmax = np.percentile(non_zero, 99)
+            # Extract points and values
+            points = np.array([(p['lon'], p['lat']) for p in point_data])
+            values = np.array([p['value'] for p in point_data])
+            
+            # Create regular grid
+            lon_min, lon_max, lat_min, lat_max = extent
+            x = np.linspace(lon_min, lon_max, cols)
+            y = np.linspace(lat_min, lat_max, rows)
+            xx, yy = np.meshgrid(x, y)
+            
+            # Interpolate
+            grid = griddata(points, values, (xx, yy), method=method, fill_value=0)
+            
+            return grid
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"Interpolation error: {e}")
+                print("Falling back to simple distance-weighted interpolation")
+            
+            # Simple distance-weighted interpolation as fallback
+            grid = np.zeros((rows, cols))
+            lon_min, lon_max, lat_min, lat_max = extent
+            
+            # Calculate grid coordinates
+            x_step = (lon_max - lon_min) / (cols - 1)
+            y_step = (lat_max - lat_min) / (rows - 1)
+            
+            for i in range(rows):
+                for j in range(cols):
+                    # Calculate the lat/lon for this grid point
+                    lon = lon_min + j * x_step
+                    lat = lat_min + i * y_step
+                    
+                    # Calculate weighted value based on inverse distance
+                    total_weight = 0
+                    weighted_sum = 0
+                    
+                    for point in point_data:
+                        # Calculate distance to this point
+                        dist = np.sqrt((lon - point['lon'])**2 + 
+                                      (lat - point['lat'])**2)
+                        
+                        # Avoid division by zero
+                        if dist < 1e-10:
+                            return point['value']
+                        
+                        # Weight is inverse of distance squared
+                        weight = 1.0 / (dist**2)
+                        total_weight += weight
+                        weighted_sum += weight * point['value']
+                    
+                    if total_weight > 0:
+                        grid[i, j] = weighted_sum / total_weight
                     else:
-                        vmin = 0
-                        vmax = 1
-
-                normalized_data = (channel_data - vmin) / (vmax - vmin)
-                im = ax.imshow(normalized_data, cmap='viridis')
-                ax.set_title(f"Channel {i}: {channel_name}")
-                plt.colorbar(im, ax=ax)
-                ax.axis('off')
+                        grid[i, j] = 0
+            
+            return grid
+    
+    def _fetch_airnow_data(self, lat, lon, date, hour):
+        """
+        Fetch PM2.5 data from AirNow API for a specific location and time.
         
-        # Hide unused subplots
-        for i in range(num_channels, len(axes)):
-            axes[i].axis('off')
+        Parameters:
+        -----------
+        lat : float
+            Latitude
+        lon : float
+            Longitude
+        date : str
+            Date in 'YYYY-MM-DD' format
+        hour : int
+            Hour (0-23)
         
-        plt.tight_layout()
-        output_file = os.path.join(self.output_dir, 'combined_channels_visualization.png')
-        plt.savefig(output_file)
-        plt.close()
+        Returns:
+        --------
+        float
+            PM2.5 value
+        """
+        if not self.airnow_api_key:
+            if self.verbose:
+                print("No AirNow API key found. Cannot fetch real PM2.5 data.")
+            return 0.0  # Return zero instead of random data
         
-        print(f"Visualization saved to '{output_file}'")
+        # AirNow API parameters
+        params = {
+            'latitude': lat,
+            'longitude': lon,
+            'format': 'application/json',
+            'API_KEY': self.airnow_api_key,
+            'parameter': 'PM25',
+            'date': date,
+            'hour': hour
+        }
+        
+        # Build URL
+        base_url = 'http://www.airnowapi.org/aq/observation/latLong/historical/'
+        url = f"{base_url}?{urlencode(params)}"
+        
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    return float(data[0]['AQI'])
+                else:
+                    if self.verbose:
+                        print(f"No data returned for {lat}, {lon} at {date} {hour}:00")
+                    return 0.0
+            else:
+                if self.verbose:
+                    print(f"Error fetching AirNow data: {response.status_code}")
+                return 0.0
+        except Exception as e:
+            if self.verbose:
+                print(f"Exception when fetching AirNow data: {e}")
+            return 0.0
     
     def _print_data_statistics(self):
         """Print detailed statistics about the final data"""
         if not self.verbose:
             return
         
-        print("\nData Statistics:")
-        print("===============")
+        # Print basic stats about the combined data
+        print("\nChannel Statistics:")
+        print("===================")
         
-        print("\nMAIAC Data:")
-        maiac_data = self.maiac_data
+        # Get the total number of channels
+        total_channels = self.all_channels.shape[-1]
         
-        # Get first 10 timestamps
-        days_to_check = min(10, maiac_data.shape[0])
+        # Define channel names based on the documentation
+        channel_info = self.get_channel_info()
         
-        for day_idx in range(days_to_check):
-            day_data = maiac_data[day_idx, :, :, 0]
-            non_zero = np.count_nonzero(day_data)
-            if non_zero > 0:
-                print(f"  Day {day_idx} stats:")
-                print(f"    Min: {np.min(day_data):.5f}")
-                print(f"    Max: {np.max(day_data):.5f}")
-                print(f"    Mean: {np.mean(day_data):.5f}")
-                print(f"    Data coverage: {non_zero/day_data.size*100:.2f}%")
-        
-        print("\nLandsat Data:")
-        landsat_data = self.landsat_data
-        
-        # Calculate Landsat statistics for each band
-        for band_idx in range(landsat_data.shape[3]):
-            band_data = landsat_data[0, :, :, band_idx]
-            non_zero = np.count_nonzero(band_data)
-            print(f"  Band {band_idx} stats:")
-            print(f"    Min: {np.min(band_data)}")
-            print(f"    Max: {np.max(band_data)}")
-            print(f"    Mean: {np.mean(band_data)}")
-            print(f"    Data coverage: {non_zero/band_data.size*100:.2f}%")
+        # Print stats for each channel
+        for i, channel_name in enumerate(channel_info['channel_names']):
+            if i < total_channels:
+                channel_data = self.all_channels[0, :, :, i]  # First timestamp
+                
+                print(f"\nChannel {i}: {channel_name}")
+                print(f"  Min: {np.min(channel_data)}")
+                print(f"  Max: {np.max(channel_data)}")
+                print(f"  Mean: {np.mean(channel_data)}")
+                print(f"  Std: {np.std(channel_data)}")
+                
+                # Count non-zero values
+                non_zero = np.count_nonzero(channel_data)
+                total = channel_data.size
+                print(f"  Data coverage: {non_zero/total*100:.2f}% ({non_zero}/{total} non-zero pixels)")
         
         print("\nFinal Data Shape:")
         print(f"  {self.data.shape[0]} samples")
         print(f"  {self.data.shape[1]} frames per sample")
         print(f"  {self.data.shape[2]}x{self.data.shape[3]} grid size")
         print(f"  {self.data.shape[4]} channels")
-
+        
+        print("\nData Memory Usage:")
+        data_size_bytes = self.data.nbytes
+        data_size_mb = data_size_bytes / (1024 * 1024)
+        print(f"  {data_size_mb:.2f} MB")
+    
+    def get_channel_info(self):
+        """
+        Get information about the channels in the dataset.
+        
+        Returns:
+        --------
+        dict
+            Dictionary with channel information
+        """
+        # Define channel names based on the documentation
+        # NOTE: Ground-level PM2.5 data is provided by the AirNowData class
+        
+        maiac_channels = ['MAIAC_AOD']
+        
+        tropomi_channels = [
+            'TROPOMI_Methane',
+            'TROPOMI_NO2',
+            'TROPOMI_CO'
+        ]
+        
+        modis_fire_channels = ['MODIS_FRP']
+        
+        merra2_channels = [
+            'MERRA2_PBL_Height',
+            'MERRA2_Surface_Air_Temp',
+            'MERRA2_Surface_Exchange_Coef'
+        ]
+        
+        metar_channels = [
+            'METAR_Wind_Speed',
+            'METAR_Wind_Direction',
+            'METAR_Precipitation',
+            'METAR_AQI',
+            'METAR_Humidity',
+            'METAR_Heat_Index',
+            'METAR_Air_Temp',
+            'METAR_Air_Pressure',
+            'METAR_Dew_Point'
+        ]
+        
+        # Combine all channel names
+        channel_names = (
+            maiac_channels +
+            tropomi_channels +
+            modis_fire_channels +
+            merra2_channels +
+            metar_channels
+        )
+        
+        return {
+            'maiac_channels': maiac_channels,
+            'tropomi_channels': tropomi_channels,
+            'modis_fire_channels': modis_fire_channels,
+            'merra2_channels': merra2_channels,
+            'metar_channels': metar_channels,
+            'channel_names': channel_names,
+            'channel_order': channel_names,  # Alias for compatibility
+            'total_channels': len(channel_names)
+        }
+    
     def save_data(self, filepath):
-        """Save the processed data to a file"""
+        """
+        Save the processed data to a file.
+        
+        Parameters:
+        -----------
+        filepath : str
+            Path to save the data file
+        """
         np.save(filepath, self.data)
         if self.verbose:
             print(f"Data saved to {filepath}")
     
     def load_data(self, filepath):
-        """Load processed data from a file"""
+        """
+        Load processed data from a file.
+        
+        Parameters:
+        -----------
+        filepath : str
+            Path to the data file
+        """
         self.data = np.load(filepath)
         if self.verbose:
             print(f"Data loaded from {filepath}")
