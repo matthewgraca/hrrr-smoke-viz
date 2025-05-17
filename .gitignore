@@ -2,3 +2,5 @@ venv/
 .ipynb_checkpoints/
 __pycache__/
 .env
+*.nc4
+pwwb_cache/
