@@ -1,3 +1,26 @@
+'''
+READ THIS if you encounter issues, want to know what to expect from this script.
+
+Install earthaccess: `conda install conda-forge::earthaccess`
+
+1. To avoid typing your credentials every time you run the script, check this out:
+- Create `.netrc` file containing your Earthdata credentials: 
+
+https://lb.gesdisc.eosdis.nasa.gov/meditor/notebookviewer/?notebookUrl=https://github.com/nasa/gesdisc-tutorials/blob/main/notebooks/How_to_Generate_Earthdata_Prerequisite_Files.ipynb#create_python_netrc_earthaccess
+
+2. I encountered an error with libsqlite3.so: 
+First, check out which libsqlite3 you have: `find /home/mgraca/miniconda3/envs/tf-hrrrenv/lib/libsqlite3*`
+-> /home/mgraca/miniconda3/envs/tf-hrrrenv/lib/libsqlite3.so.3.49.1
+
+Script expects "generic" libsqlite3.so, but I had libsqlite3.so.3.49.1, not one with a specific version, so I symlinked the generic to point to the specific one:
+`ln -s /home/mgraca/miniconda3/envs/tf-hrrrenv/lib/libsqlite3.so.3.49.1 /home/mgraca/miniconda3/envs/tf-hrrrenv/lib/libsqlite3.so` 
+
+3. Encountered an error: 
+`ValueError: unrecognized chunk manager dask - must be one of: []`, which means `dask` isn't installed. Ran: `conda install conda-forge::dask`
+
+What to expect: `download()` creates this `.nc4` file: `MERRA2_100.tavg1_2d_slv_Nx.19800101.nc4`, 
+which are the granules. You can also pop open the granules using `xarray` to peek inside.
+'''
 import earthaccess
 import xarray as xr
 
