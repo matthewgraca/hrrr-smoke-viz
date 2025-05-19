@@ -25,7 +25,7 @@ class PWWBData:
         start_date="2018-01-01",
         end_date="2020-12-31",
         extent=(-118.75, -117.5, 33.5, 34.5),  # Default to LA County bounds from doc
-        frames_per_sample=24,  # One day of hourly data
+        frames_per_sample=5,  # One day of hourly data
         dim=200,  # Spatial resolution
         cache_dir='data/pwwb_cache/',
         use_cached_data=True,
@@ -34,7 +34,8 @@ class PWWBData:
         output_dir=None
     ):
         self.start_date = pd.to_datetime(start_date)
-        self.end_date = pd.to_datetime(end_date)
+        self.orig_end_date = pd.to_datetime(end_date)  # Store original for reference
+        self.end_date = self.orig_end_date - pd.Timedelta(hours=1)  # Adjust to last hour of previous day
         self.extent = extent
         self.frames_per_sample = frames_per_sample
         self.dim = dim
@@ -62,6 +63,10 @@ class PWWBData:
         # Generate timestamps at hourly intervals
         self.timestamps = pd.date_range(self.start_date, self.end_date, freq='H')
         self.n_timestamps = len(self.timestamps)
+        
+        if self.verbose:
+            print(f"Initialized PWWBData with {self.n_timestamps} hourly timestamps")
+            print(f"Date range: {self.start_date} to {self.end_date}")
         
         # Define sensor locations from documentation
         self.metar_sensors = [
@@ -988,6 +993,12 @@ class PWWBData:
         # Initialize empty array for MERRA-2 data
         # 3 channels: PBL Height, Surface Air Temperature, Surface Exchange Coefficient for Heat
         merra2_data = np.zeros((self.n_timestamps, self.dim, self.dim, 3))
+        
+        # Also create a native resolution array to preserve original data
+        # We'll use a reasonable maximum size for the extent (4x4, which should be enough for most cases)
+        merra2_native_data = np.zeros((self.n_timestamps, 4, 4, 3))
+        merra2_native_lats = None
+        merra2_native_lons = None
 
         if self.verbose:
             print(f"Fetching MERRA-2 data for period: {self.start_date} to {self.end_date}")
@@ -1081,6 +1092,48 @@ class PWWBData:
                     if self.verbose:
                         print("MERRA-2 dataset opened successfully")
                         print("Available variables:", list(ds.data_vars))
+                        print("Dimensions:", ds.dims)
+                        print("Coordinates:", list(ds.coords))
+                    
+                    # Identify the longitude and latitude dimension names
+                    # MERRA-2 typically uses 'lon' and 'lat', but let's be flexible
+                    try:
+                        lon_dim = next((dim for dim in ds.dims if 'lon' in dim.lower()), None)
+                        lat_dim = next((dim for dim in ds.dims if 'lat' in dim.lower()), None)
+                        
+                        if lon_dim and lat_dim:
+                            if self.verbose:
+                                print(f"Found geographic dimensions: lon={lon_dim}, lat={lat_dim}")
+                                print(f"Original size: {ds.dims[lon_dim]} x {ds.dims[lat_dim]}")
+                                print(f"Subsetting to extent: {min_lon} to {max_lon}, {min_lat} to {max_lat}")
+                            
+                            # Explicitly subset the data to our extent
+                            # Note: For MERRA-2, latitude is typically ascending from south to north
+                            ds = ds.sel({lon_dim: slice(min_lon, max_lon), 
+                                        lat_dim: slice(min_lat, max_lat)}).compute()
+                            
+                            if self.verbose:
+                                print(f"Subset size: {ds.dims[lon_dim]} x {ds.dims[lat_dim]}")
+                                print("Forced computation of dask arrays with .compute()")
+                                print(f"Native MERRA-2 resolution for this extent: {ds.dims[lat_dim]} x {ds.dims[lon_dim]} cells")
+                            
+                            # Dynamically adjust the native data array size based on actual dimensions
+                            actual_lat_cells = ds.dims[lat_dim]
+                            actual_lon_cells = ds.dims[lon_dim]
+                            
+                            # If our pre-allocated array isn't big enough, create a new one
+                            if actual_lat_cells > merra2_native_data.shape[1] or actual_lon_cells > merra2_native_data.shape[2]:
+                                if self.verbose:
+                                    print(f"Resizing native data array to {actual_lat_cells} x {actual_lon_cells}")
+                                merra2_native_data = np.zeros((self.n_timestamps, actual_lat_cells, actual_lon_cells, 3))
+                        else:
+                            if self.verbose:
+                                print("Could not identify longitude and latitude dimensions.")
+                                print("Will process the entire dataset.")
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"Error subsetting data: {e}")
+                            print("Will process the entire dataset.")
                     
                     # Map our desired variables to the actual variable names in the dataset
                     var_actual_names = {}
@@ -1131,17 +1184,42 @@ class PWWBData:
                                 # Convert to numpy array
                                 data_array = data_slice.values
                                 
-                                # Resize to our grid dimensions
-                                from scipy.ndimage import zoom
+                                # Store the native resolution data
+                                # Make sure we don't exceed the array dimensions
+                                h, w = data_array.shape
+                                h = min(h, merra2_native_data.shape[1])
+                                w = min(w, merra2_native_data.shape[2])
+                                merra2_native_data[t_idx, :h, :w, var_idx] = data_array[:h, :w]
                                 
-                                # Calculate zoom factors
-                                zoom_y = self.dim / data_array.shape[0]
-                                zoom_x = self.dim / data_array.shape[1]
+                                # Store grid coordinates for reference (only once)
+                                if t_idx == 0 and var_idx == 0 and lon_dim and lat_dim:
+                                    merra2_native_lons = ds[lon_dim].values
+                                    merra2_native_lats = ds[lat_dim].values
+                                    
+                                    if self.verbose:
+                                        print(f"Stored native grid coordinates: {len(merra2_native_lons)} x {len(merra2_native_lats)}")
+                                        print(f"Longitude range: {merra2_native_lons.min()} to {merra2_native_lons.max()}")
+                                        print(f"Latitude range: {merra2_native_lats.min()} to {merra2_native_lats.max()}")
                                 
-                                # Apply zoom
-                                grid = zoom(data_array, (zoom_y, zoom_x), order=1, mode='nearest')
+                                # Resize for compatibility with other data sources
+                                if data_array.shape[0] != self.dim or data_array.shape[1] != self.dim:
+                                    from scipy.ndimage import zoom
+                                    
+                                    # Calculate zoom factors
+                                    zoom_y = self.dim / data_array.shape[0]
+                                    zoom_x = self.dim / data_array.shape[1]
+                                    
+                                    # Apply zoom with warning about interpolation
+                                    if self.verbose and t_idx == 0 and var_idx == 0:
+                                        print(f"WARNING: Interpolating MERRA-2 data from {data_array.shape} to {self.dim}x{self.dim}")
+                                        print(f"This is a {zoom_y:.1f}x/{zoom_x:.1f}x upsampling factor")
+                                        print("Consider using the native resolution data for analysis")
+                                    
+                                    grid = zoom(data_array, (zoom_y, zoom_x), order=1, mode='nearest')
+                                else:
+                                    grid = data_array
                                 
-                                # Store in our data array
+                                # Store in our interpolated data array
                                 merra2_data[t_idx, :, :, var_idx] = grid
                                 
                             except Exception as e:
@@ -1181,17 +1259,34 @@ class PWWBData:
             # If the current timestamp has all zeros, use the previous timestamp's data
             if np.sum(np.abs(merra2_data[t_idx])) == 0 and np.sum(np.abs(merra2_data[t_idx-1])) > 0:
                 merra2_data[t_idx] = merra2_data[t_idx-1]
+                # Also update native resolution data
+                merra2_native_data[t_idx] = merra2_native_data[t_idx-1]
             # Otherwise, if both have data, add some temporal smoothing
             elif np.sum(np.abs(merra2_data[t_idx])) > 0 and np.sum(np.abs(merra2_data[t_idx-1])) > 0:
                 merra2_data[t_idx] = merra2_data[t_idx-1] * 0.2 + merra2_data[t_idx] * 0.8
+                # Also smooth native resolution data
+                merra2_native_data[t_idx] = merra2_native_data[t_idx-1] * 0.2 + merra2_native_data[t_idx] * 0.8
         
         if self.verbose:
             print(f"Created MERRA-2 data with shape {merra2_data.shape}")
+            print(f"Also preserved native resolution data with shape {merra2_native_data.shape}")
         
+        # Save both to cache
         np.save(cache_file, merra2_data)
+        np.save(os.path.join(self.cache_dir, 'merra2_native_data.npy'), merra2_native_data)
+        
+        # Save native grid coordinates if available
+        if merra2_native_lats is not None and merra2_native_lons is not None:
+            np.save(os.path.join(self.cache_dir, 'merra2_native_lats.npy'), merra2_native_lats)
+            np.save(os.path.join(self.cache_dir, 'merra2_native_lons.npy'), merra2_native_lons)
+        
+        # Store native resolution data as attribute
+        self.merra2_native_data = merra2_native_data
+        self.merra2_native_lats = merra2_native_lats
+        self.merra2_native_lons = merra2_native_lons
+        
         return merra2_data
 
-    
     def _get_metar_data(self):
         """
         Get meteorological data from Iowa State University METAR ASOS Dataset.
@@ -1209,7 +1304,6 @@ class PWWBData:
         - Air Temperature (F)
         - Air Pressure (mb)
         - Dew Point (F)
-        - AQI (derived from other parameters)
         
         Returns:
         --------
@@ -1223,10 +1317,11 @@ class PWWBData:
                 print(f"Loading cached METAR data from {cache_file}")
             return np.load(cache_file)
         
-        # Initialize empty array for METAR data
-        # 9 channels: Wind Speed, Wind Direction, Precipitation, AQI, Humidity, Heat Index, 
-        # Air Temperature, Air Pressure, Dew Point
-        metar_data = np.zeros((self.n_timestamps, self.dim, self.dim, 9))
+        # Define data variables to process
+        data_variables = ['sknt', 'drct', 'p01i', 'relh', 'feel', 'tmpf', 'mslp', 'dwpf']
+        
+        # Initialize empty array for METAR data - 8 channels
+        metar_data = np.zeros((self.n_timestamps, self.dim, self.dim, len(data_variables)))
         
         # Define Los Angeles area ASOS/AWOS stations that are within our geographic bounds
         la_stations = self.metar_sensors
@@ -1253,9 +1348,6 @@ class PWWBData:
         # Extract station IDs for API request
         station_ids = [station['id'] for station in stations_in_bounds]
         
-        # Create a station lookup dictionary for quick reference
-        station_lookup = {station['id']: station for station in stations_in_bounds}
-        
         # Break the full date range into chunks to avoid too large requests
         # IEM recommends not requesting more than a few months at a time
         chunk_size = pd.Timedelta(days=90)  # 3 months chunks
@@ -1265,7 +1357,7 @@ class PWWBData:
         all_station_data = {}
         
         # Fetch data in chunks
-        while current_start < self.end_date:
+        while current_start <= self.end_date:
             current_end = min(current_start + chunk_size, self.end_date)
             
             if self.verbose:
@@ -1281,62 +1373,86 @@ class PWWBData:
                 all_station_data[station_id].extend(data)
             
             # Move to next chunk
-            current_start = current_end
+            current_start = current_end + pd.Timedelta(seconds=1)
         
         if self.verbose:
             print("METAR data fetching complete")
             for station_id, data in all_station_data.items():
                 print(f"  Station {station_id}: {len(data)} total records")
         
-        # Process the station data into timestamp-keyed data
-        timestamp_data = self._process_timestamp_data(all_station_data, station_lookup)
+        # Create a full pandas DataFrame to match the script approach
+        metar_df = self._create_metar_dataframe(all_station_data, stations_in_bounds)
         
-        # Now process each timestamp in our sequence
-        for t_idx, timestamp in enumerate(self.timestamps):
-            ts_key = timestamp.strftime('%Y-%m-%d-%H')
+        # Create a full date range for timestamps
+        full_range = pd.date_range(start=self.start_date, end=self.end_date, freq='H')
+        
+        # Clean and organize data by station and time
+        station_names = list(metar_df.groupby("station").groups.keys())
+        
+        # Clean, impute, organize by time - similar to the script's approach
+        df_by_stations = []
+        for name in station_names:
+            try:
+                station_df = self._cleaned_station_df(metar_df, name, full_range)
+                df_by_stations.append(station_df)
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error processing station {name}: {e}")
+        
+        if not df_by_stations:
+            if self.verbose:
+                print("No valid station data found. Returning empty METAR data.")
+            return metar_data
+        
+        # Concatenate all station dataframes
+        df_by_stations = pd.concat(df_by_stations)
+        
+        # Organize by time - get a DataFrame for each timestamp
+        df_by_time = []
+        for date in full_range:
+            try:
+                df_by_time.append(df_by_stations.loc[str(date)])
+            except KeyError:
+                # If no data for this timestamp, add an empty placeholder
+                if self.verbose:
+                    print(f"No data for timestamp {date}")
+                df_by_time.append(pd.DataFrame())
+        
+        if self.verbose:
+            print(f"Processing {len(df_by_time)} timestamps of METAR data")
+        
+        # Calculate geographic distances for interpolation
+        latDist = abs(max_lat - min_lat)
+        lonDist = abs(max_lon - min_lon)
+        # Process each timestamp
+        for t_idx, df in enumerate(df_by_time):
+            if df.empty:
+                continue
             
-            # Get data for this timestamp
-            ts_data = timestamp_data.get(ts_key, [])
-            
-            if not ts_data and self.verbose:
-                print(f"No METAR data available for timestamp {ts_key}")
-                
-            # For each meteorological variable, extract values and interpolate
-            for v_idx, var_name in enumerate(['sknt', 'drct', 'p01i', 'aqi', 'relh', 'feel', 'tmpf', 'mslp', 'dwpf']):
-                # Special handling for AQI which is not in METAR data
-                if var_name == 'aqi':
-                    # Skip AQI as it's not available in METAR data
-                    # We'll leave it as zeros
-                    continue
-                
-                # Extract point data for this variable
-                point_data = []
-                for station_data in ts_data:
-                    # Check if this station has data for this variable
-                    value = station_data['values'].get(var_name)
-                    if value is not None and not np.isnan(value):
-                        point_data.append({
-                            'lat': station_data['lat'],
-                            'lon': station_data['lon'],
-                            'value': value
-                        })
-                
-                # Skip interpolation if no data points available
-                if not point_data:
-                    continue
-                
-                # Interpolate to grid
+            channels = []
+            for var_idx, var in enumerate(data_variables):
                 try:
-                    grid = self._interpolate_to_grid(point_data, self.dim, self.dim, self.extent)
-                    metar_data[t_idx, :, :, v_idx] = grid
+                    # Extract subset for this variable
+                    subset_df = df[['lat', 'lon', var]].copy()
+                    
+                    # Preprocess to place points on the grid
+                    grid = self._preprocess_ground_sites(
+                        subset_df, self.dim, max_lat, max_lon, latDist, lonDist
+                    )
+                    
+                    # Interpolate to fill the grid
+                    interpolated_grid = self._interpolate_frame(grid, self.dim)
+                    
+                    # Store in the metar_data array
+                    metar_data[t_idx, :, :, var_idx] = interpolated_grid
+                    
                 except Exception as e:
                     if self.verbose:
-                        print(f"Error interpolating {var_name} at {ts_key}: {e}")
-                    continue
-                    
-            # Units conversion if needed
-            # Convert knots to mph for wind speed
-            metar_data[t_idx, :, :, 0] *= 1.15078  # knots to mph conversion
+                        print(f"Error processing variable {var} for timestamp {t_idx}: {e}")
+        
+        # Apply unit conversions
+        # Convert knots to mph for wind speed
+        metar_data[:, :, :, 0] *= 1.15078  # sknt (knots) to mph conversion
         
         if self.verbose:
             print(f"Created METAR data with shape {metar_data.shape}")
@@ -1344,7 +1460,255 @@ class PWWBData:
         # Save to cache
         np.save(cache_file, metar_data)
         return metar_data
-    
+
+    def _create_metar_dataframe(self, all_station_data, stations_in_bounds):
+        """
+        Convert station data dictionaries to a pandas DataFrame for processing.
+        
+        Parameters:
+        -----------
+        all_station_data : dict
+            Dictionary with station IDs as keys and lists of data records as values
+        stations_in_bounds : list
+            List of station information dictionaries
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            DataFrame containing all METAR data records
+        """
+        # Create a lookup dictionary for station info
+        station_lookup = {station['id']: station for station in stations_in_bounds}
+        
+        # Flatten all records into a list for DataFrame creation
+        all_records = []
+        
+        for station_id, records in all_station_data.items():
+            # Get station info
+            station_info = station_lookup.get(station_id)
+            if not station_info:
+                continue
+                
+            for record in records:
+                try:
+                    # Create a flattened record with all needed fields
+                    flat_record = {
+                        'station': station_id,
+                        'name': station_info['name'],
+                        'lat': station_info['lat'],
+                        'lon': station_info['lon'],
+                        'valid': record.get('valid', '')
+                    }
+                    
+                    # Add the data variables
+                    for field in ['sknt', 'drct', 'p01i', 'relh', 'feel', 'tmpf', 'mslp', 'dwpf']:
+                        flat_record[field] = record.get(field, -1.0)
+                    
+                    all_records.append(flat_record)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Error flattening record from {station_id}: {e}")
+        
+        # Create DataFrame from all records
+        if all_records:
+            df = pd.DataFrame(all_records)
+            # Ensure 'valid' is a datetime column
+            df['valid'] = pd.to_datetime(df['valid'])
+            return df
+        else:
+            # Return empty DataFrame with correct columns
+            columns = ['station', 'name', 'lat', 'lon', 'valid', 
+                    'sknt', 'drct', 'p01i', 'relh', 'feel', 'tmpf', 'mslp', 'dwpf']
+            return pd.DataFrame(columns=columns)
+
+    def _cleaned_station_df(self, df, station_name, full_range):
+        """
+        Takes a dataframe and a station name, groups it by that station, 
+        organizes by the desired time range, and imputes.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame containing all station data
+        station_name : str
+            Name of the station to process
+        full_range : pandas.DatetimeIndex
+            Full range of timestamps to include
+        
+        Returns:
+        --------
+        pandas.DataFrame
+            DataFrame of all the data of the given station, cleaned up
+        """
+        try:
+            # Group the stations
+            station_df = df.groupby("station").get_group(station_name).copy()
+            
+            # Round the timestamps to the nearest hour (ceiling)
+            station_df['timestep'] = pd.to_datetime(station_df['valid']).dt.ceil('h')
+            
+            # Remove duplicate timestamps (keep last)
+            station_df = station_df.drop_duplicates(subset=['timestep'], keep='last')
+            
+            # Reindex by timestamp to generate samples
+            station_df = station_df.set_index('timestep', drop=True)
+            station_df = station_df.reindex(full_range)
+            
+            # Impute with values not possible so it's clear it's not real data
+            nan_date = "1900-01-01 00:00"
+            nan_val = -1.0
+            cols_to_fill = ['station', 'lon', 'lat']
+            
+            # Impute
+            station_df['valid'] = station_df['valid'].fillna(nan_date)
+            station_df[cols_to_fill] = station_df[cols_to_fill].bfill()
+            station_df = station_df.fillna(nan_val)
+            
+            return station_df
+        
+        except Exception as e:
+            if self.verbose:
+                print(f"Error cleaning station {station_name}: {e}")
+            # Return empty DataFrame with same index
+            return pd.DataFrame(index=full_range)
+
+    def _preprocess_ground_sites(self, df, dim, latMax, lonMax, latDist, lonDist):
+        """
+        Preprocess ground site data to place on grid.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame with lat, lon, and value columns
+        dim : int
+            Grid dimension
+        latMax, lonMax : float
+            Maximum latitude and longitude values
+        latDist, lonDist : float
+            Latitude and longitude distances
+        
+        Returns:
+        --------
+        numpy.ndarray
+            Grid with values placed at station locations
+        """
+        unInter = np.zeros((dim, dim))
+        dfArr = np.array(df)
+        
+        for i in range(dfArr.shape[0]):
+            try:
+                # Calculate x (latitude index)
+                x = int(((latMax - dfArr[i, 0]) / latDist) * dim)
+                if x >= dim:
+                    x = dim - 1
+                if x < 0:
+                    x = 0
+                    
+                # Calculate y (longitude index)
+                y = dim - int(((lonMax + abs(dfArr[i, 1])) / lonDist) * dim)
+                if y >= dim:
+                    y = dim - 1
+                if y < 0:
+                    y = 0
+                    
+                # Set the value if valid
+                if dfArr[i, 2] < 0:
+                    unInter[x, y] = 0
+                else:
+                    unInter[x, y] = dfArr[i, 2]
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error placing point on grid: {e}")
+        
+        return unInter
+
+    def _interpolate_frame(self, f, dim):
+        """
+        Interpolate frame using Inverse Distance Weighting (IDW).
+        
+        Parameters:
+        -----------
+        f : numpy.ndarray
+            Frame with values at station locations
+        dim : int
+            Grid dimension
+        
+        Returns:
+        --------
+        numpy.ndarray
+            Interpolated grid
+        """
+        # Extract non-zero points
+        x_list = []
+        y_list = []
+        values = []
+        
+        for x in range(f.shape[0]):
+            for y in range(f.shape[1]):
+                if f[x, y] != 0:
+                    x_list.append(x)
+                    y_list.append(y)
+                    values.append(f[x, y])
+        
+        coords = list(zip(x_list, y_list))
+        
+        # If no valid points, return zeros
+        if not coords:
+            return np.zeros((dim, dim))
+        
+        # If only one point, create a circular influence region
+        if len(coords) == 1:
+            interpolated = np.zeros((dim, dim))
+            x0, y0 = coords[0]
+            value = values[0]
+            radius = dim * 0.2  # 20% of grid size as influence radius
+            
+            for x in range(dim):
+                for y in range(dim):
+                    dist = np.sqrt((x - x0)**2 + (y - y0)**2)
+                    if dist < radius:
+                        # Linear falloff within the radius
+                        interpolated[x, y] = value * (1 - dist/radius)
+            
+            return interpolated
+        
+        # For multiple points, use IDW interpolation
+        try:
+            interpolated = np.zeros((dim, dim))
+            power = 2  # Power parameter for IDW - higher makes peaks sharper
+            
+            # Create grid coordinates
+            X, Y = np.meshgrid(np.arange(dim), np.arange(dim))
+            
+            # For each grid point
+            for i in range(dim):
+                for j in range(dim):
+                    # Calculate distances to all known points
+                    distances = np.sqrt([(i - x)**2 + (j - y)**2 for x, y in coords])
+                    
+                    # Check for exact point match (avoid division by zero)
+                    exact_match = np.where(distances < 1e-10)[0]
+                    if len(exact_match) > 0:
+                        # Use the exact value
+                        interpolated[i, j] = values[exact_match[0]]
+                        continue
+                    
+                    # Calculate IDW weights based on distances
+                    weights = 1.0 / (distances**power)
+                    # Normalize weights
+                    normalized_weights = weights / np.sum(weights)
+                    # Calculate weighted average
+                    interpolated[i, j] = np.sum(normalized_weights * np.array(values))
+            
+            return interpolated
+            
+        except Exception as e:
+            if hasattr(self, 'verbose') and self.verbose:
+                print(f"Error in IDW interpolation: {e}")
+            
+            # Fall back to a simple method if the interpolation fails
+            return np.zeros((dim, dim))
+
     def _fetch_iem_metar_data(self, stations, start_date, end_date):
         """
         Fetch METAR data from the Iowa Environmental Mesonet (IEM) API.
@@ -1371,18 +1735,26 @@ class PWWBData:
         # Convert station list to comma-separated string
         station_str = ",".join(stations)
         
+        # Add a small safety margin to start_date to ensure complete coverage
+        start_date_with_margin = start_date - pd.Timedelta(hours=1)
+        end_date_with_margin = end_date - pd.Timedelta(hours=1)
+        
+        if self.verbose:
+            print(f"Fetching METAR data from {start_date_with_margin} to {end_date}")
+        
         # Format dates for API request
-        start_str = start_date.strftime('%Y-%m-%d %H:%M')
-        end_str = end_date.strftime('%Y-%m-%d %H:%M')
+        start_str = start_date_with_margin.strftime('%Y-%m-%d %H:%M')
+        end_str = end_date_with_margin.strftime('%Y-%m-%d %H:%M')
         
         # Create output directory for cache
         cache_dir = self.cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         
         # Create a unique cache filename that includes the hour
-        start_cache_str = start_date.strftime('%Y%m%d_%H%M')
-        end_cache_str = end_date.strftime('%Y%m%d_%H%M')
+        start_cache_str = start_date_with_margin.strftime('%Y%m%d_%H%M')
+        end_cache_str = end_date_with_margin.strftime('%Y%m%d_%H%M')
         cache_file = os.path.join(cache_dir, f"metar_{start_cache_str}_to_{end_cache_str}_routine_only.csv")
+        var_list = ['sknt', 'drct', 'p01i', 'relh', 'feel', 'tmpf', 'mslp', 'dwpf']
         
         if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
             if self.verbose:
@@ -1395,12 +1767,12 @@ class PWWBData:
             
             form_data = {
                 'station': station_str,
-                'data': ['tmpf', 'dwpf', 'relh', 'drct', 'sknt', 'p01i', 'alti', 'mslp', 'feel', 'vsby', 'gust'],
-                'year1': start_date.year,
-                'month1': start_date.month,
-                'day1': start_date.day,
-                'hour1': start_date.hour,
-                'minute1': start_date.minute,
+                'data': var_list,
+                'year1': start_date_with_margin.year,
+                'month1': start_date_with_margin.month,
+                'day1': start_date_with_margin.day,
+                'hour1': start_date_with_margin.hour,
+                'minute1': start_date_with_margin.minute,
                 'year2': end_date.year,
                 'month2': end_date.month,
                 'day2': end_date.day,
@@ -1414,8 +1786,6 @@ class PWWBData:
             
             if self.verbose:
                 print(f"Requesting METAR data for {len(stations)} stations from {start_str} to {end_str}")
-                print(f"Start date/time: {start_date.year}-{start_date.month}-{start_date.day} {start_date.hour}:{start_date.minute}")
-                print(f"End date/time: {end_date.year}-{end_date.month}-{end_date.day} {end_date.hour}:{end_date.minute}")
             
             # Use the robust download approach with multiple attempts
             max_attempts = 6
@@ -1469,16 +1839,19 @@ class PWWBData:
                     print("Exhausted attempts to download METAR data, returning empty data")
                 return {station: [] for station in stations}  # Return empty lists for all stations
         
+        # Create full date range for consistent data
+        full_date_range = pd.date_range(start=start_date_with_margin, end=end_date_with_margin, freq='H')
+        
         # Process the CSV data
         try:
-            # Parse CSV using pandas with more robust options
+            # Parse CSV using pandas
             df = pd.read_csv(
                 io.StringIO(csv_data),
-                comment='#',           # Skip comment lines
-                skip_blank_lines=True,  # Skip blank lines
-                na_values=['M', 'NA', ''],  # Explicitly define missing value indicators
+                comment='#',
+                skip_blank_lines=True,
+                na_values=['M', 'NA', ''],
                 keep_default_na=True,
-                on_bad_lines='warn'    # Be more forgiving with malformed lines
+                on_bad_lines='warn'
             )
             
             if self.verbose:
@@ -1490,7 +1863,7 @@ class PWWBData:
                     print("No data found in CSV")
                 return {station: [] for station in stations}
             
-            # Convert to numeric values where appropriate
+            # Convert to numeric values
             numeric_cols = ['tmpf', 'dwpf', 'relh', 'drct', 'sknt', 'p01i', 'alti', 'mslp', 'feel', 'vsby', 'gust']
             for col in numeric_cols:
                 if col in df.columns:
@@ -1500,26 +1873,34 @@ class PWWBData:
             if 'valid' in df.columns:
                 df['valid'] = pd.to_datetime(df['valid'])
             
-            # Safely convert sknt (knots) to mph
-            if 'sknt' in df.columns:
-                df['mph'] = df['sknt'].multiply(1.15078)
+            # Initialize station data
+            station_data = {}
             
-            # Initialize the station data dictionary
-            station_data = {station: [] for station in stations}
-            
-            # Group by station
+            # Process each station
             for station_id in stations:
-                station_df = df[df['station'] == station_id]
+                station_df = df[df['station'] == station_id].copy()
+                
                 if len(station_df) > 0:
-                    # Convert to list of dictionaries
+                    # Round timestamps to nearest hour (ceiling is consistent with script)
+                    station_df['timestep'] = station_df['valid'].dt.ceil('H')
+                    
+                    # Remove duplicate timestamps (keep last)
+                    station_df = station_df.drop_duplicates(subset=['timestep'], keep='last')
+                    
+                    # Set timestep as index
+                    station_df = station_df.set_index('timestep')
+                    
+                    # Reindex to include all hours in the date range
+                    station_df = station_df.reindex(full_date_range, method='nearest')
+                    
+                    # Fill NaN values with -1.0 to indicate missing data
+                    station_df = station_df.fillna(-1.0)
+                    
+                    # Convert back to records
                     records = []
-                    for _, row in station_df.iterrows():
+                    for timestamp, row in station_df.iterrows():
                         record_dict = row.to_dict()
-                        # Ensure column values are properly converted to Python native types
-                        for col in numeric_cols:
-                            if col in record_dict:
-                                val = record_dict[col]
-                                record_dict[col] = float(val) if pd.notna(val) else float('nan')
+                        record_dict['valid'] = timestamp  # Add the timestamp back
                         records.append(record_dict)
                     
                     station_data[station_id] = records
@@ -1527,232 +1908,23 @@ class PWWBData:
                     if self.verbose:
                         print(f"  Processed {len(station_data[station_id])} records for station {station_id}")
                 else:
+                    # No data for this station - return empty list
+                    station_data[station_id] = []
+                    
                     if self.verbose:
                         print(f"  No data available for station {station_id}")
             
             return station_data
             
         except Exception as e:
+            # Report the error and let it propagate up
             if self.verbose:
                 print(f"Error processing CSV data: {e}")
                 import traceback
                 traceback.print_exc()
             
-            # Fallback to manual CSV parsing
-            if self.verbose:
-                print("Falling back to manual CSV parsing")
-            
-            # Manual CSV parsing as fallback
-            lines = csv_data.strip().split('\n')
-            
-            # Handle empty data
-            if len(lines) <= 1:
-                if self.verbose:
-                    print("No data or header only in CSV")
-                return {station: [] for station in stations}
-                
-            # Get header line
-            header = lines[0].split(',')
-            
-            # Process data lines
-            station_data = {station: [] for station in stations}
-            for line in lines[1:]:
-                if not line.strip() or line.startswith('#'):
-                    continue
-                    
-                values = line.split(',')
-                if len(values) != len(header):
-                    continue
-                    
-                # Create data row
-                row = dict(zip(header, values))
-                
-                # Get station ID
-                station_id = row.get('station')
-                if not station_id or station_id not in stations:
-                    continue
-                    
-                # Convert numeric values
-                for field in ['tmpf', 'dwpf', 'relh', 'drct', 'sknt', 'p01i', 'alti', 'mslp', 'feel', 'vsby', 'gust']:
-                    if field in row:
-                        try:
-                            row[field] = float(row[field].replace('M', 'nan'))
-                        except (ValueError, TypeError):
-                            row[field] = float('nan')
-                
-                # Add data to station dict
-                station_data[station_id].append(row)
-            
-            if self.verbose:
-                for station_id, data in station_data.items():
-                    print(f"  Manually parsed {len(data)} records for station {station_id}")
-                    
-            return station_data
-
-
-    def _process_timestamp_data(self, all_station_data, station_lookup):
-        """
-        Process station data into a dictionary keyed by timestamp.
-        
-        Parameters:
-        -----------
-        all_station_data : dict
-            Dictionary with station IDs as keys and lists of data records as values
-        station_lookup : dict
-            Dictionary mapping station IDs to station information
-            
-        Returns:
-        --------
-        dict
-            Dictionary with timestamp keys and lists of station data for each timestamp
-        """
-        timestamp_data = {}
-        
-        for station_id, records in all_station_data.items():
-            station_info = station_lookup.get(station_id)
-            if not station_info:
-                continue
-                
-            for record in records:
-                # Extract timestamp from record
-                try:
-                    timestamp_str = record.get('valid', '')
-                    timestamp = pd.to_datetime(timestamp_str)
-                    
-                    # Round to nearest hour to match our timestamps
-                    timestamp = timestamp.round('H')
-                    
-                    # Create a key for this timestamp
-                    ts_key = timestamp.strftime('%Y-%m-%d-%H')
-                    
-                    # Initialize this timestamp's data if not exists
-                    if ts_key not in timestamp_data:
-                        timestamp_data[ts_key] = []
-                    
-                    # Extract values and convert to float where possible
-                    values = {}
-                    for field in ['tmpf', 'dwpf', 'relh', 'drct', 'sknt', 'p01i', 'mslp', 'feel']:
-                        try:
-                            # Check if the value is already a float
-                            field_value = record.get(field, 'M')
-                            if isinstance(field_value, float):
-                                values[field] = field_value if not np.isnan(field_value) else float('nan')
-                            else:
-                                # It's a string, do the string replacement
-                                values[field] = float(str(field_value).replace('M', 'nan'))
-                        except (ValueError, TypeError):
-                            values[field] = float('nan')
-                    
-                    # Add this station's data to the timestamp
-                    timestamp_data[ts_key].append({
-                        'lat': station_info['lat'],
-                        'lon': station_info['lon'],
-                        'values': values
-                    })
-                except Exception as e:
-                    if self.verbose:
-                        print(f"Error processing record from {station_id}: {e}")
-                    continue
-                    
-        if self.verbose:
-            print(f"Processed data for {len(timestamp_data)} unique hourly timestamps")
-            
-        return timestamp_data
-    
-    def _process_metar_csv(self, csv_data, stations):
-        """
-        Process CSV data from IEM METAR API into structured dictionary.
-        
-        Parameters:
-        -----------
-        csv_data : str
-            CSV data from IEM API
-        stations : list of str
-            List of station IDs
-            
-        Returns:
-        --------
-        dict
-            Dictionary with station IDs as keys and lists of data records as values
-        """
-        # Initialize empty data dictionaries for each station
-    def _process_metar_csv(self, csv_data, stations):
-            """
-            Process CSV data from IEM METAR API into structured dictionary.
-            
-            Parameters:
-            -----------
-            csv_data : str
-                CSV data from IEM API
-            stations : list of str
-                List of station IDs
-                
-            Returns:
-            --------
-            dict
-                Dictionary with station IDs as keys and lists of data records as values
-            """
-            # Initialize empty data dictionaries for each station
-            station_data = {station: [] for station in stations}
-            
-            try:
-                # Try using pandas for efficient CSV parsing
-                df = pd.read_csv(io.StringIO(csv_data))
-                
-                # Group by station
-                for station_id in stations:
-                    station_df = df[df['station'] == station_id]
-                    if len(station_df) > 0:
-                        # Convert to list of dictionaries
-                        station_data[station_id] = station_df.to_dict('records')
-                        if self.verbose:
-                            print(f"  Received {len(station_data[station_id])} records for station {station_id}")
-                    else:
-                        if self.verbose:
-                            print(f"  No data received for station {station_id}")
-                
-                return station_data
-                
-            except Exception as e:
-                if self.verbose:
-                    print(f"Error using pandas to parse CSV: {e}")
-                    print("Falling back to manual CSV parsing")
-                
-                # Manual CSV parsing as fallback
-                lines = csv_data.strip().split('\n')
-                if len(lines) <= 1:
-                    if self.verbose:
-                        print("No data returned from IEM API")
-                    return station_data
-                    
-                # Get header line
-                header = lines[0].split(',')
-                
-                # Process data lines
-                for line in lines[1:]:
-                    if not line.strip() or line.startswith('#'):
-                        continue
-                        
-                    values = line.split(',')
-                    if len(values) != len(header):
-                        continue
-                        
-                    # Create data row
-                    row = dict(zip(header, values))
-                    
-                    # Get station ID
-                    station_id = row.get('station')
-                    if not station_id or station_id not in stations:
-                        continue
-                        
-                    # Add data to station dict
-                    station_data[station_id].append(row)
-                
-                if self.verbose:
-                    for station_id, data in station_data.items():
-                        print(f"  Received {len(data)} records for station {station_id}")
-                        
-                return station_data
+            # Return empty data instead of creating artificial values
+            return {station: [] for station in stations}
     
     def _sliding_window_of(self, frames, window_size):
         """
@@ -2008,7 +2180,6 @@ class PWWBData:
             'METAR_Wind_Speed',
             'METAR_Wind_Direction',
             'METAR_Precipitation',
-            'METAR_AQI',
             'METAR_Humidity',
             'METAR_Heat_Index',
             'METAR_Air_Temp',
