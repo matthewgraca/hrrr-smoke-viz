@@ -964,17 +964,20 @@ class PWWBData:
             print(f"Created MODIS fire data with shape {modis_fire_data.shape}")
         
         np.save(cache_file, modis_fire_data)
-        return modis_fire_data
-        
+        return modis_fire_data   
     def _get_merra2_data(self):
+        import earthaccess
+        import xarray as xr  
         """
-        Get MERRA-2 data for PBL Height, Surface Air Temperature, and Surface Exchange Coefficient.
+        Get MERRA-2 data for PBL Height, Surface Air Temperature, and Surface Exchange Coefficient
+        using Earth Access library to directly download the data.
         
         Returns:
         --------
         numpy.ndarray
             MERRA-2 data with shape (n_timestamps, dim, dim, n_features)
         """
+
         cache_file = os.path.join(self.cache_dir, 'merra2_data.npy')
         
         if self.use_cached_data and os.path.exists(cache_file):
@@ -985,154 +988,201 @@ class PWWBData:
         # Initialize empty array for MERRA-2 data
         # 3 channels: PBL Height, Surface Air Temperature, Surface Exchange Coefficient for Heat
         merra2_data = np.zeros((self.n_timestamps, self.dim, self.dim, 3))
-        
-        # Check if M2M token is available - first try dedicated M2M token, fallback to Earthdata token
-        m2m_token = os.getenv('M2M_TOKEN')
-        if not m2m_token:
-            m2m_token = self.earthdata_token  # Try using the regular Earthdata token as fallback
-            if not m2m_token:
-                if self.verbose:
-                    print("No M2M or Earthdata token found. Returning empty MERRA-2 data.")
-                np.save(cache_file, merra2_data)
-                return merra2_data
-        
-        # MERRA-2 data is available hourly, which matches our timestamps
+
         if self.verbose:
-            print(f"Fetching MERRA-2 data for {self.n_timestamps} timestamps")
+            print(f"Fetching MERRA-2 data for period: {self.start_date} to {self.end_date}")
         
-        # Group timestamps by day to process them efficiently
-        days_to_process = pd.Series([ts.date() for ts in self.timestamps]).unique()
+        # Define our geographic bounds
+        min_lon, max_lon, min_lat, max_lat = self.extent
         
-        # Define the MERRA-2 data access methods - try different approaches
-        # Method 1: GES DISC API endpoint
-        api_url_gesdisc = "https://disc.gsfc.nasa.gov/service/subset/jsonwsp/api"
+        # Group timestamps by month to process efficiently (MERRA-2 data is organized by month)
+        months_to_process = pd.DataFrame({'date': self.timestamps}).groupby(
+            [self.timestamps.year, self.timestamps.month]
+        ).groups.keys()
         
-        # Method 2: CMR API endpoint (similar to MODIS)
-        api_url_cmr = "https://cmr.earthdata.nasa.gov/search/granules.json"
+        # Set up variable mapping
+        var_mapping = {
+            'PBLH': ['PBLH', 'PBL', 'ZPBL'],  # Planetary Boundary Layer Height
+            'T2M': ['T2M', 'T2', 'TLML'],     # Surface Air Temperature
+            'CDH': ['CDH', 'CH', 'CN']        # Surface Exchange Coefficient
+        }
         
-        # Method 3: Direct MERRA-2 API
-        api_url_direct = "https://api.earthdata.nasa.gov/m2m/data/api/dataset/MERRA2/granule/search"
-        
-        # Define the variables we need
-        variables = ["PBLH", "T2M", "CDH"]
-        
-        # Process each day
-        for day in days_to_process:
-            day_str = day.strftime('%Y-%m-%d')
+        # Process each month
+        for year, month in months_to_process:
+            # Determine the start and end dates for this month
+            if year == self.start_date.year and month == self.start_date.month:
+                start_day = self.start_date.day
+            else:
+                start_day = 1
+                
+            if year == self.end_date.year and month == self.end_date.month:
+                end_day = self.end_date.day
+            else:
+                # Get the last day of the month
+                next_month = pd.Timestamp(year=year, month=month, day=28) + pd.Timedelta(days=4)
+                end_day = (next_month - pd.Timedelta(days=next_month.day)).day
+            
+            # Format the dates for earthaccess
+            start_date = f"{year}-{month:02d}-{start_day:02d}"
+            end_date = f"{year}-{month:02d}-{end_day:02d}"
             
             if self.verbose:
-                print(f"Processing MERRA-2 data for day: {day_str}")
+                print(f"Processing MERRA-2 data for period: {start_date} to {end_date}")
             
-            # Define our geographic bounds
-            min_lon, max_lon, min_lat, max_lat = self.extent
-            
-            # Try Method 1: CMR API (similar to what worked for MODIS)
             try:
-                if self.verbose:
-                    print("Trying CMR API method...")
-                    
-                # Set up headers with token
-                headers = {"Authorization": f"Bearer {m2m_token}"}
+                # Authenticate with Earth Data
+                auth = earthaccess.login()
                 
-                # Define search parameters
-                params = {
-                    "short_name": "M2T1NXFLX",
-                    "version": "5.12.4",
-                    "temporal": f"{day_str}T00:00:00Z,{day_str}T23:59:59Z",
-                    "bounding_box": f"{min_lon},{min_lat},{max_lon},{max_lat}",
-                    "page_size": 10
-                }
-                
-                # Make the request
-                response = requests.get(api_url_cmr, params=params, headers=headers)
-                
-                if response.status_code == 200:
-                    results = response.json()
-                    granules = results.get("feed", {}).get("entry", [])
-                    
-                    if granules:
-                        if self.verbose:
-                            print(f"Found {len(granules)} MERRA-2 granules via CMR API")
-                        
-                        # Get download URL
-                        for granule in granules:
-                            download_url = next((link["href"] for link in granule.get("links", []) 
-                                            if link.get("rel") == "http://esipfed.org/ns/fedsearch/1.1/data#"), None)
-                            
-                            if download_url:
-                                # Process this granule
-                                success = self._process_merra2_granule(download_url, headers, day, merra2_data)
-                                if success:
-                                    break  # Successfully processed a granule, no need to try more
-                    else:
-                        if self.verbose:
-                            print("No granules found via CMR API")
-                else:
+                if not auth:
                     if self.verbose:
-                        print(f"CMR API error: {response.status_code}")
+                        print("Failed to authenticate with Earth Data. Please check your credentials.")
+                        print("See instructions for setting up .netrc file in the docstring.")
+                    continue
+                
+                # Search for MERRA-2 data
+                results = earthaccess.search_data(
+                    short_name="M2T1NXFLX",  # MERRA-2 tavg1_2d_flx_Nx product - surface fluxes
+                    version='5.12.4',       
+                    temporal=(start_date, end_date),
+                    bounding_box=(min_lon, min_lat, max_lon, max_lat)
+                )
+                
+                if not results:
+                    if self.verbose:
+                        print(f"No MERRA-2 granules found for period: {start_date} to {end_date}")
+                    continue
+                
+                if self.verbose:
+                    print(f"Found {len(results)} MERRA-2 granules")
+                
+                # Create a temp directory for downloads
+                temp_dir = os.path.join(self.cache_dir, f"merra2_temp_{year}_{month}")
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                # Download the granules
+                downloaded_files = earthaccess.download(
+                    results,
+                    local_path=temp_dir
+                )
+                
+                if not downloaded_files:
+                    if self.verbose:
+                        print("Failed to download MERRA-2 granules")
+                    continue
+                
+                if self.verbose:
+                    print(f"Downloaded {len(downloaded_files)} MERRA-2 files to {temp_dir}")
+                
+                # Process the downloaded files
+                try:
+                    # Open the dataset with xarray - this supports multi-file datasets
+                    ds = xr.open_mfdataset(downloaded_files)
+                    
+                    if self.verbose:
+                        print("MERRA-2 dataset opened successfully")
+                        print("Available variables:", list(ds.data_vars))
+                    
+                    # Map our desired variables to the actual variable names in the dataset
+                    var_actual_names = {}
+                    for var_key, possible_names in var_mapping.items():
+                        for name in possible_names:
+                            if name in ds.data_vars:
+                                var_actual_names[var_key] = name
+                                break
+                    
+                    if self.verbose:
+                        print(f"Found variables: {var_actual_names}")
+                    
+                    # Check if we have all the required variables
+                    missing_vars = set(['PBLH', 'T2M', 'CDH']) - set(var_actual_names.keys())
+                    if missing_vars:
+                        if self.verbose:
+                            print(f"Missing required variables: {missing_vars}")
+                            print("Will try to use alternative names or provide default values")
+                    
+                    # Get the time steps
+                    times = ds.time.values
+                    
+                    # Process each timestamp in our dataset
+                    month_timestamps = [ts for ts in self.timestamps 
+                                    if ts.year == year and ts.month == month]
+                    
+                    for ts in month_timestamps:
+                        # Find the index of the timestamp in our dataset
+                        t_idx = self.timestamps.get_loc(ts)
+                        
+                        # Find the closest time in the MERRA-2 dataset
+                        np_ts = np.datetime64(ts)
+                        time_diffs = np.abs(times - np_ts)
+                        closest_time_idx = np.argmin(time_diffs)
+                        closest_time = times[closest_time_idx]
+                        
+                        # Extract the data for each variable
+                        for var_idx, (var_key, var_name) in enumerate(var_actual_names.items()):
+                            try:
+                                # Extract the data slice for our region
+                                data_slice = ds[var_name].sel(time=closest_time)
+                                
+                                # If the data is not 2D, try to select a relevant level
+                                if len(data_slice.shape) > 2:
+                                    # For 3D data, select the first level (usually surface)
+                                    data_slice = data_slice.isel(lev=0) if 'lev' in data_slice.dims else data_slice[0]
+                                
+                                # Convert to numpy array
+                                data_array = data_slice.values
+                                
+                                # Resize to our grid dimensions
+                                from scipy.ndimage import zoom
+                                
+                                # Calculate zoom factors
+                                zoom_y = self.dim / data_array.shape[0]
+                                zoom_x = self.dim / data_array.shape[1]
+                                
+                                # Apply zoom
+                                grid = zoom(data_array, (zoom_y, zoom_x), order=1, mode='nearest')
+                                
+                                # Store in our data array
+                                merra2_data[t_idx, :, :, var_idx] = grid
+                                
+                            except Exception as e:
+                                if self.verbose:
+                                    print(f"Error processing variable {var_name} for timestamp {ts}: {e}")
+                                continue
+                    
+                    # Close the dataset
+                    ds.close()
+                    
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Error processing MERRA-2 data: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                finally:
+                    # Cleanup the downloaded files (optional)
+                    if not self.use_cached_data:
+                        import shutil
+                        try:
+                            shutil.rmtree(temp_dir)
+                            if self.verbose:
+                                print(f"Cleaned up temporary directory: {temp_dir}")
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"Error cleaning up temp directory: {e}")
             
             except Exception as e:
                 if self.verbose:
-                    print(f"Error with CMR API method: {e}")
-            
-            # Try Method 2: Direct MERRA-2 API (original approach)
-            if np.all(merra2_data[np.array([ts.date() == day for ts in self.timestamps])] == 0):
-                try:
-                    if self.verbose:
-                        print("Trying direct MERRA-2 API method...")
-                    
-                    # Set up authentication headers
-                    headers = {
-                        "Authorization": f"Bearer {m2m_token}",
-                        "Content-Type": "application/json"
-                    }
-                    
-                    # Construct parameters
-                    params = {
-                        "short_name": "M2T1NXFLX",
-                        "temporal": f"{day_str}T00:00:00Z,{day_str}T23:59:59Z",
-                        "bounding_box": f"{min_lon},{min_lat},{max_lon},{max_lat}",
-                        "variables": ",".join(variables),
-                        "format": "json"
-                    }
-                    
-                    # Make the request
-                    response = requests.get(api_url_direct, params=params, headers=headers)
-                    
-                    if response.status_code == 200:
-                        results = response.json()
-                        granules = results.get("granules", [])
-                        
-                        if granules:
-                            if self.verbose:
-                                print(f"Found {len(granules)} MERRA-2 granules via direct API")
-                            
-                            for granule in granules:
-                                download_url = granule.get("downloadUrl")
-                                
-                                if download_url:
-                                    # Process this granule
-                                    success = self._process_merra2_granule(download_url, headers, day, merra2_data)
-                                    if success:
-                                        break  # Successfully processed a granule
-                        else:
-                            if self.verbose:
-                                print("No granules found via direct API")
-                    else:
-                        if self.verbose:
-                            print(f"Direct API error: {response.status_code} - {response.text[:200]}")
-                
-                except Exception as e:
-                    if self.verbose:
-                        print(f"Error with direct MERRA-2 API method: {e}")
+                    print(f"Error during MERRA-2 data fetch for {year}-{month}: {e}")
+                    import traceback
+                    traceback.print_exc()
         
         # Add temporal coherence - make neighboring timestamps similar
         for t_idx in range(1, self.n_timestamps):
             # If the current timestamp has all zeros, use the previous timestamp's data
-            if np.sum(merra2_data[t_idx]) == 0 and np.sum(merra2_data[t_idx-1]) > 0:
+            if np.sum(np.abs(merra2_data[t_idx])) == 0 and np.sum(np.abs(merra2_data[t_idx-1])) > 0:
                 merra2_data[t_idx] = merra2_data[t_idx-1]
             # Otherwise, if both have data, add some temporal smoothing
-            elif np.sum(merra2_data[t_idx]) > 0 and np.sum(merra2_data[t_idx-1]) > 0:
+            elif np.sum(np.abs(merra2_data[t_idx])) > 0 and np.sum(np.abs(merra2_data[t_idx-1])) > 0:
                 merra2_data[t_idx] = merra2_data[t_idx-1] * 0.2 + merra2_data[t_idx] * 0.8
         
         if self.verbose:
@@ -1141,216 +1191,6 @@ class PWWBData:
         np.save(cache_file, merra2_data)
         return merra2_data
 
-    def _process_merra2_granule(self, download_url, headers, day, merra2_data):
-        """
-        Process a MERRA-2 granule file.
-        
-        Parameters:
-        -----------
-        download_url : str
-            URL to download the granule file
-        headers : dict
-            Headers to use for the download request
-        day : datetime.date
-            The day for this granule
-        merra2_data : numpy.ndarray
-            Array to store the processed data
-        
-        Returns:
-        --------
-        bool
-            True if processing was successful, False otherwise
-        """
-        # Download the NetCDF file
-        temp_file = os.path.join(self.cache_dir, f"merra2_temp_{day.strftime('%Y-%m-%d')}.nc4")
-        
-        try:
-            # Download with authentication
-            r = requests.get(download_url, headers=headers, stream=True)
-            if r.status_code != 200:
-                if self.verbose:
-                    print(f"Error downloading MERRA-2 file: {r.status_code}")
-                return False
-                
-            with open(temp_file, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            # Check if file was downloaded correctly
-            if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
-                if self.verbose:
-                    print("Downloaded file is empty or does not exist")
-                return False
-            
-            # Process the NetCDF file to extract data
-            try:
-                import netCDF4 as nc
-                dataset = nc.Dataset(temp_file, 'r')
-                
-                # List all variables to debug
-                if self.verbose:
-                    print("Variables in MERRA-2 file:")
-                    for var_name in dataset.variables:
-                        print(f"  {var_name}: {dataset.variables[var_name].shape}")
-                
-                # Try to extract the variables
-                # Variable names might differ - try different possibilities
-                var_names = {
-                    'PBLH': ['PBLH', 'PBL', 'ZPBL'],
-                    'T2M': ['T2M', 'T2', 'TLML'],
-                    'CDH': ['CDH', 'CH', 'CN']
-                }
-                
-                # Initialize data arrays
-                var_data = {}
-                
-                # Try to find each variable
-                for var_key, possible_names in var_names.items():
-                    for name in possible_names:
-                        if name in dataset.variables:
-                            var_data[var_key] = dataset.variables[name][:]
-                            if self.verbose:
-                                print(f"Found {var_key} as {name}")
-                            break
-                
-                # Extract time, lat, lon information
-                # First find time variable
-                time_var = None
-                for name in ['time', 'TIME', 'Time']:
-                    if name in dataset.variables:
-                        time_var = name
-                        break
-                
-                # Find lat/lon variables
-                lat_var = None
-                lon_var = None
-                for name in ['lat', 'LAT', 'latitude', 'LATITUDE']:
-                    if name in dataset.variables:
-                        lat_var = name
-                        break
-                
-                for name in ['lon', 'LON', 'longitude', 'LONGITUDE']:
-                    if name in dataset.variables:
-                        lon_var = name
-                        break
-                
-                if time_var is None or lat_var is None or lon_var is None:
-                    if self.verbose:
-                        print("Could not find time, lat, or lon variables")
-                    dataset.close()
-                    return False
-                
-                times = dataset.variables[time_var][:]
-                lats = dataset.variables[lat_var][:]
-                lons = dataset.variables[lon_var][:]
-                
-                # Close the dataset now that we've extracted everything we need
-                dataset.close()
-                
-                # Check if we have all the required variables
-                if not all(key in var_data for key in ['PBLH', 'T2M', 'CDH']):
-                    if self.verbose:
-                        print(f"Missing required variables. Found: {list(var_data.keys())}")
-                    return False
-                
-                # Get the data arrays
-                pblh = var_data['PBLH']
-                t2m = var_data['T2M']
-                cdh = var_data['CDH']
-                
-                # For each timestamp in this day
-                day_timestamps = [ts for ts in self.timestamps if ts.date() == day]
-                
-                for ts in day_timestamps:
-                    # Find the closest time index in the MERRA-2 data
-                    hour = ts.hour
-                    t_idx = self.timestamps.get_loc(ts)
-                    
-                    # Ensure the hour index is valid
-                    if hour >= len(times):
-                        if self.verbose:
-                            print(f"Hour {hour} exceeds available time steps {len(times)}")
-                        continue
-                    
-                    try:
-                        # Use scipy zoom instead of OpenCV resize
-                        from scipy.ndimage import zoom
-                        
-                        # Extract the data for this hour
-                        try:
-                            # Check if data has a time dimension
-                            if len(pblh.shape) > 2:  # Has time dimension
-                                pblh_hour = pblh[hour]
-                                t2m_hour = t2m[hour]
-                                cdh_hour = cdh[hour]
-                            else:  # No time dimension
-                                pblh_hour = pblh
-                                t2m_hour = t2m
-                                cdh_hour = cdh
-                        except IndexError:
-                            if self.verbose:
-                                print(f"Index error for hour {hour}")
-                            continue
-                        
-                        # Check for valid dimensions
-                        if pblh_hour.shape[0] == 0 or pblh_hour.shape[1] == 0:
-                            if self.verbose:
-                                print(f"Invalid dimensions: {pblh_hour.shape}")
-                            continue
-                        
-                        # Calculate zoom factors
-                        zoom_y = self.dim / pblh_hour.shape[0]
-                        zoom_x = self.dim / pblh_hour.shape[1]
-                        
-                        # Apply zoom to resize the data
-                        pblh_grid = zoom(pblh_hour, (zoom_y, zoom_x), order=1, mode='nearest')
-                        t2m_grid = zoom(t2m_hour, (zoom_y, zoom_x), order=1, mode='nearest')
-                        cdh_grid = zoom(cdh_hour, (zoom_y, zoom_x), order=1, mode='nearest')
-                        
-                        # Store the data
-                        merra2_data[t_idx, :, :, 0] = pblh_grid  # PBL Height
-                        merra2_data[t_idx, :, :, 1] = t2m_grid   # Surface Air Temperature
-                        merra2_data[t_idx, :, :, 2] = cdh_grid   # Surface Exchange Coefficient
-                        
-                        if self.verbose:
-                            print(f"Processed MERRA-2 data for timestamp {ts}")
-                    
-                    except Exception as e:
-                        if self.verbose:
-                            print(f"Error processing timestamp {ts}: {e}")
-                        continue
-                
-                return True  # Successfully processed the granule
-                
-            except ImportError:
-                if self.verbose:
-                    print("netCDF4 library not available. Cannot process MERRA-2 data.")
-                return False
-                
-            except Exception as e:
-                if self.verbose:
-                    print(f"Error processing MERRA-2 NetCDF file: {e}")
-                    import traceback
-                    traceback.print_exc()
-                return False
-        
-        except Exception as e:
-            if self.verbose:
-                print(f"Error downloading or processing MERRA-2 data: {e}")
-                import traceback
-                traceback.print_exc()
-            return False
-        
-        finally:
-            # Clean up the temporary file
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except Exception as e:
-                    if self.verbose:
-                        print(f"Warning: Failed to remove temp file: {e}")
-            
-            return False  # If we reach here, something went wrong
     
     def _get_metar_data(self):
         """
@@ -1532,140 +1372,222 @@ class PWWBData:
         station_str = ",".join(stations)
         
         # Format dates for API request
-        start_str = start_date.strftime('%Y-%m-%d')
-        end_str = end_date.strftime('%Y-%m-%d')
+        start_str = start_date.strftime('%Y-%m-%d %H:%M')
+        end_str = end_date.strftime('%Y-%m-%d %H:%M')
         
-        # Build API URL for IEM's ASOS/AWOS data service
-        api_url = (
-            'http://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?'
-            f'station={station_str}&'
-            'data=tmpf,dwpf,relh,drct,sknt,p01i,alti,mslp,feel&'
-            f'year1={start_date.year}&month1={start_date.month}&day1={start_date.day}&'
-            f'year2={end_date.year}&month2={end_date.month}&day2={end_date.day}&'
-            'tz=Etc/UTC&format=comma&latlon=yes'
-        )
+        # Create output directory for cache
+        cache_dir = self.cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
         
-        if self.verbose:
-            print(f"Requesting METAR data for {len(stations)} stations from {start_str} to {end_str}")
-            print(f"API URL: {api_url}")
+        # Create a unique cache filename that includes the hour
+        start_cache_str = start_date.strftime('%Y%m%d_%H%M')
+        end_cache_str = end_date.strftime('%Y%m%d_%H%M')
+        cache_file = os.path.join(cache_dir, f"metar_{start_cache_str}_to_{end_cache_str}_routine_only.csv")
         
-        # Use the robust download approach with multiple attempts
-        max_attempts = 6
-        attempt = 0
-        
-        while attempt < max_attempts:
-            try:
-                if self.verbose and attempt > 0:
-                    print(f"Attempt {attempt+1}/{max_attempts} to fetch METAR data")
+        if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
+            if self.verbose:
+                print(f"Using cached METAR data from {cache_file}")
+            with open(cache_file, 'r') as f:
+                csv_data = f.read()
+        else:
+            # Build form data for POST request to IEM's ASOS/AWOS data service
+            form_url = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+            
+            form_data = {
+                'station': station_str,
+                'data': ['tmpf', 'dwpf', 'relh', 'drct', 'sknt', 'p01i', 'alti', 'mslp', 'feel', 'vsby', 'gust'],
+                'year1': start_date.year,
+                'month1': start_date.month,
+                'day1': start_date.day,
+                'hour1': start_date.hour,
+                'minute1': start_date.minute,
+                'year2': end_date.year,
+                'month2': end_date.month,
+                'day2': end_date.day,
+                'hour2': end_date.hour,
+                'minute2': end_date.minute,
+                'tz': 'Etc/UTC',
+                'format': 'comma',
+                'latlon': 'yes',
+                'report_type': '3'  # Specifically requesting routine hourly observations only
+            }
+            
+            if self.verbose:
+                print(f"Requesting METAR data for {len(stations)} stations from {start_str} to {end_str}")
+                print(f"Start date/time: {start_date.year}-{start_date.month}-{start_date.day} {start_date.hour}:{start_date.minute}")
+                print(f"End date/time: {end_date.year}-{end_date.month}-{end_date.day} {end_date.hour}:{end_date.minute}")
+            
+            # Use the robust download approach with multiple attempts
+            max_attempts = 6
+            attempt = 0
+            
+            while attempt < max_attempts:
+                try:
+                    if self.verbose and attempt > 0:
+                        print(f"Attempt {attempt+1}/{max_attempts} to fetch METAR data")
+                        
+                    response = requests.post(form_url, data=form_data, timeout=300)  # 5-minute timeout
                     
-                response = requests.get(api_url, timeout=300)  # 5-minute timeout
-                
-                if response.status_code == 200:
-                    csv_data = response.text
-                    
-                    # Check if we got an error message
-                    if csv_data.startswith("#ERROR"):
+                    if response.status_code == 200:
+                        csv_data = response.text
+                        
+                        # Check if we got an error message
+                        if csv_data.startswith("#ERROR"):
+                            if self.verbose:
+                                print(f"Error from IEM API: {csv_data}")
+                            attempt += 1
+                            time.sleep(5)  # Wait before retry
+                            continue
+                        
+                        # Save the data to cache
+                        with open(cache_file, 'w', encoding='utf-8') as f:
+                            f.write(csv_data)
+                        
                         if self.verbose:
-                            print(f"Error from IEM API: {csv_data}")
+                            print(f"Raw METAR data saved to {cache_file}")
+                        
+                        break  # Success, exit the retry loop
+                    else:
+                        if self.verbose:
+                            print(f"Error fetching IEM METAR data: HTTP {response.status_code}")
+                            print(f"Response text: {response.text[:200]}..." if response.text else "No response text")
                         attempt += 1
                         time.sleep(5)  # Wait before retry
                         continue
-                    
-                    # Save raw data for debugging
-                    raw_file = os.path.join(self.cache_dir, f"metar_raw_{start_str}_to_{end_str}.csv")
-                    with open(raw_file, 'w', encoding='utf-8') as f:
-                        f.write(csv_data)
-                    
+                        
+                except Exception as e:
                     if self.verbose:
-                        print(f"Raw METAR data saved to {raw_file}")
-                    
-                    # Process the CSV data into station dictionaries
-                    try:
-                        # Parse CSV using pandas with more robust options
-                        df = pd.read_csv(
-                            io.StringIO(csv_data),
-                            comment='#',           # Skip comment lines
-                            skip_blank_lines=True,  # Skip blank lines
-                            on_bad_lines='warn'    # Be more forgiving with malformed lines
-                        )
-                        
-                        # Initialize the station data dictionary
-                        station_data = {station: [] for station in stations}
-                        
-                        # Group by station
-                        for station_id in stations:
-                            station_df = df[df['station'] == station_id]
-                            if len(station_df) > 0:
-                                # Convert to list of dictionaries
-                                station_data[station_id] = station_df.to_dict('records')
-                                if self.verbose:
-                                    print(f"  Received {len(station_data[station_id])} records for station {station_id}")
-                            else:
-                                if self.verbose:
-                                    print(f"  No data received for station {station_id}")
-                        
-                        return station_data
-                        
-                    except Exception as e:
-                        if self.verbose:
-                            print(f"Error using pandas to parse CSV: {e}")
-                            print("Falling back to manual CSV parsing")
-                        
-                        # Manual CSV parsing as fallback
-                        lines = csv_data.strip().split('\n')
-                        if len(lines) <= 1:
-                            if self.verbose:
-                                print("No data returned from IEM API")
-                            return {station: [] for station in stations}
-                            
-                        # Get header line
-                        header = lines[0].split(',')
-                        
-                        # Process data lines
-                        station_data = {station: [] for station in stations}
-                        for line in lines[1:]:
-                            if not line.strip() or line.startswith('#'):
-                                continue
-                                
-                            values = line.split(',')
-                            if len(values) != len(header):
-                                continue
-                                
-                            # Create data row
-                            row = dict(zip(header, values))
-                            
-                            # Get station ID
-                            station_id = row.get('station')
-                            if not station_id or station_id not in stations:
-                                continue
-                                
-                            # Add data to station dict
-                            station_data[station_id].append(row)
-                        
-                        if self.verbose:
-                            for station_id, data in station_data.items():
-                                print(f"  Received {len(data)} records for station {station_id}")
-                                
-                        return station_data
-                else:
-                    if self.verbose:
-                        print(f"Error fetching IEM METAR data: HTTP {response.status_code}")
+                        print(f"Exception when fetching IEM METAR data: {e}")
+                        import traceback
+                        traceback.print_exc()
                     attempt += 1
                     time.sleep(5)  # Wait before retry
                     continue
-                    
-            except Exception as e:
+            
+            if attempt >= max_attempts:
                 if self.verbose:
-                    print(f"Exception when fetching IEM METAR data: {e}")
-                    import traceback
-                    traceback.print_exc()
-                attempt += 1
-                time.sleep(5)  # Wait before retry
-                continue
+                    print("Exhausted attempts to download METAR data, returning empty data")
+                return {station: [] for station in stations}  # Return empty lists for all stations
         
-        if self.verbose:
-            print("Exhausted attempts to download METAR data, returning empty data")
-        return {station: [] for station in stations}  # Return empty lists for all stations
+        # Process the CSV data
+        try:
+            # Parse CSV using pandas with more robust options
+            df = pd.read_csv(
+                io.StringIO(csv_data),
+                comment='#',           # Skip comment lines
+                skip_blank_lines=True,  # Skip blank lines
+                na_values=['M', 'NA', ''],  # Explicitly define missing value indicators
+                keep_default_na=True,
+                on_bad_lines='warn'    # Be more forgiving with malformed lines
+            )
+            
+            if self.verbose:
+                print(f"Successfully parsed CSV data with {len(df)} records")
+            
+            # Handle empty dataframe
+            if len(df) == 0:
+                if self.verbose:
+                    print("No data found in CSV")
+                return {station: [] for station in stations}
+            
+            # Convert to numeric values where appropriate
+            numeric_cols = ['tmpf', 'dwpf', 'relh', 'drct', 'sknt', 'p01i', 'alti', 'mslp', 'feel', 'vsby', 'gust']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Convert 'valid' column to datetime
+            if 'valid' in df.columns:
+                df['valid'] = pd.to_datetime(df['valid'])
+            
+            # Safely convert sknt (knots) to mph
+            if 'sknt' in df.columns:
+                df['mph'] = df['sknt'].multiply(1.15078)
+            
+            # Initialize the station data dictionary
+            station_data = {station: [] for station in stations}
+            
+            # Group by station
+            for station_id in stations:
+                station_df = df[df['station'] == station_id]
+                if len(station_df) > 0:
+                    # Convert to list of dictionaries
+                    records = []
+                    for _, row in station_df.iterrows():
+                        record_dict = row.to_dict()
+                        # Ensure column values are properly converted to Python native types
+                        for col in numeric_cols:
+                            if col in record_dict:
+                                val = record_dict[col]
+                                record_dict[col] = float(val) if pd.notna(val) else float('nan')
+                        records.append(record_dict)
+                    
+                    station_data[station_id] = records
+                    
+                    if self.verbose:
+                        print(f"  Processed {len(station_data[station_id])} records for station {station_id}")
+                else:
+                    if self.verbose:
+                        print(f"  No data available for station {station_id}")
+            
+            return station_data
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"Error processing CSV data: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Fallback to manual CSV parsing
+            if self.verbose:
+                print("Falling back to manual CSV parsing")
+            
+            # Manual CSV parsing as fallback
+            lines = csv_data.strip().split('\n')
+            
+            # Handle empty data
+            if len(lines) <= 1:
+                if self.verbose:
+                    print("No data or header only in CSV")
+                return {station: [] for station in stations}
+                
+            # Get header line
+            header = lines[0].split(',')
+            
+            # Process data lines
+            station_data = {station: [] for station in stations}
+            for line in lines[1:]:
+                if not line.strip() or line.startswith('#'):
+                    continue
+                    
+                values = line.split(',')
+                if len(values) != len(header):
+                    continue
+                    
+                # Create data row
+                row = dict(zip(header, values))
+                
+                # Get station ID
+                station_id = row.get('station')
+                if not station_id or station_id not in stations:
+                    continue
+                    
+                # Convert numeric values
+                for field in ['tmpf', 'dwpf', 'relh', 'drct', 'sknt', 'p01i', 'alti', 'mslp', 'feel', 'vsby', 'gust']:
+                    if field in row:
+                        try:
+                            row[field] = float(row[field].replace('M', 'nan'))
+                        except (ValueError, TypeError):
+                            row[field] = float('nan')
+                
+                # Add data to station dict
+                station_data[station_id].append(row)
+            
+            if self.verbose:
+                for station_id, data in station_data.items():
+                    print(f"  Manually parsed {len(data)} records for station {station_id}")
+                    
+            return station_data
 
 
     def _process_timestamp_data(self, all_station_data, station_lookup):
