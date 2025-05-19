@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import sys
 
 # let's print the whole thing
 df = pd.read_csv('asos.csv')
@@ -30,23 +31,42 @@ for name in station_names:
     station_df = station_df.drop_duplicates(subset=['timestep'], keep='last')
 
     # reindex by timestamp to generate samples
-    # using nearest, may consider different ones (like -1.0 impute)
     station_df = station_df.set_index('timestep', drop=True)
-    station_df = station_df.reindex(full_range, method='nearest')
+    station_df = station_df.reindex(full_range)
 
-    # impute NaNs with -1.0. may consider smarter methods down the line
-    station_df = station_df.fillna(-1.0)
+    # we intentionally impute with values not possible so people looking at
+    # it can tell it's not real data.
+    nan_date = "1900-01-01 00:00"
+    nan_val = -1.0
+    cols_to_fill = ['station', 'lon', 'lat']
+    
+    # impute
+    station_df['valid'] = station_df['valid'].fillna(nan_date)
+    station_df[cols_to_fill] = (
+        station_df[cols_to_fill]
+        .bfill()
+    )
+    station_df = station_df.fillna(nan_val)
+
     df_by_stations.append(station_df)
 
-# merge them back
-final_df = pd.concat(df_by_stations)
-print(final_df)
+# merge them into one 
+df_by_stations = pd.concat(df_by_stations)
 
 # examine them all
 '''
 for date in full_range:
-    print(final_df.loc[str(date)])
+    print(df_by_stations.loc[str(date)])
 '''
+
+# partition the stations by time so each element is a frame
+df_by_time = [df_by_stations.loc[str(date)] for date in full_range]
+print(df_by_time)
+
+"""
+Interpolation section. pretty much just a proof of concept, don't 
+try to copy this one to one.
+"""
 
 # interpolation!
 dim = 200
@@ -78,20 +98,21 @@ def preprocess_ground_sites(df, dim, latMax, lonMax, latDist, lonDist):
             unInter[x,y] = dfArr[i,2]
     return unInter
 
-np.set_printoptions(threshold=np.inf)
-ground_site_grids = []
-for date in full_range:
-    stations = final_df.loc[str(date)]
-    unInter = preprocess_ground_sites(stations, dim, max_lat, max_lon, latDist, lonDist)
-    ground_site_grids.append(unInter)
+ground_site_grids = [
+    preprocess_ground_sites(
+        df_frame, dim, max_lat, max_lon, latDist, lonDist
+    ) 
+    for df_frame in df_by_time
+]
 
 print(len(ground_site_grids))
-print(ground_site_grids[0])
-print(np.nonzero(ground_site_grids[0]))
+print(ground_site_grids[1])
+print(np.nonzero(ground_site_grids[1]))
+
 from scipy.interpolate import NearestNDInterpolator, LinearNDInterpolator
 import matplotlib.pyplot as plt
 
-def interpolate_frame(f):
+def interpolate_frame(f, dim):
     i = 0
     interpolated = []
     count = 0
@@ -108,20 +129,20 @@ def interpolate_frame(f):
     coords = list(zip(x_list,y_list))
     try:
         interp = NearestNDInterpolator(coords, values)
-        X = np.arange(0,200)
-        Y = np.arange(0,200)
+        X = np.arange(0,dim)
+        Y = np.arange(0,dim)
         X, Y = np.meshgrid(X, Y)
         Z = interp(X, Y)
     except ValueError:
-        Z = np.zeros((200,200))
+        Z = np.zeros((dim,dim))
     interpolated = Z
     count += 1
     i += 1
     interpolated = np.array(interpolated)
     return interpolated
 
-interpolated_grids = [interpolate_frame(g) for g in ground_site_grids]
+interpolated_grids = [interpolate_frame(g, dim) for g in ground_site_grids]
 import matplotlib.pyplot as plt
-plt.imshow(interpolated_grids[0])
+plt.imshow(interpolated_grids[1])
 plt.show()
 
