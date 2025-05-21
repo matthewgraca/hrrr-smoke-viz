@@ -6,6 +6,18 @@ import pandas as pd
 import numpy as np
 import cv2
 from scipy.ndimage import gaussian_filter
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap
+
+# Check if cartopy is available and import it
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    CARTOPY_AVAILABLE = True
+except ImportError:
+    CARTOPY_AVAILABLE = False
+    print("Warning: Cartopy not available. Map visualizations will be limited.")
 
 class AirNowData:
     '''
@@ -86,6 +98,9 @@ class AirNowData:
         # Create necessary directories
         os.makedirs(os.path.dirname(save_dir), exist_ok=True)
         
+        # Store sensor names
+        self.sensor_names = []
+        
         # Check if processed cache exists and use it if available
         if not force_reprocess and os.path.exists(processed_cache_dir):
             print(f"Loading processed AirNow data from cache: {processed_cache_dir}")
@@ -98,6 +113,12 @@ class AirNowData:
                 air_sens_loc_array = cached_data['air_sens_loc']
                 if isinstance(air_sens_loc_array, np.ndarray):
                     self.air_sens_loc = air_sens_loc_array.item() if air_sens_loc_array.size == 1 else {}
+                
+                # Load sensor_names if present
+                if 'sensor_names' in cached_data:
+                    self.sensor_names = cached_data['sensor_names'].tolist() if len(cached_data['sensor_names']) > 0 else list(self.air_sens_loc.keys())
+                else:
+                    self.sensor_names = list(self.air_sens_loc.keys())
                 
                 # Load target_stations if present
                 if 'target_stations' in cached_data:
@@ -150,6 +171,8 @@ class AirNowData:
             self.target_stations = self._get_target_stations(
                 self.data, self.ground_site_grids, self.air_sens_loc
             )
+            # Store sensor names
+            self.sensor_names = list(self.air_sens_loc.keys())
         else:
             self.target_stations = None
             print("Warning: No air sensor locations found in the data.")
@@ -160,6 +183,9 @@ class AirNowData:
             # Convert air_sens_loc dictionary to a numpy array of one object for storage
             air_sens_loc_array = np.array([self.air_sens_loc])
             
+            # Convert sensor_names to numpy array
+            sensor_names_array = np.array(self.sensor_names)
+            
             # Create target_stations array (empty if None)
             target_stations_array = self.target_stations if self.target_stations is not None else np.array([])
             
@@ -169,6 +195,7 @@ class AirNowData:
                 data=self.data,
                 ground_site_grids=np.array(self.ground_site_grids, dtype=object),
                 air_sens_loc=air_sens_loc_array,
+                sensor_names=sensor_names_array,
                 target_stations=target_stations_array
             )
             print("✓ Successfully saved processed data to cache")
@@ -565,14 +592,451 @@ class AirNowData:
         Y = np.empty((n_samples, n_sensors))
         
         for sample in range(len(Y)):
-            for sensor, loc in enumerate(sensor_locations):
-                x, y = sensor_locations[loc]
+            for i, (loc, coords) in enumerate(sensor_locations.items()):
+                x, y = coords
                 offset = sample + frames_per_sample
                 
                 if offset < len(gridded_data):
-                    Y[sample][sensor] = gridded_data[offset][x][y]
+                    Y[sample][i] = gridded_data[offset][x][y]
                 else:
                     # Use the last available data for out-of-bounds targets
-                    Y[sample][sensor] = gridded_data[-1][x][y]
+                    Y[sample][i] = gridded_data[-1][x][y]
 
         return Y
+
+    def _grid_to_latlon(self, x, y):
+        """
+        Convert grid coordinates to latitude/longitude.
+        
+        Parameters:
+        -----------
+        x, y : int
+            Grid coordinates
+            
+        Returns:
+        --------
+        lat, lon : float
+            Latitude and longitude
+        """
+        lon_min, lon_max, lat_min, lat_max = self.extent
+        lat_dist = lat_max - lat_min
+        lon_dist = lon_max - lon_min
+        
+        # Convert from grid coordinates to lat/lon
+        lat = lat_max - (x / self.dim) * lat_dist
+        lon = lon_min + (y / self.dim) * lon_dist
+        
+        return lat, lon
+    
+    def _latlon_to_grid(self, lat, lon):
+        """
+        Convert latitude/longitude to grid coordinates.
+        
+        Parameters:
+        -----------
+        lat, lon : float
+            Latitude and longitude
+            
+        Returns:
+        --------
+        x, y : int
+            Grid coordinates
+        """
+        lon_min, lon_max, lat_min, lat_max = self.extent
+        lat_dist = lat_max - lat_min
+        lon_dist = lon_max - lon_min
+        
+        # Convert from lat/lon to grid coordinates
+        x = int(((lat_max - lat) / lat_dist) * self.dim)
+        y = int(((lon - lon_min) / lon_dist) * self.dim)
+        
+        # Ensure coordinates are within bounds
+        x = max(0, min(x, self.dim - 1))
+        y = max(0, min(y, self.dim - 1))
+        
+        return x, y
+
+    def visualize_sensor_locations(self, figsize=(12, 10), marker_size=120, show_names=True, 
+                                  save_path=None, with_background=True, dpi=100):
+        """
+        Visualizes the AirNow sensor locations on a map before interpolation.
+        
+        Parameters:
+        -----------
+        figsize : tuple, optional
+            Figure size (width, height) in inches
+        marker_size : int, optional
+            Size of the markers representing sensors
+        show_names : bool, optional
+            If True, displays sensor names next to their locations
+        save_path : str, optional
+            If provided, saves the figure to this path
+        with_background : bool, optional
+            If True, displays a full map background with Cartopy (if available)
+        dpi : int, optional
+            Resolution for the output figure
+            
+        Returns:
+        --------
+        fig, ax : matplotlib figure and axis objects
+        """
+        # Check if we have sensor locations
+        if not self.air_sens_loc:
+            raise ValueError("No sensor locations found in the AirNowData object")
+        
+        # Extract the extent
+        lon_min, lon_max, lat_min, lat_max = self.extent
+        
+        # For Cartopy-enabled visualizations with map background
+        if with_background and CARTOPY_AVAILABLE:
+            # Create a new figure with a GeoAxes
+            fig = plt.figure(figsize=figsize, dpi=dpi)
+            ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+            
+            # Set map extent
+            ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+            
+            # Add map features
+            ax.add_feature(cfeature.COASTLINE)
+            ax.add_feature(cfeature.STATES, linestyle=':')
+            ax.add_feature(cfeature.LAND, alpha=0.1)
+            ax.add_feature(cfeature.OCEAN, alpha=0.1)
+            ax.add_feature(cfeature.LAKES, alpha=0.1)
+            ax.add_feature(cfeature.RIVERS, alpha=0.1)
+            
+            # Add gridlines
+            gl = ax.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+            gl.top_labels = False
+            gl.right_labels = False
+            
+            # Convert grid coordinates to lat/lon for plotting
+            sensor_lons = []
+            sensor_lats = []
+            sensor_names_list = []
+            
+            for name, (x, y) in self.air_sens_loc.items():
+                lat, lon = self._grid_to_latlon(x, y)
+                sensor_lats.append(lat)
+                sensor_lons.append(lon)
+                sensor_names_list.append(name)
+            
+            # Plot sensors
+            ax.scatter(sensor_lons, sensor_lats, s=marker_size, c='red', marker='^', 
+                      edgecolor='black', linewidth=1, alpha=0.8, 
+                      transform=ccrs.PlateCarree(), label='Air Quality Sensors')
+            
+            # Add sensor names if requested
+            if show_names:
+                for i, name in enumerate(sensor_names_list):
+                    ax.annotate(name, (sensor_lons[i], sensor_lats[i]), 
+                              xytext=(5, 5), textcoords='offset points',
+                              fontsize=9, color='black', weight='bold',
+                              bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.7))
+            
+        else:
+            # Simple visualization without map background
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+            
+            # Set up the axes for a pseudo-geographic plot
+            ax.set_xlim(lon_min, lon_max)
+            ax.set_ylim(lat_min, lat_max)
+            ax.set_xlabel('Longitude')
+            ax.set_ylabel('Latitude')
+            ax.grid(True, linestyle='--', alpha=0.5)
+            
+            # Convert grid coordinates to lat/lon for plotting
+            sensor_lons = []
+            sensor_lats = []
+            sensor_names_list = []
+            
+            for name, (x, y) in self.air_sens_loc.items():
+                lat, lon = self._grid_to_latlon(x, y)
+                sensor_lats.append(lat)
+                sensor_lons.append(lon)
+                sensor_names_list.append(name)
+            
+            # Plot sensors
+            ax.scatter(sensor_lons, sensor_lats, s=marker_size, c='red', marker='^', 
+                      edgecolor='black', linewidth=1, alpha=0.8, label='Air Quality Sensors')
+            
+            # Add sensor names if requested
+            if show_names:
+                for i, name in enumerate(sensor_names_list):
+                    ax.annotate(name, (sensor_lons[i], sensor_lats[i]), 
+                              xytext=(5, 5), textcoords='offset points',
+                              fontsize=9, color='black', weight='bold',
+                              bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.7))
+        
+        # Add title and legend
+        plt.title('AirNow Sensor Locations', fontsize=16)
+        plt.legend(loc='upper right')
+        
+        # Save if path provided
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        plt.tight_layout()
+        return fig, ax
+
+    def visualize_interpolated_data(self, frame_index=0, sample_index=0, figsize=(14, 10), 
+                                   show_sensors=True, marker_size=80, cmap='plasma_r', 
+                                   save_path=None, vmin=None, vmax=None,
+                                   alpha=0.7, with_background=True, dpi=100):
+        """
+        Visualizes the interpolated AirNow data on a map.
+        
+        Parameters:
+        -----------
+        frame_index : int, optional
+            Index of the frame to visualize within the sample
+        sample_index : int, optional
+            Index of the sample to visualize
+        figsize : tuple, optional
+            Figure size (width, height) in inches
+        show_sensors : bool, optional
+            If True, shows sensor locations on the map
+        marker_size : int, optional
+            Size of the markers representing sensors
+        cmap : str or matplotlib colormap, optional
+            Colormap to use for the interpolated data
+            Use 'aqi' for a custom AQI-like colormap
+        save_path : str, optional
+            If provided, saves the figure to this path
+        vmin, vmax : float, optional
+            Minimum and maximum values for the colormap; if None, auto-determined
+        alpha : float, optional
+            Transparency of the interpolated data overlay
+        with_background : bool, optional
+            If True, displays a full map background with Cartopy (if available)
+        dpi : int, optional
+            Resolution for the output figure
+            
+        Returns:
+        --------
+        fig, ax : matplotlib figure and axis objects
+        """
+        # Check interpolated data and extract it
+        if not hasattr(self, 'data') or self.data is None:
+            raise ValueError("No interpolated data available in the AirNowData object")
+            
+        try:
+            interpolated_data = self.data[sample_index, frame_index, :, :, 0]
+        except IndexError:
+            raise ValueError(f"Sample index {sample_index} or frame index {frame_index} is out of range")
+        
+        # Get the raw ground site grid (before interpolation)
+        if hasattr(self, 'ground_site_grids') and self.ground_site_grids is not None:
+            if len(self.ground_site_grids) > sample_index:
+                raw_grid = self.ground_site_grids[sample_index]
+            else:
+                raw_grid = None
+                print(f"Warning: Sample index {sample_index} is out of range for ground_site_grids")
+        else:
+            raw_grid = None
+            print(f"Warning: ground_site_grids not found in airnow_data")
+            
+        # Extract the extent
+        lon_min, lon_max, lat_min, lat_max = self.extent
+            
+        # Create AQI-like colormap if requested
+        if cmap == 'aqi':
+            # AQI-like colormap: Green-Yellow-Orange-Red-Purple-Maroon
+            colors = [(0, 1, 0),    # Green (Good)
+                     (1, 1, 0),     # Yellow (Moderate)
+                     (1, 0.5, 0),   # Orange (Unhealthy for Sensitive Groups)
+                     (1, 0, 0),     # Red (Unhealthy)
+                     (0.5, 0, 0.5), # Purple (Very Unhealthy)
+                     (0.5, 0, 0)]   # Maroon (Hazardous)
+            cmap = LinearSegmentedColormap.from_list('aqi_cmap', colors)
+            
+        # Get data limits if not provided
+        if vmin is None:
+            vmin = np.min(interpolated_data[interpolated_data > -10])  # Exclude background values
+        if vmax is None:
+            vmax = np.max(interpolated_data)
+            
+        # For Cartopy-enabled visualizations with map background
+        if with_background and CARTOPY_AVAILABLE:
+            # Create a new figure with a GeoAxes
+            fig = plt.figure(figsize=figsize, dpi=dpi)
+            ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+            
+            # Set map extent
+            ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+            
+            # Add map features
+            ax.add_feature(cfeature.COASTLINE)
+            ax.add_feature(cfeature.STATES, linestyle=':')
+            ax.add_feature(cfeature.LAND, alpha=0.1)
+            ax.add_feature(cfeature.OCEAN, alpha=0.1)
+            ax.add_feature(cfeature.LAKES, alpha=0.1)
+            ax.add_feature(cfeature.RIVERS, alpha=0.1)
+            
+            # Create meshgrid for the plot
+            lons = np.linspace(lon_min, lon_max, self.dim)
+            lats = np.linspace(lat_max, lat_min, self.dim)  # Note: reversed to match the grid orientation
+            lons_mesh, lats_mesh = np.meshgrid(lons, lats)
+            
+            # Plot the interpolated data
+            # Mask values below 0 (likely background)
+            masked_data = np.ma.masked_where(interpolated_data < 0, interpolated_data)
+            c = ax.pcolormesh(lons_mesh, lats_mesh, masked_data, 
+                            transform=ccrs.PlateCarree(), 
+                            cmap=cmap, alpha=alpha, vmin=vmin, vmax=vmax)
+            
+            # Add gridlines
+            gl = ax.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+            gl.top_labels = False
+            gl.right_labels = False
+            
+        else:
+            # Simple visualization without map background
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+            
+            # Plot the interpolated data
+            masked_data = np.ma.masked_where(interpolated_data < 0, interpolated_data)
+            c = ax.imshow(masked_data, cmap=cmap, vmin=vmin, vmax=vmax, 
+                         extent=[lon_min, lon_max, lat_min, lat_max],
+                         origin='upper', alpha=alpha)
+            
+            ax.set_xlabel('Longitude')
+            ax.set_ylabel('Latitude')
+            ax.grid(True, linestyle='--', alpha=0.5)
+            
+        # Add colorbar
+        cbar = plt.colorbar(c, ax=ax, orientation='vertical', pad=0.02)
+        cbar.set_label('PM2.5 Concentration (μg/m³)', fontsize=12)
+            
+        # Show sensor locations if requested
+        if show_sensors and self.air_sens_loc:
+            sensor_lons = []
+            sensor_lats = []
+            sensor_names_list = []
+            sensor_values = []
+            
+            # Extract sensor locations and convert to lat/lon
+            for name, (x, y) in self.air_sens_loc.items():
+                lat, lon = self._grid_to_latlon(x, y)
+                sensor_lats.append(lat)
+                sensor_lons.append(lon)
+                sensor_names_list.append(name)
+                
+                # Get the actual value from the grid if possible
+                if raw_grid is not None:
+                    try:
+                        value = raw_grid[x, y]
+                        sensor_values.append(value)
+                    except IndexError:
+                        sensor_values.append(None)
+                else:
+                    sensor_values.append(None)
+            
+            # Plot sensors
+            sc = ax.scatter(sensor_lons, sensor_lats, s=marker_size, c='white', marker='^', 
+                          edgecolor='black', linewidth=1, alpha=1.0,
+                          label='Air Quality Sensors',
+                          zorder=5)  # Ensure sensors appear on top
+            
+            # Add sensor names and values if data is available
+            for i, name in enumerate(sensor_names_list):
+                label = name
+                if sensor_values[i] is not None and sensor_values[i] > 0:
+                    label += f"\n({sensor_values[i]:.1f})"
+                    
+                ax.annotate(label, (sensor_lons[i], sensor_lats[i]), 
+                          xytext=(5, 5), textcoords='offset points',
+                          fontsize=9, color='black', weight='bold',
+                          bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8),
+                          zorder=6)  # Ensure labels appear on top
+        
+        # Add title
+        title = f'Interpolated PM2.5 Concentration - Sample {sample_index}, Frame {frame_index}'
+        plt.title(title, fontsize=16)
+        
+        # Save if path provided
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        plt.tight_layout()
+        return fig, ax
+
+    def compare_raw_vs_interpolated(self, sample_index=0, figsize=(18, 8), save_path=None,
+                                  cmap='plasma_r', dpi=100):
+        """
+        Creates a side-by-side comparison of raw sensor data vs. interpolated data.
+        
+        Parameters:
+        -----------
+        sample_index : int, optional
+            Index of the sample to visualize
+        figsize : tuple, optional
+            Figure size (width, height) in inches
+        save_path : str, optional
+            If provided, saves the figure to this path
+        cmap : str or matplotlib colormap, optional
+            Colormap to use for the visualization
+        dpi : int, optional
+            Resolution for the output figure
+            
+        Returns:
+        --------
+        fig, axes : matplotlib figure and axes objects
+        """
+        # Check if data is available
+        if not hasattr(self, 'ground_site_grids') or self.ground_site_grids is None:
+            raise ValueError("No raw ground site data available")
+            
+        if not hasattr(self, 'data') or self.data is None:
+            raise ValueError("No interpolated data available")
+            
+        # Get the raw and interpolated data
+        try:
+            raw_grid = self.ground_site_grids[sample_index]
+        except IndexError:
+            raise ValueError(f"Sample index {sample_index} is out of range for ground_site_grids")
+            
+        try:
+            interpolated_data = self.data[sample_index, 0, :, :, 0]  # First frame of the sample
+        except IndexError:
+            raise ValueError(f"Sample index {sample_index} is out of range for interpolated data")
+            
+        # Create figure with two subplots
+        fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
+        
+        # Plot raw sensor data (with mask for zeros)
+        masked_raw = np.ma.masked_where(raw_grid <= 0, raw_grid)
+        im1 = axes[0].imshow(masked_raw, cmap=cmap)
+        axes[0].set_title('Raw Sensor Data (Before Interpolation)', fontsize=14)
+        axes[0].axis('off')
+        plt.colorbar(im1, ax=axes[0], orientation='vertical', fraction=0.046, pad=0.04)
+        
+        # Add sensor locations to the raw data plot
+        for name, (x, y) in self.air_sens_loc.items():
+            value = raw_grid[x, y]
+            if value > 0:
+                axes[0].plot(y, x, 'w^', markersize=10, markeredgecolor='black')
+                axes[0].annotate(f"{name} ({value:.1f})", (y, x), 
+                                xytext=(5, 5), textcoords='offset points',
+                                fontsize=8, color='black', weight='bold',
+                                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.8))
+        
+        # Plot interpolated data (with mask for background)
+        masked_interp = np.ma.masked_where(interpolated_data < 0, interpolated_data)
+        im2 = axes[1].imshow(masked_interp, cmap=cmap)
+        axes[1].set_title('Interpolated Data (IDW Method)', fontsize=14)
+        axes[1].axis('off')
+        plt.colorbar(im2, ax=axes[1], orientation='vertical', fraction=0.046, pad=0.04)
+        
+        # Add sensor locations to the interpolated data plot
+        for name, (x, y) in self.air_sens_loc.items():
+            axes[1].plot(y, x, 'w^', markersize=10, markeredgecolor='black')
+        
+        plt.suptitle(f'Raw Sensor Data vs. Interpolated PM2.5 Concentration - Sample {sample_index}', 
+                    fontsize=16)
+        
+        # Save if path provided
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            
+        plt.tight_layout()
+        return fig, axes
