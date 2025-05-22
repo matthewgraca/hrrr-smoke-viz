@@ -12,6 +12,11 @@ Conda environment
 ## Vertically-integrated smoke product
 ![](visualizations/colmd_images/full_forecast.gif)
 
+# Run tests
+From the project directory, execute this command:
+
+`python -m unittest discover -v tests -p "test*.py"`
+
 # Content
 - `visualizations/hrrr_smoke_mdens_viz.ipynb` describes how to use `Herbie` to download HRRR data and visualize it.
     - **Use this notebook if you want to learn how to use Herbie, download HRRR data, and visualize the results.**
