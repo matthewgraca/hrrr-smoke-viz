@@ -17,6 +17,10 @@ class MetarDataSource(BaseDataSource):
     Supports both original wind measurements (speed/direction) and derived U/V components.
     When users request U/V components, automatically fetches speed/direction data,
     calculates the components, but only includes the requested channels in output.
+    
+    Uses semantic missing data handling:
+    - NaN for variables that can be negative (wind components, temperature in Celsius)
+    - -1.0 for variables that should be positive (humidity, pressure, wind speed)
     """
     
     def __init__(
@@ -79,6 +83,15 @@ class MetarDataSource(BaseDataSource):
             'METAR_Dew_Point': 'dwpf',
             'METAR_Wind_U': 'u_component',
             'METAR_Wind_V': 'v_component'
+        }
+        
+        # Define variables that can legitimately be negative
+        # Default assumption: most meteorological variables are positive-only
+        self.variables_that_can_be_negative = {
+            'u_component',      # Wind components can be negative
+            'v_component',      
+            'tmpf',             # Temperature in Fahrenheit can be negative
+            'dwpf'              # Dew point in Fahrenheit can be negative
         }
         
         # Set the channels to include
@@ -225,7 +238,7 @@ class MetarDataSource(BaseDataSource):
         metar_df = self._create_metar_dataframe(all_station_data, stations_in_bounds)
         
         # Create a full date range for timestamps
-        full_range = pd.date_range(start=self.timestamps[0], end=self.timestamps[-1], freq='H')
+        full_range = pd.date_range(start=self.timestamps[0], end=self.timestamps[-1], freq='h')
         
         # Clean and organize data by station and time
         station_names = list(metar_df.groupby("station").groups.keys())
@@ -250,29 +263,33 @@ class MetarDataSource(BaseDataSource):
         # Concatenate all station dataframes
         df_by_stations = pd.concat(df_by_stations)
         
-        # Calculate wind components if needed
         sped_var = self.channel_mapping['METAR_Wind_Speed']
         drct_var = self.channel_mapping['METAR_Wind_Direction']
         
         if self.need_wind_components and sped_var in df_by_stations.columns and drct_var in df_by_stations.columns:
-            # Get wind speed (already in mph) and direction
             wind_speed_mph = df_by_stations[sped_var]
             wind_direction = df_by_stations[drct_var]
-            
-            # Convert direction from meteorological to mathematical coordinates
-            # In meteorological coordinates, 0° is north, 90° is east
-            # We need to convert to mathematical where 0° is east, 90° is north
-            wind_dir_rad = np.radians(270 - wind_direction)
-            
-            # Calculate u (east-west) and v (north-south) components
-            # Positive u is eastward, positive v is northward
-            df_by_stations['u_component'] = wind_speed_mph * np.cos(wind_dir_rad)
-            df_by_stations['v_component'] = wind_speed_mph * np.sin(wind_dir_rad)
+
+            # BEFORE calculating U/V components, filter out invalid data
+            # For positive-only variables, we use -1.0 as missing data marker
+            valid_wind_mask = (wind_speed_mph != -1.0) & (wind_direction != -1.0)
+
+            u_component = np.full_like(wind_speed_mph, np.nan, dtype=float)
+            v_component = np.full_like(wind_speed_mph, np.nan, dtype=float)
+
+            # Calculate only for valid data
+            wind_dir_rad = np.radians(wind_direction)
+            u_component[valid_wind_mask] = -wind_speed_mph[valid_wind_mask] * np.sin(wind_dir_rad[valid_wind_mask])
+            v_component[valid_wind_mask] = -wind_speed_mph[valid_wind_mask] * np.cos(wind_dir_rad[valid_wind_mask])
+
+            df_by_stations['u_component'] = u_component
+            df_by_stations['v_component'] = v_component
             
             if self.verbose:
                 print("Computed wind U/V components from speed/direction")
-                print(f"U component range: {df_by_stations['u_component'].min():.2f} to {df_by_stations['u_component'].max():.2f}")
-                print(f"V component range: {df_by_stations['v_component'].min():.2f} to {df_by_stations['v_component'].max():.2f}")
+                print(f"U component range: {np.nanmin(u_component):.2f} to {np.nanmax(u_component):.2f}")
+                print(f"V component range: {np.nanmin(v_component):.2f} to {np.nanmax(v_component):.2f}")
+                print(f"Valid wind component count: {np.sum(valid_wind_mask)} / {len(valid_wind_mask)}")
         
         # Organize by time - get a DataFrame for each timestamp
         df_by_time = []
@@ -306,9 +323,13 @@ class MetarDataSource(BaseDataSource):
                         # Extract subset for this variable
                         subset_df = df[['lat', 'lon', var]].copy()
                         
+                        # Determine if this variable can be negative
+                        is_negative_allowed = var in self.variables_that_can_be_negative
+                        
                         # Preprocess to place points on the grid
                         grid = preprocess_ground_sites(
-                            subset_df, self.dim, max_lat, max_lon, latDist, lonDist
+                            subset_df, self.dim, max_lat, max_lon, latDist, lonDist,
+                            allow_negative=is_negative_allowed
                         )
                         
                         # Interpolate to fill the grid
@@ -334,6 +355,25 @@ class MetarDataSource(BaseDataSource):
         # Save to cache
         self.save_to_cache(metar_data, cache_file)
         return metar_data
+    
+    def _get_missing_value_for_variable(self, variable_name):
+        """
+        Get the appropriate missing value marker for a variable.
+        
+        Parameters:
+        -----------
+        variable_name : str
+            Name of the variable
+            
+        Returns:
+        --------
+        float
+            Missing value marker (NaN for variables that can be negative, -1.0 for positive-only)
+        """
+        if variable_name in self.variables_that_can_be_negative:
+            return np.nan
+        else:
+            return -1.0
     
     def _create_metar_dataframe(self, all_station_data, stations_in_bounds):
         """
@@ -374,9 +414,10 @@ class MetarDataSource(BaseDataSource):
                         'valid': record.get('valid', '')
                     }
                     
-                    # Add the data variables
+                    # Add the data variables with appropriate missing value markers
                     for field in self.data_variables:
-                        flat_record[field] = record.get(field, -1.0)
+                        missing_value = self._get_missing_value_for_variable(field)
+                        flat_record[field] = record.get(field, missing_value)
                     
                     all_records.append(flat_record)
                 except Exception as e:
@@ -397,7 +438,7 @@ class MetarDataSource(BaseDataSource):
     def _cleaned_station_df(self, df, station_name, full_range):
         """
         Takes a dataframe and a station name, groups it by that station, 
-        organizes by the desired time range, and imputes.
+        organizes by the desired time range, and imputes with semantic missing values.
         
         Parameters:
         -----------
@@ -427,15 +468,19 @@ class MetarDataSource(BaseDataSource):
             station_df = station_df.set_index('timestep', drop=True)
             station_df = station_df.reindex(full_range)
             
-            # Impute with values not possible so it's clear it's not real data
+            # Impute with semantic missing values
             nan_date = "1900-01-01 00:00"
-            nan_val = -1.0
             cols_to_fill = ['station', 'lon', 'lat']
             
-            # Impute
+            # Impute non-data columns
             station_df['valid'] = station_df['valid'].fillna(nan_date)
             station_df[cols_to_fill] = station_df[cols_to_fill].bfill()
-            station_df = station_df.fillna(nan_val)
+            
+            # Impute data columns with appropriate missing value markers
+            for column in station_df.columns:
+                if column not in ['station', 'name', 'lat', 'lon', 'valid']:
+                    missing_value = self._get_missing_value_for_variable(column)
+                    station_df[column] = station_df[column].fillna(missing_value)
             
             return station_df
         
@@ -571,7 +616,7 @@ class MetarDataSource(BaseDataSource):
                 return {station: [] for station in stations}  # Return empty lists for all stations
         
         # Create full date range for consistent data
-        full_date_range = pd.date_range(start=start_date_with_margin, end=end_date_with_margin, freq='H')
+        full_date_range = pd.date_range(start=start_date_with_margin, end=end_date_with_margin, freq='h')
         
         # Process the CSV data
         try:
@@ -613,7 +658,7 @@ class MetarDataSource(BaseDataSource):
                 
                 if len(station_df) > 0:
                     # Round timestamps to nearest hour (ceiling is consistent with script)
-                    station_df['timestep'] = station_df['valid'].dt.ceil('H')
+                    station_df['timestep'] = station_df['valid'].dt.ceil('h')
                     
                     # Remove duplicate timestamps (keep last)
                     station_df = station_df.drop_duplicates(subset=['timestep'], keep='last')
@@ -624,8 +669,14 @@ class MetarDataSource(BaseDataSource):
                     # Reindex to include all hours in the date range
                     station_df = station_df.reindex(full_date_range, method='nearest')
                     
-                    # Fill NaN values with -1.0 to indicate missing data
-                    station_df = station_df.fillna(-1.0)
+                    # Fill NaN values with appropriate missing value markers
+                    for column in station_df.columns:
+                        if column in numeric_cols:
+                            missing_value = self._get_missing_value_for_variable(column)
+                            station_df[column] = station_df[column].fillna(missing_value)
+                        else:
+                            # Non-numeric columns get generic -1.0
+                            station_df[column] = station_df[column].fillna(-1.0)
                     
                     # Convert back to records
                     records = []

@@ -90,9 +90,9 @@ def interpolate_to_grid(point_data, rows, cols, extent, method='cubic'):
         
         return grid
 
-def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist):
+def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist, allow_negative=False):
     """
-    Preprocess ground site data to place on grid.
+    Preprocess ground site data to place on grid with semantic missing data handling.
     
     Parameters:
     -----------
@@ -104,6 +104,9 @@ def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist):
         Maximum latitude and longitude values
     lat_dist, lon_dist : float
         Latitude and longitude distances
+    allow_negative : bool, optional
+        Whether negative values are valid for this variable (default: False)
+        True for wind components and temperature, False for humidity, wind speed, etc.
     
     Returns:
     --------
@@ -129,11 +132,24 @@ def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist):
             if y < 0:
                 y = 0
                 
-            # Set the value if valid
-            if dfArr[i, 2] < 0:
-                unInter[x, y] = 0
+            # Handle missing values based on variable type
+            value = dfArr[i, 2]
+            
+            if allow_negative:
+                # For variables that can be negative (wind components, temperature)
+                # Only filter NaN values (missing data marker for these variables)
+                if np.isnan(value):
+                    unInter[x, y] = 0
+                else:
+                    unInter[x, y] = value
             else:
-                unInter[x, y] = dfArr[i, 2]
+                # For variables that should be positive (humidity, wind speed, etc.)
+                # Filter negative values (including -1.0 missing data marker)
+                if value < 0 or np.isnan(value):
+                    unInter[x, y] = 0
+                else:
+                    unInter[x, y] = value
+                    
         except Exception as e:
             print(f"Error placing point on grid: {e}")
     
@@ -142,6 +158,7 @@ def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist):
 def interpolate_frame(f, dim):
     """
     Interpolate frame using Inverse Distance Weighting (IDW).
+    Handles both positive and negative values correctly.
     
     Parameters:
     -----------
@@ -155,14 +172,14 @@ def interpolate_frame(f, dim):
     numpy.ndarray
         Interpolated grid
     """
-    # Extract non-zero points
+    # Extract non-zero points (including negative values)
     x_list = []
     y_list = []
     values = []
     
     for x in range(f.shape[0]):
         for y in range(f.shape[1]):
-            if f[x, y] != 0:
+            if f[x, y] != 0:  # Only exclude actual zeros, not negative values
                 x_list.append(x)
                 y_list.append(y)
                 values.append(f[x, y])
@@ -214,13 +231,11 @@ def interpolate_frame(f, dim):
                 weights = 1.0 / (distances**power)
                 # Normalize weights
                 normalized_weights = weights / np.sum(weights)
-                # Calculate weighted average
+                # Calculate weighted average (can produce negative results)
                 interpolated[i, j] = np.sum(normalized_weights * np.array(values))
         
         return interpolated
         
     except Exception as e:
         print(f"Error in IDW interpolation: {e}")
-        
-        # Fall back to a simple method if the interpolation fails
         return np.zeros((dim, dim))
