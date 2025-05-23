@@ -6,6 +6,25 @@ import pandas as pd
 import time
 from requests.exceptions import ConnectionError
 
+def _safe_herbie(date):
+    '''
+    But who will unit test the unit test helpers? 🤔
+
+    Get Herbie object, handling connection reset error
+    '''
+    success = False
+    retries = 1 
+    max_retries = 5
+    while retries < max_retries and not success: 
+        try:
+            H = Herbie(date)
+            success = True
+        except ConnectionError as e:
+            retries += 1
+            print(f"Failed, attempt {retries}")
+            time.sleep(5)
+
+    return H
 class TestHRRRData(unittest.TestCase):
     '''
     We will often test without using the intializer because we don't want
@@ -14,19 +33,17 @@ class TestHRRRData(unittest.TestCase):
     Specifically, we'll use a combo of Herbie with dummy data / data we know
     to work, and an uninitialized HRRRData to test HRRRData's functions.
     '''
+
     @classmethod
     def setUpClass(cls):
         '''
         Set up a Herbie object that will be tested against for 
         the rest of the test class
         '''
-        cls._herbie = Herbie("2021-01-01", model='hrrr')
-        cls._grib_found = bool(cls._herbie)
+        cls._herbie = _safe_herbie("2021-01-01")
+        if not cls._herbie:
+            unittest.SkipTest("Grib file not found, failing all tests.")
         cls._herbie.download("COLMD")
-
-    def setUp(self):
-        if not self._grib_found:
-            self.fail("Grib file not found, failing all tests.")
 
     def test_hrrrdata_doesnt_explode(self):
         '''
@@ -180,17 +197,7 @@ class TestHRRRData(unittest.TestCase):
             )
         ]
 
-        success = False
-        retries = 1 
-        max_retries = 5
-        while retries < max_retries and not success: 
-            try:
-                herbies = [Herbie(date) for date in date_range]
-                success = True
-            except ConnectionError as e:
-                retries += 1
-                print("Failed, attempt {retries}")
-                time.sleep(5)
+        herbies = [_safe_herbie(date) for date in date_range]
         expected = [H.get_localFilePath(product) for H in herbies]
 
         self.assertEqual(

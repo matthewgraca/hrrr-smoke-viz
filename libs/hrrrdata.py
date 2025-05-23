@@ -117,7 +117,7 @@ class HRRRData:
                     if attempt < max_retries:
                         print(
                             f"⚠️  Error while downloading: {e}\n"
-                            f"Attempt number {attempt}/{max_tries}, "
+                            f"Attempt number {attempt}/{max_retries}, "
                             f"backing off by {delay} seconds."
                         )
                         time.sleep(delay)
@@ -127,7 +127,6 @@ class HRRRData:
                             "❌ Download failed after "
                             "{max_retries} attempts!"
                         )
-                        raise
                 except Exception as e:
                     print(f"Unknown exception: {e}")
                     raise
