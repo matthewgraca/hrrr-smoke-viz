@@ -15,6 +15,9 @@ Conda environment
 # Run tests
 From the project directory, execute this command:
 
+`./run_tests.sh`
+
+Which is just:
 `python -m unittest discover -v tests -p "test*.py"`
 
 # Content

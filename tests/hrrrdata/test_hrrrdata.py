@@ -6,6 +6,12 @@ import pandas as pd
 import time
 from requests.exceptions import ConnectionError
 
+# default test parameters we use a lot
+PRODUCT = "COLMD"
+LA_EXTENT = (-118.75, -117.5, 33.5, 34.5)
+LA_EXTENT_NAME = "test_region"
+DATE_RANGE = pd.date_range("2021-01-01", "2021-01-01-03", freq='h')
+
 def _safe_herbie(date):
     '''
     But who will unit test the unit test helpers? 🤔
@@ -25,6 +31,7 @@ def _safe_herbie(date):
             time.sleep(5)
 
     return H
+
 class TestHRRRData(unittest.TestCase):
     '''
     We will often test without using the intializer because we don't want
@@ -45,18 +52,19 @@ class TestHRRRData(unittest.TestCase):
             unittest.SkipTest("Grib file not found, failing all tests.")
         cls._herbie.download("COLMD")
 
+    # NOTE complete class test
     def test_hrrrdata_doesnt_explode(self):
         '''
         The one tap; tests if the entire pipeline works without exploding.
-        This meant to be a sanity check, not an end-to-end check (that's what
+        This meant to be a sanity check, not a comprehensive check (that's what
         the unit tests are for). We check if the combination of all the functions
-        work in the pipeline.
+        work in the pipeline (i.e. no exceptions get thrown).
         '''
         try:
             print()
             hd = HRRRData(
                 start_date="2024-01-01", 
-                end_date="2024-01-01-05",
+                end_date="2024-01-01-03",
                 extent=None,
                 extent_name="buh",
                 product="COLMD",
@@ -70,27 +78,23 @@ class TestHRRRData(unittest.TestCase):
 
         self.assertTrue(True)
 
-    ''' _subregion_grib_files() tests '''
+    # NOTE _subregion_grib_files() tests
     def test_subregion_with_extent(self):
         '''
         Simple test that subregion with extent creates the same file as wgrib2.
         '''
         instance = HRRRData.__new__(HRRRData)  
 
-        extent = (-118.75, -117.5, 33.5, 34.5)
-        extent_name = "test_region"
-        product = "COLMD"
-
         actual = instance._subregion_grib_files(
             [self._herbie], 
-            extent,
-            extent_name,
-            product
+            LA_EXTENT,
+            LA_EXTENT_NAME,
+            PRODUCT 
         )[0]
         expected = wgrib2.region(
-            path=self._herbie.get_localFilePath(product), 
-            extent=extent, 
-            name=extent_name
+            path=self._herbie.get_localFilePath(PRODUCT), 
+            extent=LA_EXTENT, 
+            name=LA_EXTENT_NAME
         )
 
         self.assertEqual(
@@ -108,16 +112,14 @@ class TestHRRRData(unittest.TestCase):
         instance = HRRRData.__new__(HRRRData)  
 
         extent = None
-        extent_name = "test_region"
-        product = "COLMD"
 
         actual = instance._subregion_grib_files(
             [self._herbie], 
             extent,
-            extent_name,
-            product
+            LA_EXTENT_NAME,
+            PRODUCT 
         )[0]
-        expected = self._herbie.get_localFilePath(product)
+        expected = self._herbie.get_localFilePath(PRODUCT)
         
         self.assertEqual(
             actual, 
@@ -134,18 +136,16 @@ class TestHRRRData(unittest.TestCase):
         instance = HRRRData.__new__(HRRRData)  
 
         extent = None
-        extent_name = "test_region"
-        product = "COLMD"
         files = instance._subregion_grib_files(
             [self._herbie], 
             extent,
-            extent_name,
-            product
+            LA_EXTENT_NAME,
+            PRODUCT 
         )
 
         actual = instance._grib_to_np(files)
         expected = instance._grib_to_np(
-            [self._herbie.get_localFilePath(product)]
+            [self._herbie.get_localFilePath(PRODUCT)]
         )
 
         np.testing.assert_array_equal(actual, expected) 
@@ -159,48 +159,45 @@ class TestHRRRData(unittest.TestCase):
         instance = HRRRData.__new__(HRRRData)  
 
         extent = None
-        extent_name = "test_region"
-        product = "COLMD"
         files = instance._subregion_grib_files(
             [self._herbie, self._herbie], 
             extent,
-            extent_name,
-            product
+            LA_EXTENT_NAME, 
+            PRODUCT 
         )
 
         actual = instance._grib_to_np(files)
         expected = instance._grib_to_np(
             [
-                self._herbie.get_localFilePath(product), 
-                self._herbie.get_localFilePath(product)
+                self._herbie.get_localFilePath(PRODUCT), 
+                self._herbie.get_localFilePath(PRODUCT)
             ]
         )
 
         np.testing.assert_array_equal(actual, expected) 
 
-    ''' _attempt_download() tests '''
+    # NOTE _attempt_download() tests
     def test_multithread_dl_matches_singlethread_dl(self):
         '''
         Checking if the multithread download works compared to the single
         '''
         instance = HRRRData.__new__(HRRRData)  
 
-        product = "COLMD"
-        date_range = pd.date_range("2021-01-01", "2021-01-01-05", freq='h')
-
         print()
         actual = [
-            H.get_localFilePath(product)
+            H.get_localFilePath(PRODUCT)
             for H in instance._attempt_download(
-                date_range,
-                product
+                DATE_RANGE,
+                PRODUCT 
             )
         ]
 
-        herbies = [_safe_herbie(date) for date in date_range]
-        expected = [H.get_localFilePath(product) for H in herbies]
+        expected = [
+            H.get_localFilePath(PRODUCT) 
+            for H in [_safe_herbie(date) for date in DATE_RANGE]
+        ]
 
-        self.assertEqual(
+        self.assertListEqual(
             actual, 
             expected,
             f"Expected {expected}, returned {actual}."

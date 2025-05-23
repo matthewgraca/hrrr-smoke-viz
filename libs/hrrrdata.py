@@ -100,13 +100,13 @@ class HRRRData:
         max_threads=20
     ):
         '''
-        Attempt to use FastHerbie to download HRRR data.
+        FastHerbie, but it throws exceptions instead of just logging them.
+        call it furbie, lmk
         - Will handle reset connection (104), goes for 5 max attempts
         - Any unhandled exception will throw it up.
+
         Returns a list of Herbie objects.
         '''
-        # FastHerbie, but it throws instead of logs exceptions. 
-        # call it furbie yuh 
         def download_thread(dl_task, **kwargs):
             max_retries = 5
             delay = 2
@@ -124,33 +124,34 @@ class HRRRData:
                         delay *= 2
                     else:
                         print(
-                            "❌ Download failed after "
-                            "{max_retries} attempts!"
+                            "❌ Download failed after {max_retries} attempts!"
                         )
+                        raise
                 except Exception as e:
                     print(f"Unknown exception: {e}")
                     raise
 
-        tasks = len(date_range) * len(forecast_range)
-        threads = min(tasks, max_threads)
+        n_tasks = len(date_range) * len(forecast_range)
+        n_threads = min(n_tasks, max_threads)
 
-        # multithread locate grib files
-        def herbie_task(date_step, forecast_step):
-            return download_thread(Herbie, date=date_step, fxx=forecast_step)
-
-        herbies = []
-        with ThreadPoolExecutor(threads) as exe:
+        # multithread locating grib files
+        # will pump out a list of herbie objects
+        with ThreadPoolExecutor(n_threads) as exe:
+            def herbie_task(date_step, forecast_step):
+                return download_thread(
+                    Herbie, date=date_step, fxx=forecast_step
+                )
             futures = [
                 exe.submit(herbie_task, date_step, forecast_step)
                 for date_step in date_range
                 for forecast_step in forecast_range
             ]
-
-        for future in as_completed(futures):
-            herbies.append(future.result())
-
+        herbies = [future.result() for future in as_completed(futures)]
         herbies.sort(key=lambda H: H.fxx)
         herbies.sort(key=lambda H: H.date)
+
+        # notify user about grib files that can't be found;
+        # not really planning on doing anything about though
         found_files = [H for H in herbies if H.grib is not None]
         lost_files = [H for H in herbies if H.grib is None]
         if len(lost_files) > 0:
@@ -159,23 +160,16 @@ class HRRRData:
                 f"{len(lost_files)}/{len(self.file_exists) + len(lost_files)} "
                 f"GRIB files."
             )
-        def multithread_herbie_downloads():
-            return herbies
 
         # multithread download grib files 
-        outfiles = []
-        with ThreadPoolExecutor(threads) as exe:
+        with ThreadPoolExecutor(n_threads) as exe:
+            def dl_grib_task(H, product):
+                return download_thread(H.download, search=product)
             futures = [
-                exe.submit(
-                    lambda product=product: download_thread(
-                        H.download, search=product
-                    )
-                )
-                for H in found_files 
+                exe.submit(dl_grib_task, H, product) 
+                for H in found_files
             ]
-
-        for future in as_completed(futures):
-            outfiles.append(future.result())
+        outfiles = [future.result() for future in as_completed(futures)]
 
         return herbies
 
