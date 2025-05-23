@@ -38,17 +38,17 @@ class HRRRData:
         # pipeline
         # frame-by-frame sampling
         if sample_setting == 1:
-            herbie_ds = self.__get_hrrr_data_frame_by_frame(
+            herbie_ds = self._get_hrrr_data_frame_by_frame(
                 start_date, end_date, product, verbose
             )
-            subregion_grib_ds = self.__subregion_grib_files(
+            subregion_grib_ds = self._subregion_grib_files(
                 herbie_ds, extent, extent_name, product
             )
-            subregion_frames = self.__grib_to_np(subregion_grib_ds)
-            preprocessed_frames = self.__interpolate_and_add_channel_axis(
+            subregion_frames = self._grib_to_np(subregion_grib_ds)
+            preprocessed_frames = self._interpolate_and_add_channel_axis(
                 subregion_frames, dim
             )
-            processed_ds = self.__sliding_window_of(
+            processed_ds = self._sliding_window_of(
                 preprocessed_frames, frames_per_sample
             )
 
@@ -60,18 +60,18 @@ class HRRRData:
         elif sample_setting == 2:
             # generate a list of samples. each sample is n frames (forecasts)
             # no sliding window needed; n frames already generated
-            herbie_ds = self.__get_hrrr_data_offset_by_forecast(
+            herbie_ds = self._get_hrrr_data_offset_by_forecast(
                 start_date, end_date, frames_per_sample, product, verbose
             )
-            subregion_grib_ds = self.__subregion_grib_files(
+            subregion_grib_ds = self._subregion_grib_files(
                 herbie_ds, extent, extent_name, product
             )
-            subregion_frames = self.__grib_to_np(subregion_grib_ds)
-            preprocessed_frames = self.__interpolate_and_add_channel_axis(
+            subregion_frames = self._grib_to_np(subregion_grib_ds)
+            preprocessed_frames = self._interpolate_and_add_channel_axis(
                 subregion_frames, dim
             )
             # sliding window needs to be offset by the number of frames
-            processed_ds = self.__sliding_window_of(
+            processed_ds = self._sliding_window_of(
                 frames=preprocessed_frames, 
                 window_size=frames_per_sample, 
                 full_slide=True 
@@ -89,7 +89,7 @@ class HRRRData:
             )
             raise ValueError(" ".join(msg))
 
-    def __attempt_download(self, date_range, product, forecast_range=[0]):
+    def _attempt_download(self, date_range, product, forecast_range=[0]):
         '''
         Attempt to use FastHerbie to download HRRR data.
         - Will handle reset connection (104), goes for 5 max attempts
@@ -131,7 +131,7 @@ class HRRRData:
 
         return FH
 
-    def __get_hrrr_data_frame_by_frame(
+    def _get_hrrr_data_frame_by_frame(
         self, 
         start_date, 
         end_date, 
@@ -153,7 +153,7 @@ class HRRRData:
         end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
         dates = pd.date_range(start_date, end_date, freq="1h")
 
-        FH = self.__attempt_download(
+        FH = self._attempt_download(
             date_range=dates, 
             product=product, 
             forecast_range=[0]
@@ -164,7 +164,7 @@ class HRRRData:
 
         return FH.objects
 
-    def __get_hrrr_data_offset_by_forecast(
+    def _get_hrrr_data_offset_by_forecast(
         self, 
         start_date,
         end_date,
@@ -192,7 +192,7 @@ class HRRRData:
         end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
         dates = pd.date_range(offset_start_date, end_date, freq="1h")
 
-        FH = self.__attempt_download(
+        FH = self._attempt_download(
             date_range=dates,
             product=product,
             forecast_range=[i for i in range(1, offset + 1)]
@@ -203,7 +203,7 @@ class HRRRData:
 
         return FH.objects 
 
-    def __subregion_grib_files(self, herbie_data, extent, extent_name, product):
+    def _subregion_grib_files(self, herbie_data, extent, extent_name, product):
         '''
         Takes a list of Herbie objects, and subregions the downloaded grib 
         files. If there is no defined extent, no changes will be made.
@@ -226,14 +226,18 @@ class HRRRData:
             # subregion grib files
             file = H.get_localFilePath(product)
             idx_file = wgrib2.create_inventory_file(file)
-            subset_file = wgrib2.region(file, extent, name=extent_name)
+            subset_file = (
+                file if extent is None
+                else wgrib2.region(file, extent, name=extent_name)
+            )
             subregion_grib_files.append(subset_file)
 
         return subregion_grib_files
 
-    def __grib_to_np(self, grib_files):
+    def _grib_to_np(self, grib_files):
         '''
-        Converts a list of downloaded grib files into numpy
+        Converts a list of downloaded grib files into numpy. We assume that
+        there is only one data variable in the grib file.
 
         Arguments:
             grib_files: The paths of the grib files being converted
@@ -261,7 +265,7 @@ class HRRRData:
 
         return np.array(np_of_grib)
 
-    def __interpolate_and_add_channel_axis(self, subregion_ds, dim):
+    def _interpolate_and_add_channel_axis(self, subregion_ds, dim):
         ''' 
         Takes a dataset frames (x, y), interpolates/decimates according to
         the dimensions, and adds a channel axis.
@@ -285,7 +289,7 @@ class HRRRData:
 
         return frames
 
-    def __sliding_window_of(self, frames, window_size, full_slide=False):
+    def _sliding_window_of(self, frames, window_size, full_slide=False):
         '''
         Uses a sliding window to create samples from frames.
 
