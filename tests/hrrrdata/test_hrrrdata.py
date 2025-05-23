@@ -2,6 +2,9 @@ import unittest
 from libs.hrrrdata import HRRRData
 from herbie import Herbie, wgrib2
 import numpy as np
+import pandas as pd
+import time
+from requests.exceptions import ConnectionError
 
 class TestHRRRData(unittest.TestCase):
     '''
@@ -25,6 +28,32 @@ class TestHRRRData(unittest.TestCase):
         if not self._grib_found:
             self.fail("Grib file not found, failing all tests.")
 
+    def test_hrrrdata_doesnt_explode(self):
+        '''
+        The one tap; tests if the entire pipeline works without exploding.
+        This meant to be a sanity check, not an end-to-end check (that's what
+        the unit tests are for). We check if the combination of all the functions
+        work in the pipeline.
+        '''
+        try:
+            print()
+            hd = HRRRData(
+                start_date="2024-01-01", 
+                end_date="2024-01-01-05",
+                extent=None,
+                extent_name="buh",
+                product="COLMD",
+                frames_per_sample=1,
+                dim=40,
+                sample_setting=1,
+                verbose=False
+            )
+        except Exception as e:
+            self.fail(f"Exception got raised: {type(e).__name__}: {e}")
+
+        self.assertTrue(True)
+
+    ''' _subregion_grib_files() tests '''
     def test_subregion_with_extent(self):
         '''
         Simple test that subregion with extent creates the same file as wgrib2.
@@ -131,3 +160,41 @@ class TestHRRRData(unittest.TestCase):
         )
 
         np.testing.assert_array_equal(actual, expected) 
+
+    ''' _attempt_download() tests '''
+    def test_multithread_dl_matches_singlethread_dl(self):
+        '''
+        Checking if the multithread download works compared to the single
+        '''
+        instance = HRRRData.__new__(HRRRData)  
+
+        product = "COLMD"
+        date_range = pd.date_range("2021-01-01", "2021-01-01-05", freq='h')
+
+        print()
+        actual = [
+            H.get_localFilePath(product)
+            for H in instance._attempt_download(
+                date_range,
+                product
+            )
+        ]
+
+        success = False
+        retries = 1 
+        max_retries = 5
+        while retries < max_retries and not success: 
+            try:
+                herbies = [Herbie(date) for date in date_range]
+                success = True
+            except ConnectionError as e:
+                retries += 1
+                print("Failed, attempt {retries}")
+                time.sleep(5)
+        expected = [H.get_localFilePath(product) for H in herbies]
+
+        self.assertEqual(
+            actual, 
+            expected,
+            f"Expected {expected}, returned {actual}."
+        )

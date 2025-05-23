@@ -5,6 +5,9 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 import cv2
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.exceptions import ConnectionError 
 
 class HRRRData:
     def __init__(
@@ -89,47 +92,93 @@ class HRRRData:
             )
             raise ValueError(" ".join(msg))
 
-    def _attempt_download(self, date_range, product, forecast_range=[0]):
+    def _attempt_download(
+        self, 
+        date_range, 
+        product, 
+        forecast_range=[0], 
+        max_threads=20
+    ):
         '''
         Attempt to use FastHerbie to download HRRR data.
         - Will handle reset connection (104), goes for 5 max attempts
-        - Any unhandled exception will just exit.
-        Returns the FastHerbie object, which is pretty much a list of Herbie objects.
+        - Any unhandled exception will throw it up.
+        Returns a list of Herbie objects.
         '''
-        downloaded = False 
-        max_tries = 5
-        tries = 1 
-        backoff_seconds = 2 
-        while not downloaded and tries < max_tries:
-            try:
-                tries += 1
-                FH = FastHerbie(date_range, model="hrrr", fxx=forecast_range)
-                FH.download(product)
-                downloaded = True
-            except ConnectionResetError as e:
-                if tries == max_tries:
-                    print(
-                        f"❌ {tries}/{max_tries} attempts made.\n"
-                        f"Exiting..."
-                    )
-                    sys.exit(1)
-                print(
-                    f"⚠️  Error while downloading; {e}\n"
-                    f"Attempt number {tries}/{max_tries}, "
-                    f"backing off by {backoff_seconds} seconds."
-                )
-                time.sleep(backoff_seconds)
-                backoff_seconds *= 2
-            except Exception as e:
-                print(
-                    f"❌ Something went wrong.\n"
-                    f"Exception type: {type(e)}, and name:{type(e).__name__}\n"
-                    f"Exception: {e}\n"
-                    f"Exiting..."
-                )
-                sys.exit(1)
+        # FastHerbie, but it throws instead of logs exceptions. 
+        # call it furbie yuh 
+        def download_thread(dl_task, **kwargs):
+            max_retries = 5
+            delay = 2
+            for attempt in range(2, max_retries+1):
+                try:
+                    return dl_task(**kwargs)
+                except ConnectionError as e:
+                    if attempt < max_retries:
+                        print(
+                            f"⚠️  Error while downloading: {e}\n"
+                            f"Attempt number {attempt}/{max_tries}, "
+                            f"backing off by {delay} seconds."
+                        )
+                        time.sleep(delay)
+                        delay *= 2
+                    else:
+                        print(
+                            "❌ Download failed after "
+                            "{max_retries} attempts!"
+                        )
+                        raise
+                except Exception as e:
+                    print(f"Unknown exception: {e}")
+                    raise
 
-        return FH
+        tasks = len(date_range) * len(forecast_range)
+        threads = min(tasks, max_threads)
+
+        # multithread locate grib files
+        def herbie_task(date_step, forecast_step):
+            return download_thread(Herbie, date=date_step, fxx=forecast_step)
+
+        herbies = []
+        with ThreadPoolExecutor(threads) as exe:
+            futures = [
+                exe.submit(herbie_task, date_step, forecast_step)
+                for date_step in date_range
+                for forecast_step in forecast_range
+            ]
+
+        for future in as_completed(futures):
+            herbies.append(future.result())
+
+        herbies.sort(key=lambda H: H.fxx)
+        herbies.sort(key=lambda H: H.date)
+        found_files = [H for H in herbies if H.grib is not None]
+        lost_files = [H for H in herbies if H.grib is None]
+        if len(lost_files) > 0:
+            print(
+                f"⚠️  Could not find "
+                f"{len(lost_files)}/{len(self.file_exists) + len(lost_files)} "
+                f"GRIB files."
+            )
+        def multithread_herbie_downloads():
+            return herbies
+
+        # multithread download grib files 
+        outfiles = []
+        with ThreadPoolExecutor(threads) as exe:
+            futures = [
+                exe.submit(
+                    lambda product=product: download_thread(
+                        H.download, search=product
+                    )
+                )
+                for H in found_files 
+            ]
+
+        for future in as_completed(futures):
+            outfiles.append(future.result())
+
+        return herbies
 
     def _get_hrrr_data_frame_by_frame(
         self, 
@@ -160,9 +209,9 @@ class HRRRData:
         )
 
         if verbose:
-            [print(repr(H)) for H in FH.objects]
+            [print(repr(H)) for H in FH]
 
-        return FH.objects
+        return FH
 
     def _get_hrrr_data_offset_by_forecast(
         self, 
@@ -199,9 +248,9 @@ class HRRRData:
         )
 
         if verbose:
-            [print(repr(H)) for H in FH.objects]
+            [print(repr(H)) for H in FH]
 
-        return FH.objects 
+        return FH
 
     def _subregion_grib_files(self, herbie_data, extent, extent_name, product):
         '''
