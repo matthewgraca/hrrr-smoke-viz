@@ -8,13 +8,15 @@ import cv2
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.exceptions import ConnectionError 
+import subprocess
+from shutil import which
 
 class HRRRData:
     def __init__(
         self,
         start_date,
         end_date,
-        extent=None, #NOTE this fails, will attempt to subregion nothing
+        extent=None, 
         extent_name='subset_region',
         product='MASSDEN',
         frames_per_sample=1,
@@ -107,48 +109,17 @@ class HRRRData:
 
         Returns a list of Herbie objects.
         '''
-        def download_thread(dl_task, **kwargs):
-            max_retries = 5
-            delay = 2
-            for attempt in range(2, max_retries+1):
-                try:
-                    return dl_task(**kwargs)
-                except ConnectionError as e:
-                    if attempt < max_retries:
-                        print(
-                            f"⚠️  Error while downloading: {e}\n"
-                            f"Attempt number {attempt}/{max_retries}, "
-                            f"backing off by {delay} seconds."
-                        )
-                        time.sleep(delay)
-                        delay *= 2
-                    else:
-                        print(
-                            "❌ Download failed after {max_retries} attempts!"
-                        )
-                        raise
-                except Exception as e:
-                    print(f"Unknown exception: {e}")
-                    raise
 
         n_tasks = len(date_range) * len(forecast_range)
         n_threads = min(n_tasks, max_threads)
 
         # multithread locating grib files
         # will pump out a list of herbie objects
-        with ThreadPoolExecutor(n_threads) as exe:
-            def herbie_task(date_step, forecast_step):
-                return download_thread(
-                    Herbie, date=date_step, fxx=forecast_step
-                )
-            futures = [
-                exe.submit(herbie_task, date_step, forecast_step)
-                for date_step in date_range
-                for forecast_step in forecast_range
-            ]
-        herbies = [future.result() for future in as_completed(futures)]
-        herbies.sort(key=lambda H: H.fxx)
-        herbies.sort(key=lambda H: H.date)
+        herbies = self._multithread_dl_herbie_objects(
+            date_range, 
+            forecast_range, 
+            n_threads
+        )
 
         # notify user about grib files that can't be found;
         # not really planning on doing anything about though
@@ -162,16 +133,85 @@ class HRRRData:
             )
 
         # multithread download grib files 
+        outfiles = self._multithread_dl_grib_files(
+            found_files, 
+            product, 
+            n_threads
+        )
+
+        return herbies
+
+    # NOTE downloading helpers
+    def _multithread_dl_grib_files(self, herbie_data, product, n_threads):
         with ThreadPoolExecutor(n_threads) as exe:
             def dl_grib_task(H, product):
-                return download_thread(H.download, search=product)
+                return self._download_thread(H.download, search=product)
             futures = [
                 exe.submit(dl_grib_task, H, product) 
-                for H in found_files
+                for H in herbie_data 
             ]
         outfiles = [future.result() for future in as_completed(futures)]
 
+        return outfiles
+    
+    def _multithread_dl_herbie_objects(
+        self, 
+        date_range, 
+        forecast_range, 
+        n_threads
+    ):
+        '''
+        Finds the remote grib files using Herbie. The Herbie object contains
+        a bunch of metadata regarding the grib file.
+
+        Also, the herbie objects will be sorted by date and forecast time.
+        '''
+        with ThreadPoolExecutor(n_threads) as exe:
+            def herbie_task(date_step, forecast_step):
+                return self._download_thread(
+                    Herbie, date=date_step, fxx=forecast_step
+                )
+            futures = [
+                exe.submit(herbie_task, date_step, forecast_step)
+                for date_step in date_range
+                for forecast_step in forecast_range
+            ]
+        herbies = [future.result() for future in as_completed(futures)]
+        herbies.sort(key=lambda H: H.fxx)
+        herbies.sort(key=lambda H: H.date)
+
         return herbies
+
+    def _download_thread(self, dl_task, **kwargs):
+        '''
+        The function responsible for performing the download.
+
+        If there are no exceptions, the task to download will be run 
+        Will catch 104: Connection reset, and retry up to 5 times.
+        '''
+        max_attempts = 5
+        delay = 2
+        for attempt in range(2, max_attempts+2):
+            try:
+                return dl_task(**kwargs)
+            except ConnectionError as e:
+                if attempt <= max_attempts:
+                    print(
+                        f"⚠️  Error while downloading: {e}\n"
+                        f"🔧 Attempt number {attempt}/{max_attempts}, "
+                        f"backing off by {delay} seconds."
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    print(
+                        "❌ Download failed after {max_attempts} attempts!"
+                    )
+                    raise
+            except Exception as e:
+                print(f"Unknown exception: {e}")
+                raise
+        # shouldn't be here. either throws error or returns the task.
 
     def _get_hrrr_data_frame_by_frame(
         self, 
@@ -265,16 +305,65 @@ class HRRRData:
         '''
         subregion_grib_files = []
         for H in herbie_data:
-            # subregion grib files
-            file = H.get_localFilePath(product)
-            idx_file = wgrib2.create_inventory_file(file)
-            subset_file = (
-                file if extent is None
-                else wgrib2.region(file, extent, name=extent_name)
-            )
-            subregion_grib_files.append(subset_file)
+            attempts = 1
+            max_attempts = 3
+            success = False
+            while not success:
+                try:
+                    file = H.get_localFilePath(product)
+                    idx_file = wgrib2.create_inventory_file(file)
+                    subset_file = (
+                        file if extent is None
+                        else wgrib2.region(file, extent, name=extent_name)
+                    )
+                    subregion_grib_files.append(subset_file)
+                    success = True
+                except subprocess.CalledProcessError as e:
+                    if attempts > max_attempts:
+                        print("🚨 Max attempts reached, raising error.")
+                        raise
+
+                    print(
+                        f"⚠️  Issue found with file {file}.\n"
+                        f"wgrib2 exit code: {e.returncode}, "
+                        f"with error: {e.stderr}\n"
+                        f"Attempt {attempt}/{max_attempts}: "
+                        f"redownload and running subregion."
+                    )
+
+                    self._redownload(self, H, product, file)
+                    attempt += 1
+                except Exception as e:
+                    print(f"Unknown exception: {e}")
+                    raise
 
         return subregion_grib_files
+
+    def _redownload(self, H, product, file):
+        '''
+        Helper to subregion(), which will delete the an offending file
+        and use the Herbie object + the product to redownload the file
+        '''
+        p = subprocess.run(
+            f"{which("rm")} {file}",
+            shell=True,
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+        )
+
+        # if file DNE, notify user (but do nothing about it)
+        if p.returncode != 0:
+            print(f"Warning: {p.stderr}")
+
+        # the issue here is the new file may be different;
+        # idk if redownloading changes the name? it seems that for
+        # the exact same subset, the file doesn't change; that's a relief..
+        self._multithread_dl_grib_files(
+            herbie_data=[H], 
+            product=product, 
+            n_threads=1
+        )
 
     def _grib_to_np(self, grib_files):
         '''

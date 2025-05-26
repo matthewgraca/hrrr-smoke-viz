@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import time
 from requests.exceptions import ConnectionError
+import subprocess
+from shutil import which
 
 # default test parameters we use a lot
 PRODUCT = "COLMD"
@@ -21,16 +23,15 @@ def _safe_herbie(date):
     success = False
     retries = 1 
     max_retries = 5
-    while retries < max_retries and not success: 
+    while retries < max_retries: 
         try:
-            H = Herbie(date)
-            success = True
+            return Herbie(date)
         except ConnectionError as e:
             retries += 1
-            print(f"Failed, attempt {retries}")
+            print(f"Failed, attempt {retries}...")
             time.sleep(5)
 
-    return H
+    raise Exception("Retried too many times.")
 
 class TestHRRRData(unittest.TestCase):
     '''
@@ -202,3 +203,26 @@ class TestHRRRData(unittest.TestCase):
             expected,
             f"Expected {expected}, returned {actual}."
         )
+
+    # NOTE subregion_grib_files() tests
+    def test_missing_grib_hits_the_exception(self):
+        '''
+        Subregion fails when file deleted before subregioning
+        I don't know how to test `wgrib2` failing, but it's CalledProcessError,
+        so I'm going to test by using `rm`. 
+
+        I wouldn't consider subregion_grib_files() tested until we can actually
+        catch this error red-handed.
+        '''
+        instance = HRRRData.__new__(HRRRData)  
+
+        print()
+        H = [_safe_herbie(pd.to_datetime("2021-02-01"))]
+        with self.assertRaises(subprocess.CalledProcessError):
+            p = subprocess.run(
+                f"{which("rm")} {H[0].get_localFilePath(PRODUCT)}",
+                shell=True,
+                capture_output=True,
+                encoding="utf-8",
+                check=True,
+            )
