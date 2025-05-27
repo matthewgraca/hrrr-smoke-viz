@@ -1,4 +1,4 @@
-from herbie import Herbie, FastHerbie, wgrib2
+from herbie import Herbie, wgrib2
 from pathlib import Path
 from datetime import timedelta
 import pandas as pd
@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.exceptions import ConnectionError 
 import subprocess
 from shutil import which
+import os
 
 class HRRRData:
     def __init__(
@@ -22,7 +23,9 @@ class HRRRData:
         frames_per_sample=1,
         dim=40,
         sample_setting=1,
-        verbose=False
+        verbose=False,
+        processed_cache_dir='data/hrrr_processed.npz',
+        force_reprocess=False
     ):
         '''
         Gets the HRRR data.
@@ -38,8 +41,50 @@ class HRRRData:
 
         Members:
             data: The complete processed HRRR data
-            herbie: The inventory of Herbie objects of the HRRR data
         '''
+        # read from cache if enabled
+        if processed_cache_dir is not None:
+            os.makedirs(os.path.dirname(processed_cache_dir), exist_ok=True)
+
+            cache_exists = os.path.exists(processed_cache_dir)
+            if not force_reprocess and cache_exists: 
+                print(
+                    f"📖 Loading processed HRRR data from cache: "
+                    f"{processed_cache_dir}"
+                )
+                try:
+                    # attempt to read from cache
+                    cached_data = np.load(
+                        processed_cache_dir, 
+                        allow_pickle=True
+                    )
+                    self.data = cached_data['data']
+                    cached_start, cached_end = cached_data['date_range']
+                    cached_product = cached_data['product']
+                    cached_extent = cached_data['extent']
+                    cached_sample_setting = cached_data['sample_setting']
+
+                    print(f"🎉 Successfully loaded data from cache:")
+                    print(
+                        f"  - Data shape    : {self.data.shape}\n"
+                        f"  - Date range    : [{cached_start}, "
+                        f"{cached_end})\n"
+                        f"  - Product used  : {cached_product}\n"
+                        f"  - Extent        : {cached_extent}\n"
+                        f"  - Sample setting: {cached_sample_setting}"
+                    )
+                    return # return early if loading cache is successful
+                except Exception as e:
+                    print(
+                        f"❗ Error loading from cache: {e}. "
+                        f"Will reprocess data.")
+            else:
+                print(
+                    f"🔎 Either cache is empty, or force_reprocess flag "
+                    f"was raised. Either way, we will download and "
+                    f"process from scratch."
+                )
+
         # pipeline
         # frame-by-frame sampling
         if sample_setting == 1:
@@ -59,7 +104,6 @@ class HRRRData:
 
             # attributes
             self.data = processed_ds
-            self.herbie = herbie_ds
 
         # offset-by-sample with forecast sampling
         elif sample_setting == 2:
@@ -84,7 +128,6 @@ class HRRRData:
 
             # attributes
             self.data = processed_ds
-            self.herbie = herbie_ds
 
         else:
             msg = (
@@ -93,6 +136,30 @@ class HRRRData:
                 "2 - offset-by-sample with forecasts\n"
             )
             raise ValueError(" ".join(msg))
+
+        # cache the data
+        if processed_cache_dir is None:
+            print("🙅 No cache directory set. Data will not be cached.")
+        else:
+            print(
+                f"💾 Saving processed HRRR data to cache: "
+                f"{processed_cache_dir}"
+            )
+            try:
+                np.savez_compressed(
+                    processed_cache_dir,
+                    data=self.data,
+                    date_range=np.array([start_date, end_date]),
+                    product=np.array([product]),
+                    extent=np.array(extent) if not None else np.array([]),
+                    sample_setting=np.array([sample_setting])
+                )
+                print("🎉 Successfully saved processed data to cache.")
+            except Exception as e:
+                print(
+                    f"⚠️  Warning: Could not save processed data to cache: "
+                    f"{e}"
+                )
 
     def _attempt_download(
         self, 

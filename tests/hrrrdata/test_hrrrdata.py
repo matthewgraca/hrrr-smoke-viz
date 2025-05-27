@@ -7,6 +7,7 @@ import time
 from requests.exceptions import ConnectionError
 import subprocess
 from shutil import which
+import os
 
 # default test parameters we use a lot
 PRODUCT = "COLMD"
@@ -72,7 +73,9 @@ class TestHRRRData(unittest.TestCase):
                 frames_per_sample=1,
                 dim=40,
                 sample_setting=1,
-                verbose=False
+                verbose=False,
+                processed_cache_dir=None,
+                force_reprocess=False
             )
         except Exception as e:
             self.fail(f"Exception got raised: {type(e).__name__}: {e}")
@@ -226,3 +229,109 @@ class TestHRRRData(unittest.TestCase):
                 encoding="utf-8",
                 check=True,
             )
+
+    # NOTE caching tests
+    def test_saving_cache_works(self):
+        '''
+        Checks if saving data to the cache actually works.
+        '''
+        cache_dir = 'tests/hrrrdata/data/hrrr_processed.npz'
+        print()
+        hd = HRRRData(
+            start_date="2024-03-01-00", 
+            end_date="2024-03-01-01",
+            extent=None,
+            extent_name="buh",
+            product=PRODUCT,
+            frames_per_sample=1,
+            dim=40,
+            sample_setting=1,
+            verbose=False,
+            processed_cache_dir=cache_dir,
+            force_reprocess=False
+        )
+        
+        path_exists = os.path.exists(cache_dir)
+
+        # clean up for subsequent tests
+        if path_exists:
+            os.remove(cache_dir)
+
+        msg = f"{cache_dir} does not exist."
+        self.assertTrue(path_exists, msg)
+
+    def test_no_cache_means_no_saving(self):
+        '''
+        Checks that setting processed_cache_dir to None doesn't save the data.
+        '''
+        cache_dir = 'tests/hrrrdata/data/hrrr_processed.npz'
+        print()
+        hd = HRRRData(
+            start_date="2024-03-01-00", 
+            end_date="2024-03-01-01",
+            extent=None,
+            extent_name="buh",
+            product=PRODUCT,
+            frames_per_sample=1,
+            dim=40,
+            sample_setting=1,
+            verbose=False,
+            processed_cache_dir=None,
+            force_reprocess=False
+        )
+        
+        path_exists = os.path.exists(cache_dir)
+
+        # clean up for subsequent tests
+        if path_exists:
+            os.remove(cache_dir)
+
+        msg = f"{cache_dir} should not exist."
+        self.assertFalse(path_exists, msg)
+
+    def test_saving_and_loading_from_cache(self):
+        '''
+        Checks if saving to AND loading from cache actually works.
+        '''
+        # create cache
+        cache_dir = 'tests/hrrrdata/data/hrrr_processed.npz'
+        print()
+        hd = HRRRData(
+            start_date="2024-03-01-00", 
+            end_date="2024-03-01-01",
+            extent=None,
+            extent_name="buh",
+            product=PRODUCT,
+            frames_per_sample=1,
+            dim=40,
+            sample_setting=1,
+            verbose=False,
+            processed_cache_dir=cache_dir,
+            force_reprocess=False
+        )
+
+        # read cache
+        hd2 = HRRRData(
+            start_date="2024-03-01-00", 
+            end_date="2024-03-01-01",
+            extent=None,
+            extent_name="buh",
+            product=PRODUCT,
+            frames_per_sample=1,
+            dim=40,
+            sample_setting=1,
+            verbose=False,
+            processed_cache_dir=cache_dir,
+            force_reprocess=False
+        )
+        
+        path_exists = os.path.exists(cache_dir)
+
+        # clean up for subsequent tests
+        if path_exists:
+            os.remove(cache_dir)
+            msg = f"No data found in cache."
+            self.assertTrue(len(hd2.data) > 0, msg)
+        else:
+            msg = f"{cache_dir} does not exist."
+            self.assertTrue(path_exists, msg)
