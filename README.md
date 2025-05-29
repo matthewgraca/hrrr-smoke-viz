@@ -7,10 +7,17 @@ Conda environment
 - GPU: `conda env create -f envs/gpu_environment.yml`
 
 # Output of `hrrr_smoke_viz`: 12 hour forecast
+
+<details>
+
+<summary>Expand to see gifs</summary>
+
 ## Mass density of smoke product
 ![](visualizations/mdens_images/full_forecast.gif)
 ## Vertically-integrated smoke product
 ![](visualizations/colmd_images/full_forecast.gif)
+
+</details>
 
 # Run tests
 From the project directory, execute this command:
@@ -18,6 +25,7 @@ From the project directory, execute this command:
 `./run_tests.sh`
 
 Which is just:
+
 `python -m unittest discover -v tests -p "test*.py"`
 
 # Content
