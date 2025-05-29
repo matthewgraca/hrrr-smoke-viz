@@ -227,11 +227,8 @@ def interpolate_frame(f, dim):
                     interpolated[i, j] = values[exact_match[0]]
                     continue
                 
-                # Calculate IDW weights based on distances
                 weights = 1.0 / (distances**power)
-                # Normalize weights
                 normalized_weights = weights / np.sum(weights)
-                # Calculate weighted average (can produce negative results)
                 interpolated[i, j] = np.sum(normalized_weights * np.array(values))
         
         return interpolated
