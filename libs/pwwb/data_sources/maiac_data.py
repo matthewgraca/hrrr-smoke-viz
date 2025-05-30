@@ -7,10 +7,11 @@ from pyhdf.SD import SD, SDC
 from scipy.ndimage import zoom
 import traceback
 
-class MaiacDataSource:
-    """
-    Class to handle MAIAC AOD data collection and processing.
-    """
+from libs.pwwb.data_sources.base_data_source import BaseDataSource
+
+
+class MaiacDataSource(BaseDataSource):
+    """Fetches and processes MAIAC Aerosol Optical Depth data from NASA EarthData."""
     
     def __init__(
         self,
@@ -23,95 +24,66 @@ class MaiacDataSource:
         verbose=False
     ):
         """
-        Initialize the MAIAC AOD data source.
+        Initialize MAIAC AOD data source.
         
         Parameters:
         -----------
         timestamps : pandas.DatetimeIndex
-            Timestamps for which to collect data
+            Target timestamps for data collection
         extent : tuple
-            Geographic bounds in format (min_lon, max_lon, min_lat, max_lat)
+            Geographic bounds (min_lon, max_lon, min_lat, max_lat)
         dim : int
-            Spatial resolution of the output grid
+            Output grid resolution (dim x dim)
         cache_dir : str
-            Directory to store cache files
+            Cache directory path
         cache_prefix : str
-            Prefix for cache filenames
+            Cache filename prefix
         use_cached_data : bool
-            Whether to use cached data if available
+            Whether to use existing cache
         verbose : bool
-            Whether to print verbose output
+            Enable detailed logging
         """
-        self.timestamps = timestamps
-        self.n_timestamps = len(timestamps)
-        self.extent = extent
-        self.dim = dim
-        self.cache_dir = cache_dir
-        self.cache_prefix = cache_prefix
-        self.use_cached_data = use_cached_data
-        self.verbose = verbose
-        
-        # Get EarthData token from environment
+        super().__init__(timestamps, extent, dim, cache_dir, cache_prefix, use_cached_data, verbose)
         self.earthdata_token = os.getenv('EARTHDATA_TOKEN')
-        
-        # Create cache directory if it doesn't exist
-        os.makedirs(cache_dir, exist_ok=True)
     
     def get_data(self):
         """
-        Get MAIAC AOD data from NASA.
+        Fetch MAIAC AOD data, returning cached version if available.
         
         Returns:
         --------
         numpy.ndarray
-            MAIAC AOD data with shape (n_timestamps, dim, dim, n_features)
+            AOD data (n_timestamps, dim, dim, 1) with -1.0 for missing values
         """
-        # Use date-specific cache filename
         cache_file = os.path.join(self.cache_dir, f"{self.cache_prefix}maiac_aod_data.npy")
         
-        if self.use_cached_data and os.path.exists(cache_file):
-            if self.verbose:
-                print(f"Loading cached MAIAC AOD data from {cache_file}")
-            return np.load(cache_file)
+        data = self.check_cache(cache_file, (self.n_timestamps, self.dim, self.dim, 1))
+        if data is not None:
+            return data
         
-        # Initialize empty array for MAIAC data
-        # Single channel for AOD
-        maiac_data = np.zeros((self.n_timestamps, self.dim, self.dim, 1))
+        maiac_data = np.full((self.n_timestamps, self.dim, self.dim, 1), -1.0, dtype=np.float32)
         
-        # Check if EarthData token is available
         if not self.earthdata_token:
             if self.verbose:
-                print("NASA EarthData token not found. Returning empty MAIAC AOD data.")
-            np.save(cache_file, maiac_data)
+                print("NASA EarthData token not found. Returning missing MAIAC AOD data.")
+            self.save_to_cache(maiac_data, cache_file)
             return maiac_data
         
-        # MAIAC data is typically available 1-2 times per day, not hourly
-        # We'll need to fetch daily data and replicate it for hourly timestamps
-        
-        # Get unique dates from timestamps
         unique_dates = pd.Series([ts.date() for ts in self.timestamps]).unique()
         
         if self.verbose:
             print(f"Fetching MAIAC AOD data for {len(unique_dates)} unique dates")
         
-        # Set up headers with bearer token
         headers = {"Authorization": f"Bearer {self.earthdata_token}"}
-        
-        # Define our geographic bounds
         min_lon, max_lon, min_lat, max_lat = self.extent
         
-        # Define the MAIAC AOD collection parameters
-        # Using Version 061 (current version)
         maiac_params = {
             "short_name": "MCD19A2",
             "version": "061",
-            "cmr_id": "C2324689816-LPCLOUD"  # From search results
+            "cmr_id": "C2324689816-LPCLOUD"
         }
         
-        # NASA CMR API endpoint
         cmr_url = "https://cmr.earthdata.nasa.gov/search/granules.json"
-        
-        # For each day, try to fetch MAIAC data
         daily_maiac_data = {}
         
         for date in unique_dates:
@@ -119,7 +91,6 @@ class MaiacDataSource:
             day_next = (date + timedelta(days=1)).strftime('%Y-%m-%d')
             
             try:
-                # Define search parameters
                 params = {
                     "collection_concept_id": maiac_params["cmr_id"],
                     "temporal": f"{date_str}T00:00:00Z,{day_next}T00:00:00Z",
@@ -127,7 +98,6 @@ class MaiacDataSource:
                     "page_size": 10
                 }
                 
-                # Make the request to CMR API
                 response = requests.get(cmr_url, params=params, headers=headers)
                 
                 if response.status_code != 200:
@@ -135,7 +105,6 @@ class MaiacDataSource:
                         print(f"Error searching for MAIAC AOD granules: HTTP {response.status_code}")
                     continue
                 
-                # Parse the results
                 results = response.json()
                 granules = results.get("feed", {}).get("entry", [])
                 
@@ -144,20 +113,16 @@ class MaiacDataSource:
                         print(f"No MAIAC AOD data found for {date_str}")
                     continue
                 
-                # Process the first valid granule
                 for granule in granules:
-                    # Get download URL
                     download_url = next((link["href"] for link in granule.get("links", []) 
                                         if link.get("rel") == "http://esipfed.org/ns/fedsearch/1.1/data#"), None)
                     
                     if not download_url:
                         continue
                     
-                    # Download the HDF file
                     temp_file = os.path.join(self.cache_dir, f"maiac_temp_{date_str}.hdf")
                     
                     try:
-                        # Download with token authentication
                         response = requests.get(download_url, headers=headers, stream=True)
                         if response.status_code != 200:
                             if self.verbose:
@@ -171,61 +136,96 @@ class MaiacDataSource:
                         if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
                             raise Exception("Failed to download file or file is empty")
                         
-                        # Process the HDF file to extract AOD data
                         hdf_file = SD(temp_file, SDC.READ)
                         
-                        # Get the AOD dataset (Optical_Depth_055)
                         try:
-                            aod_dataset = hdf_file.select('Optical_Depth_055')
+                            aod_dataset = hdf_file.select('Optical_Depth_047')
                             aod_data = aod_dataset[:]
                             
-                            # Check if aod_data is not empty and has valid dimensions
+                            if self.verbose:
+                                print(f"Successfully loaded Optical_Depth_047 for {date_str}")
+                            
                             if aod_data.size == 0:
                                 if self.verbose:
                                     print(f"Empty AOD data for {date_str}")
                                 continue
                             
-                            # Print detailed information about the AOD data
                             if self.verbose:
-                                print(f"AOD data shape before resize: {aod_data.shape}")
-                                print(f"AOD data type: {aod_data.dtype}")
-                                print(f"AOD data min/max: {np.nanmin(aod_data)}/{np.nanmax(aod_data)}")
+                                print(f"AOD data shape: {aod_data.shape}, range: {np.nanmin(aod_data):.6f} to {np.nanmax(aod_data):.6f}")
                             
-                            # Handle multi-dimensional data - take the first band or average 
-                            # if there are multiple time steps or bands
+                            aod_data = aod_data.astype(np.float32)
+                            
+                            if hasattr(aod_dataset, 'attributes'):
+                                attrs = aod_dataset.attributes()
+                                fill_value = attrs.get('_FillValue', None)
+                                scale_factor = attrs.get('scale_factor', 1.0)
+                                add_offset = attrs.get('add_offset', 0.0)
+                                
+                                if fill_value is not None:
+                                    aod_data[aod_data == fill_value] = -1.0
+                                    if self.verbose:
+                                        fill_count = np.sum(aod_data == -1.0)
+                                        total_count = aod_data.size
+                                        print(f"Fill values: {fill_count}/{total_count} ({100*fill_count/total_count:.1f}%)")
+                                
+                                valid_mask = aod_data >= 0
+                                if scale_factor != 1.0 or add_offset != 0.0:
+                                    aod_data[valid_mask] = (aod_data[valid_mask] * scale_factor) + add_offset
+                                    if self.verbose:
+                                        print(f"Applied scaling: factor={scale_factor}, offset={add_offset}")
+                            
                             if len(aod_data.shape) == 3:
-                                aod_data_2d = np.nanmean(aod_data, axis=0)
+                                valid_data = np.where(aod_data == -1.0, np.nan, aod_data)
+                                aod_data_2d = np.nanmean(valid_data, axis=0)
+                                aod_data_2d = np.where(np.isnan(aod_data_2d), -1.0, aod_data_2d)
                                 if self.verbose:
                                     print(f"Averaged AOD data to shape: {aod_data_2d.shape}")
                             else:
                                 aod_data_2d = aod_data
                             
-                            # Calculate zoom factors
+                            # Quality control
+                            noise_mask = (aod_data_2d >= -0.1) & (aod_data_2d < 0)
+                            aod_data_2d[noise_mask] = 0.0
+                            
+                            unrealistic_mask = (aod_data_2d < -0.1) | (aod_data_2d > 5.0)
+                            aod_data_2d[unrealistic_mask] = -1.0
+                            
+                            if self.verbose and np.any(unrealistic_mask):
+                                unrealistic_count = np.sum(unrealistic_mask)
+                                print(f"Set {unrealistic_count} unrealistic values to -1")
+                            
                             zoom_y = self.dim / aod_data_2d.shape[0]
                             zoom_x = self.dim / aod_data_2d.shape[1]
                             
-                            # Apply zoom (handles NaN values automatically)
-                            aod_grid = zoom(aod_data_2d, (zoom_y, zoom_x), order=1, mode='nearest')
+                            aod_for_zoom = np.where(aod_data_2d == -1.0, np.nan, aod_data_2d)
+                            aod_grid = zoom(aod_for_zoom, (zoom_y, zoom_x), order=1, mode='nearest')
+                            aod_grid = np.where(np.isnan(aod_grid), -1.0, aod_grid)
                             
                             if self.verbose:
                                 print(f"Resized AOD data to shape: {aod_grid.shape}")
+                                valid_pixels = np.sum(aod_grid >= 0)
+                                total_pixels = aod_grid.size
+                                print(f"Final coverage: {valid_pixels}/{total_pixels} ({100*valid_pixels/total_pixels:.1f}%)")
+                                
+                                if valid_pixels > 0:
+                                    valid_data = aod_grid[aod_grid >= 0]
+                                    print(f"Valid AOD range: {np.min(valid_data):.6f} to {np.max(valid_data):.6f}")
                             
-                            # Store the processed AOD data for this date
                             daily_maiac_data[date] = aod_grid
                             
                             if self.verbose:
-                                print(f"Successfully processed AOD data for {date_str}")
+                                print(f"✅ Successfully processed AOD data for {date_str}")
                         
                         except Exception as e:
                             if self.verbose:
-                                print(f"Error selecting or processing AOD dataset: {e}")
+                                print(f"Error processing AOD dataset for {date_str}: {e}")
                                 traceback.print_exc()
                         
                         finally:
-                            # Close the HDF file
+                            if aod_dataset:
+                                aod_dataset.end()
                             hdf_file.end()
                         
-                        # Successfully processed, break the granule loop
                         if date in daily_maiac_data:
                             break
 
@@ -235,7 +235,6 @@ class MaiacDataSource:
                             traceback.print_exc()
                     
                     finally:
-                        # Clean up the temporary file
                         if os.path.exists(temp_file):
                             os.remove(temp_file)
                         
@@ -244,14 +243,30 @@ class MaiacDataSource:
                     print(f"Error fetching MAIAC AOD data for {date_str}: {e}")
                     traceback.print_exc()
         
-        # Assign daily data to hourly timestamps
         for t_idx, timestamp in enumerate(self.timestamps):
             date = timestamp.date()
             if date in daily_maiac_data:
                 maiac_data[t_idx, :, :, 0] = daily_maiac_data[date]
         
         if self.verbose:
-            print(f"Created MAIAC AOD data with shape {maiac_data.shape}")
+            print(f"\nCreated final MAIAC AOD data with shape {maiac_data.shape}")
+            
+            all_data = maiac_data.flatten()
+            valid_count = np.sum(all_data >= 0)
+            missing_count = np.sum(all_data == -1.0)
+            total_count = len(all_data)
+            
+            print(f"Final MAIAC statistics:")
+            print(f"  Valid values: {valid_count:,} ({100*valid_count/total_count:.1f}%)")
+            print(f"  Missing values (-1): {missing_count:,} ({100*missing_count/total_count:.1f}%)")
+            
+            if valid_count > 0:
+                valid_data = all_data[all_data >= 0]
+                print(f"  AOD range: {np.min(valid_data):.6f} to {np.max(valid_data):.6f}")
+                print(f"  AOD mean: {np.mean(valid_data):.6f}")
+                print(f"  AOD std: {np.std(valid_data):.6f}")
+            
+            print("✅ Data ready for ConvLSTM training (no NaN values)")
         
-        np.save(cache_file, maiac_data)
+        self.save_to_cache(maiac_data, cache_file)
         return maiac_data

@@ -99,9 +99,10 @@ def plot_time_series_comparison(
     y_pred: np.ndarray,
     y_test: np.ndarray,
     sensor_names: List[str],
-    figsize: Tuple[int, int] = (12, 8),
+    figsize: Tuple[int, int] = (16, 24),  # Increased height
     shift_pred: Optional[int] = None,
-    remove_outliers: Optional[Tuple[int, int]] = None
+    remove_outliers: Optional[Tuple[int, int]] = None,
+    subplot_height: float = 2.0  # Height per subplot in inches
 ) -> None:
     """
     Create time series plots comparing predicted vs actual values for each sensor.
@@ -113,8 +114,12 @@ def plot_time_series_comparison(
         figsize: Figure size as (width, height)
         shift_pred: Number of time steps to shift predictions (e.g. 1 for left shift)
         remove_outliers: Tuple of (start_idx, end_idx) to set predictions to 0 in that range
+        subplot_height: Height per subplot in inches for better spacing
     """
-    plt.figure(figsize=figsize)
+    # Calculate dynamic figure height based on number of sensors and desired subplot height
+    num_sensors = len(sensor_names)
+    fig_height = num_sensors * subplot_height
+    plt.figure(figsize=(figsize[0], fig_height))
     
     # Handle optional modifications to predictions
     y_pred_plot = y_pred.copy()
@@ -123,19 +128,48 @@ def plot_time_series_comparison(
         y_pred_plot[start_idx:end_idx] = 0.0
     if shift_pred is not None:
         y_pred_plot = y_pred_plot[shift_pred:]
-        y_test = y_test[:-shift_pred] if shift_pred > 0 else y_test
+        y_test_plot = y_test[:-shift_pred] if shift_pred > 0 else y_test.copy()
+    else:
+        y_test_plot = y_test.copy()
 
     for i, sensor in enumerate(sensor_names):
-        plt.subplot(len(sensor_names), 1, i + 1)
-        plt.plot(y_test[:, i], label='Actual', marker='o')
-        plt.plot(y_pred_plot[:, i], label='Predicted', marker='x')
-        plt.title(f'Sensor: {sensor}')
-        plt.xlabel('Time Step')
-        plt.ylabel('PM2.5')
-        plt.legend()
-        plt.grid(True)
+        ax = plt.subplot(num_sensors, 1, i + 1)
+        
+        # Plot data with distinct colors and markers for better visibility
+        plt.plot(y_test_plot[:, i], label='Actual', marker='o', markersize=3, 
+                 color='#1f77b4', linewidth=1.5, markevery=5)
+        plt.plot(y_pred_plot[:, i], label='Predicted', marker='x', markersize=4,
+                 color='#ff7f0e', linewidth=1.5, markevery=5)
+        
+        # Add grid with light color for better readability
+        plt.grid(True, linestyle='--', alpha=0.7)
+        
+        # Improve title and labels
+        plt.title(f'Sensor: {sensor}', fontsize=12, fontweight='bold')
+        plt.ylabel('PM2.5', fontsize=10)
+        
+        # Only add x-label for the bottom subplot
+        if i == num_sensors - 1:
+            plt.xlabel('Time Step', fontsize=10)
+        
+        # Add legend for each subplot with better placement
+        plt.legend(loc='upper right')
+        
+        # Set y limits with a bit of padding for better visualization
+        y_max = max(np.max(y_test_plot[:, i]), np.max(y_pred_plot[:, i]))
+        y_min = min(np.min(y_test_plot[:, i]), np.min(y_pred_plot[:, i]))
+        padding = (y_max - y_min) * 0.1
+        plt.ylim(y_min - padding, y_max + padding)
     
-    plt.tight_layout()
+    plt.tight_layout(pad=2.0)  # Increase padding between subplots
+    plt.subplots_adjust(hspace=0.5)  # Add more space between subplots
+    
+    # Add overall title
+    title_text = 'PM2.5 Actual vs. Predicted Values by Sensor Location'
+    if shift_pred is not None:
+        title_text += f' (Predictions Shifted by {shift_pred} Steps)'
+    plt.suptitle(title_text, fontsize=16, y=0.995)
+    
     plt.show()
 
 def plot_input_frames(

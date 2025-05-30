@@ -112,7 +112,7 @@ class PWWBData:
             self.tropomi_channels = ['TROPOMI_Methane', 'TROPOMI_NO2', 'TROPOMI_CO']
         
         # Generate timestamps at hourly intervals
-        self.timestamps = pd.date_range(self.start_date, self.end_date, freq='H')
+        self.timestamps = pd.date_range(self.start_date, self.end_date, freq='h')
         self.n_timestamps = len(self.timestamps)
         
         if self.verbose:
@@ -221,6 +221,7 @@ class PWWBData:
                 timestamps=self.timestamps,
                 extent=self.extent,
                 dim=self.dim,
+                elevation_path="inputs/elevation.npy",
                 cache_dir=self.cache_dir,
                 cache_prefix=self.cache_prefix,
                 use_cached_data=self.use_cached_data,
@@ -381,10 +382,10 @@ class PWWBData:
                 channel_data = self.all_channels[0, :, :, i]  # First timestamp
                 
                 print(f"\nChannel {i}: {channel_name}")
-                print(f"  Min: {np.min(channel_data)}")
-                print(f"  Max: {np.max(channel_data)}")
-                print(f"  Mean: {np.mean(channel_data)}")
-                print(f"  Std: {np.std(channel_data)}")
+                print(f"  Min: {np.nanmin(channel_data)}")  
+                print(f"  Max: {np.nanmax(channel_data)}")    
+                print(f"  Mean: {np.nanmean(channel_data)}")
+                print(f"  Std: {np.nanstd(channel_data)}")  
                 
                 # Count non-zero values
                 non_zero = np.count_nonzero(channel_data)

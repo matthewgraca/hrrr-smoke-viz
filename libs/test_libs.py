@@ -47,8 +47,8 @@ def test_data_pipeline():
     lon_bottom, lon_top = -118.4, -118.0
     extent = (lon_bottom, lon_top, lat_bottom, lat_top)
     
-    dim = 50  # Smaller grid for testing
-    frames_per_sample = 3  # Fewer frames for testing
+    dim = 200  # Smaller grid for testing
+    frames_per_sample = 5  # Fewer frames for testing
     
     # Just test a short period (2 days in December, 2 days in January)
     # In production, this would be the full 2 months

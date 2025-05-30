@@ -1,37 +1,31 @@
-"""
-Dataset manager for PWWBData.
-
-This module provides functions to help manage multiple PWWBData instances,
-especially useful when working in Jupyter notebooks.
-"""
+"""Dataset manager for PWWBData instances with registry functionality."""
 
 import os
 import json
 from datetime import datetime
 import pandas as pd
 
+
 class PWWBDatasetManager:
-    """
-    Manager for PWWBData datasets with registry functionality.
-    """
+    """Manages PWWBData datasets with persistent registry tracking."""
     
     def __init__(self, registry_file="pwwb_datasets.json", cache_dir=None):
         """
-        Initialize the dataset manager.
+        Initialize dataset manager with registry and cache location.
         
         Parameters:
         -----------
         registry_file : str
-            Path to the registry file
+            Path to JSON registry file
         cache_dir : str, optional
-            Path to the cache directory
+            Cache directory path
         """
         self.registry_file = registry_file
         self.cache_dir = cache_dir
         self.registry = self._load_registry()
     
     def _load_registry(self):
-        """Load the registry from the JSON file."""
+        """Load registry from JSON file, returning empty dict if file missing or corrupted."""
         if os.path.exists(self.registry_file):
             try:
                 with open(self.registry_file, 'r') as f:
@@ -42,29 +36,28 @@ class PWWBDatasetManager:
         return {}
     
     def _save_registry(self):
-        """Save the registry to the JSON file."""
+        """Save current registry state to JSON file."""
         with open(self.registry_file, 'w') as f:
             json.dump(self.registry, f, indent=2)
     
     def register_dataset(self, name, description, params):
         """
-        Register a dataset in the registry.
+        Register a new dataset with creation timestamp and parameters.
         
         Parameters:
         -----------
         name : str
-            Name of the dataset
+            Unique dataset identifier
         description : str
-            Description of the dataset
+            Human-readable dataset description
         params : dict
-            Parameters used to create the dataset
+            PWWBData constructor parameters
             
         Returns:
         --------
         str
-            The name of the registered dataset
+            Dataset name (for chaining)
         """
-        # Create entry with timestamp and details
         self.registry[name] = {
             'created': datetime.now().isoformat(),
             'description': description,
@@ -77,17 +70,17 @@ class PWWBDatasetManager:
     
     def get_dataset_info(self, name):
         """
-        Get detailed information about a specific dataset.
+        Retrieve complete dataset information by name.
         
         Parameters:
         -----------
         name : str
-            Name of the dataset
+            Dataset name
             
         Returns:
         --------
         dict or None
-            Dataset information if found, None otherwise
+            Dataset metadata and parameters, or None if not found
         """
         if name not in self.registry:
             print(f"Dataset '{name}' not found in registry.")
@@ -97,18 +90,17 @@ class PWWBDatasetManager:
     
     def list_datasets(self):
         """
-        List all registered datasets.
+        Get summary of all registered datasets as a DataFrame.
         
         Returns:
         --------
         pandas.DataFrame
-            DataFrame with dataset information
+            Columns: name, created, description, start_date, end_date, channels
         """
         if not self.registry:
             print("No datasets registered.")
             return pd.DataFrame()
         
-        # Create a list of dictionaries for each dataset
         data = []
         for name, details in self.registry.items():
             created = details.get('created', 'Unknown')
@@ -116,7 +108,6 @@ class PWWBDatasetManager:
             start_date = details.get('parameters', {}).get('start_date', 'Unknown')
             end_date = details.get('parameters', {}).get('end_date', 'Unknown')
             
-            # Get channels included
             include_channels = details.get('parameters', {}).get('include_channels', {})
             if isinstance(include_channels, dict):
                 channels = [k for k, v in include_channels.items() if v]
@@ -134,38 +125,33 @@ class PWWBDatasetManager:
                 'channels': ', '.join(channels) if channels else 'All'
             })
         
-        # Convert to DataFrame and return
-        df = pd.DataFrame(data)
-        return df
+        return pd.DataFrame(data)
     
     def delete_dataset(self, name, delete_files=False):
         """
-        Delete a dataset from the registry.
+        Remove dataset from registry and optionally delete associated cache files.
         
         Parameters:
         -----------
         name : str
-            Name of the dataset
-        delete_files : bool, optional
-            Whether to also delete the associated files
+            Dataset name
+        delete_files : bool
+            If True, delete cache files with matching prefix
             
         Returns:
         --------
         bool
-            True if successful, False otherwise
+            True if deletion successful
         """
         if name not in self.registry:
             print(f"Dataset '{name}' not found in registry.")
             return False
         
-        # Check if we should delete the files
         if delete_files and self.cache_dir:
-            prefix = name
             deleted_files = []
             
-            # Loop through files in cache directory and delete those with matching prefix
             for filename in os.listdir(self.cache_dir):
-                if filename.startswith(prefix):
+                if filename.startswith(name):
                     filepath = os.path.join(self.cache_dir, filename)
                     try:
                         os.remove(filepath)
@@ -178,7 +164,6 @@ class PWWBDatasetManager:
                 for filename in deleted_files:
                     print(f"  - {filename}")
         
-        # Remove from registry
         del self.registry[name]
         self._save_registry()
         
@@ -187,71 +172,61 @@ class PWWBDatasetManager:
     
     def create_dataset(self, name, description, PWWBData_class, **kwargs):
         """
-        Create a new PWWBData instance and register it.
+        Create and register a new PWWBData instance.
         
         Parameters:
         -----------
         name : str
-            Name of the dataset
+            Dataset name
         description : str
-            Description of the dataset
+            Dataset description
         PWWBData_class : class
-            The PWWBData class to instantiate
-        **kwargs : dict
-            Additional arguments to pass to PWWBData constructor
+            PWWBData class to instantiate
+        **kwargs
+            Arguments passed to PWWBData constructor
             
         Returns:
         --------
-        object
-            The created PWWBData instance
+        PWWBData
+            Created and configured PWWBData instance
         """
-        # Register the dataset
         self.register_dataset(name, description, kwargs)
         
-        # Set up PWWBData constructor arguments
         if 'cache_dir' not in kwargs and self.cache_dir:
             kwargs['cache_dir'] = self.cache_dir
             
-        # Create the PWWBData instance
         kwargs['cache_prefix'] = name
         
-        # Create and return the instance
         return PWWBData_class(**kwargs)
     
     def load_dataset(self, name, PWWBData_class):
         """
-        Load a dataset by name.
+        Load existing dataset by recreating PWWBData instance from registry parameters.
         
         Parameters:
         -----------
         name : str
-            Name of the dataset
+            Dataset name
         PWWBData_class : class
-            The PWWBData class to instantiate
+            PWWBData class to instantiate
             
         Returns:
         --------
-        object or None
-            The loaded PWWBData instance if successful, None otherwise
+        PWWBData or None
+            Loaded PWWBData instance, or None if dataset not found
         """
         info = self.get_dataset_info(name)
         if not info:
             return None
         
-        # Get parameters from registry
         params = info.get('parameters', {})
-        
-        # Add cache prefix
         params['cache_prefix'] = name
         
-        # Add cache directory if available
         if 'cache_dir' not in params and self.cache_dir:
             params['cache_dir'] = self.cache_dir
         
-        # Create PWWBData instance with saved parameters
         instance = PWWBData_class(**params)
         
-        # Try to load the data
         success = instance.load_data()
         
         if not success:
@@ -261,24 +236,21 @@ class PWWBDatasetManager:
         return instance
 
 
-# Convenience functions for direct use
 def create_dataset_manager(registry_file="pwwb_datasets.json", cache_dir="data/pwwb_cache/"):
     """
-    Create a new dataset manager.
+    Create a dataset manager with specified registry and cache locations.
     
     Parameters:
     -----------
     registry_file : str
-        Path to the registry file
+        Registry JSON file path
     cache_dir : str
-        Path to the cache directory
+        Cache directory path
         
     Returns:
     --------
     PWWBDatasetManager
-        The created manager
+        Configured dataset manager
     """
-    # Ensure cache directory exists
     os.makedirs(cache_dir, exist_ok=True)
-    
     return PWWBDatasetManager(registry_file, cache_dir)
