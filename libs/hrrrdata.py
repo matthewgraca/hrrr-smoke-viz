@@ -194,9 +194,8 @@ class HRRRData:
         lost_files = [H for H in herbies if H.grib is None]
         if len(lost_files) > 0:
             print(
-                f"⚠️  Could not find "
-                f"{len(lost_files)}/{len(self.file_exists) + len(lost_files)} "
-                f"GRIB files."
+                f"⚠️  Could not find the following grib files:\n"
+                f"{lost_files}"
             )
 
         # multithread download grib files 
@@ -206,7 +205,42 @@ class HRRRData:
             n_threads
         )
 
-        return herbies
+        # confirm xarray can read the grib files
+        for H in found_files:
+            self._verify_downloads(H, product)
+
+        return found_files 
+
+    def _verify_downloads(self, H, product):
+        """
+        Will attempt to open the grib file with xarray.
+        If it cannot be opened, it will trigger a redownload
+
+        If successful, will continue. If unsuccessful, will 
+        attempt to redownload 5 times until re-raising the error.
+        """
+        success = False
+        attempt = 1
+        max_attempts = 5
+        while not success:
+            try:
+                file = H.get_localFilePath(product)
+                xr.open_dataset(file, engine="cfgrib", decode_timedelta=False)
+                success = True
+            except Exception as e:
+                # primarily meant to catch EOFError, but all errors should
+                if attempt > max_attempts:
+                    print("🚨 Max attempts reached, raising error.")
+                    raise
+
+                print(
+                    f"{e}\n"
+                    f"🤕 File corrupted while downloading; "
+                    f"beginning redownload attempt "
+                    f"{attempt}/{max_attempts}."
+                )
+                self._redownload(H, product, file)
+                attempt += 1
 
     # NOTE downloading helpers
     def _multithread_dl_grib_files(self, herbie_data, product, n_threads):

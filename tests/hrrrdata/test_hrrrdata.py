@@ -180,6 +180,24 @@ class TestHRRRData(unittest.TestCase):
 
         np.testing.assert_array_equal(actual, expected) 
 
+    def test_grib_to_np_raises_when_grib_file_is_empty(self):
+        instance = HRRRData.__new__(HRRRData)  
+
+        file_path = "tests/hrrrdata/data/empty_file.grib2"
+        with self.assertRaises(EOFError):
+            actual = instance._grib_to_np([file_path])
+
+    def test_verify_download_fails_with_fake_data(self):
+        '''
+        Will trigger the redownload, then throw an exception
+        because it can't delete the offending file with a fake subset
+        '''
+        instance = HRRRData.__new__(HRRRData)  
+        product = "asdfasflk"
+
+        with self.assertRaises(Exception):
+            instance._verify_downloads(self._herbie, product)
+
     # NOTE _attempt_download() tests
     def test_multithread_dl_matches_singlethread_dl(self):
         '''
