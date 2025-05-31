@@ -9,6 +9,7 @@ from scipy.ndimage import gaussian_filter
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
+import time
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -17,7 +18,7 @@ class AirNowData:
     '''
     Gets the AirNow Data and processes it with IDW interpolation.
     Pipeline:
-        - Downloads data from AirNow API
+        - Downloads data from AirNow API in chunks to avoid record limits
         - Optionally filters sensors based on mask (excludes sensors outside valid areas)
         - Converts ground site data into grids
         - Interpolates using 3D IDW (with elevation)
@@ -37,7 +38,8 @@ class AirNowData:
         elevation_path=None,
         mask_path=None,
         use_mask=True,  # NEW: Control whether to use mask filtering
-        force_reprocess=False
+        force_reprocess=False,
+        chunk_days=30  # NEW: Configurable chunk size
     ):
         self.air_sens_loc = {}
         self.start_date = start_date
@@ -47,6 +49,7 @@ class AirNowData:
         self.frames_per_sample = frames_per_sample
         self.idw_power = idw_power
         self.use_mask = use_mask  # Store the mask usage preference
+        self.chunk_days = chunk_days  # Store chunk size
         
         # Set default paths
         self.elevation_path = elevation_path if elevation_path else "inputs/elevation.npy"
@@ -170,39 +173,234 @@ class AirNowData:
         return normalized.astype(np.float32)
 
     def _get_airnow_data(self, start_date, end_date, extent, save_dir, airnow_api_key):
-        """Download or load AirNow data from API."""
+        """Download or load AirNow data from API with chunking to avoid record limits."""
         lon_bottom, lon_top, lat_bottom, lat_top = extent
         
         if os.path.exists(save_dir):
-            print(f"'{save_dir}' already exists; skipping request...")
+            print(f"Found existing file '{save_dir}'. Checking if download is complete...")
+            try:
+                with open(save_dir, 'r') as file:
+                    existing_data = json.load(file)
+                
+                if not existing_data:
+                    print("Existing file is empty. Starting fresh download...")
+                else:
+                    # Find the latest date in existing data
+                    latest_dates = []
+                    for record in existing_data[-100:]:  # Check last 100 records for efficiency
+                        if 'UTC' in record:
+                            try:
+                                latest_dates.append(pd.to_datetime(record['UTC']))
+                            except:
+                                continue
+                    
+                    if latest_dates:
+                        latest_date = max(latest_dates)
+                        target_end = pd.to_datetime(end_date)
+                        
+                        print(f"Latest data in file: {latest_date}")
+                        print(f"Target end date: {target_end}")
+                        
+                        if latest_date >= target_end:
+                            print("Download appears complete. Using existing file.")
+                        else:
+                            print(f"Download incomplete. Resuming from {latest_date}")
+                            # Adjust start_date to resume from where we left off
+                            start_date = (latest_date + pd.Timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+                            print(f"Resuming download from: {start_date}")
+                    else:
+                        print("Could not determine latest date in file. Starting fresh...")
+                        existing_data = []
+            except Exception as e:
+                print(f"Error reading existing file: {e}. Starting fresh download...")
+                existing_data = []
         else:
-            date_start = pd.to_datetime(start_date).isoformat()[:13]
-            date_end = pd.to_datetime(end_date).isoformat()[:13]
+            print("No existing file found. Starting fresh download...")
+            existing_data = []
+        
+        # Only proceed with download if we need more data
+        if not os.path.exists(save_dir) or latest_date < pd.to_datetime(end_date):
+            print("Downloading AirNow data in chunks to avoid record limits...")
+            
             bbox = f'{lon_bottom},{lat_bottom},{lon_top},{lat_top}'
             URL = "https://www.airnowapi.org/aq/data"
+            
+            all_data = existing_data if 'existing_data' in locals() else []
+            # Convert to pandas datetime for chunking logic
+            start_dt = pd.to_datetime(start_date)
+            end_dt = pd.to_datetime(end_date)
+            current_start = start_dt
+            chunk_days = self.chunk_days
+            chunk_num = 0
+            max_retries = 3
+            
+            print(f"Date range: {start_date} to {end_date}")
+            
+            while current_start < end_dt:
+                # Calculate end of current chunk, ensuring we don't exceed the original end date
+                current_end = min(current_start + pd.Timedelta(days=chunk_days), end_dt)
+                
+                # Ensure we don't create zero-length chunks
+                if current_start >= current_end:
+                    print(f"Reached end of date range at {current_start.strftime('%Y-%m-%d %H:%M')}")
+                    break
+                
+                chunk_num += 1
+                
+                # Format dates for API (ISO format, hour precision) - same as original
+                date_start = pd.to_datetime(current_start).isoformat()[:13]
+                date_end = pd.to_datetime(current_end).isoformat()[:13]
+                
+                print(f"Chunk {chunk_num}: {date_start} to {date_end} ({chunk_days} days)")
+                
+                PARAMS = {
+                    'startDate': date_start,
+                    'endDate': date_end,
+                    'parameters': 'PM25',
+                    'BBOX': bbox,
+                    'dataType': 'A',
+                    'format': 'application/json',
+                    'verbose': '1',
+                    'monitorType': '2',
+                    'includerawconcentrations': '1',
+                    'API_KEY': airnow_api_key
+                }
 
-            PARAMS = {
-                'startDate': date_start,
-                'endDate': date_end,
-                'parameters': 'PM25',
-                'BBOX': bbox,
-                'dataType': 'A',
-                'format': 'application/json',
-                'verbose': '1',
-                'monitorType': '2',
-                'includerawconcentrations': '1',
-                'API_KEY': airnow_api_key
-            }
-
+                retry_count = 0
+                chunk_success = False
+                
+                while retry_count < max_retries and not chunk_success:
+                    try:
+                        print(f"  Requesting data from AirNow API (attempt {retry_count + 1})...")
+                        response = requests.get(url=URL, params=PARAMS)  # Remove timeout parameter
+                        print(f"  Response: {response.status_code}")
+                        
+                        # Check for rate limiting
+                        if response.status_code == 429:
+                            wait_time = 60 + (retry_count * 30)  # Increasing wait time
+                            print(f"  Rate limited. Waiting {wait_time} seconds...")
+                            time.sleep(wait_time)
+                            retry_count += 1
+                            continue
+                        
+                        if response.status_code != 200:
+                            print(f"  Error: HTTP {response.status_code}")
+                            print(f"  Response text: {response.text[:200]}")  # Just first 200 chars
+                            retry_count += 1
+                            time.sleep(5)
+                            continue
+                        
+                        # Parse JSON response
+                        try:
+                            chunk_data = response.json()
+                        except json.JSONDecodeError as e:
+                            print(f"  JSON decode error: {e}")
+                            retry_count += 1
+                            time.sleep(5)
+                            continue
+                        
+                        # Check for API errors in response
+                        if isinstance(chunk_data, list) and len(chunk_data) > 0 and isinstance(chunk_data[0], dict):
+                            if 'WebServiceError' in chunk_data[0]:
+                                error_msg = chunk_data[0]['WebServiceError'][0]['Message']
+                                print(f"  API Error: {error_msg}")
+                                
+                                # If it's a record limit error, try smaller chunks
+                                if "record query limit" in error_msg.lower():
+                                    if chunk_days > 1:  # Minimum 1 day
+                                        new_chunk_days = max(1, chunk_days // 2)
+                                        print(f"  Reducing chunk size from {chunk_days} to {new_chunk_days} days")
+                                        chunk_days = new_chunk_days
+                                        break  # Break retry loop to try with smaller chunk
+                                    else:
+                                        print("  Chunk size already at minimum (1 day). This chunk cannot be processed.")
+                                        retry_count = max_retries  # Force exit retry loop
+                                        break
+                                else:
+                                    retry_count += 1
+                                    time.sleep(5)
+                                    continue
+                        
+                        # Successful response
+                        if isinstance(chunk_data, list):
+                            if len(chunk_data) > 0:
+                                # Don't keep everything in memory - save immediately
+                                try:
+                                    # Load existing data, append new data, save back
+                                    existing_data = []
+                                    if os.path.exists(save_dir):
+                                        with open(save_dir, 'r') as file:
+                                            existing_data = json.load(file)
+                                    
+                                    existing_data.extend(chunk_data)
+                                    
+                                    with open(save_dir, 'w') as file:
+                                        json.dump(existing_data, file, indent=2)
+                                    
+                                    print(f"  ✓ Retrieved {len(chunk_data)} records")
+                                    print(f"  ✓ Total records in file: {len(existing_data)}")
+                                    
+                                    # Clear chunk_data from memory immediately
+                                    del chunk_data
+                                    
+                                except Exception as e:
+                                    print(f"  Error saving chunk data: {e}")
+                                    retry_count += 1
+                                    time.sleep(5)
+                                    continue
+                            else:
+                                print(f"  No data for this period")
+                            chunk_success = True
+                        else:
+                            print(f"  Unexpected response format: {type(chunk_data)}")
+                            retry_count += 1
+                            time.sleep(5)
+                        
+                    except requests.exceptions.Timeout:
+                        print(f"  Request timeout (attempt {retry_count + 1})")
+                        retry_count += 1
+                        time.sleep(10)
+                    except requests.exceptions.RequestException as e:
+                        print(f"  Request error: {e} (attempt {retry_count + 1})")
+                        retry_count += 1
+                        time.sleep(10)
+                    except Exception as e:
+                        print(f"  Unexpected error: {e} (attempt {retry_count + 1})")
+                        retry_count += 1
+                        time.sleep(10)
+                
+                # If chunk failed completely, DON'T move to next chunk - stay on this one
+                if not chunk_success:
+                    if retry_count >= max_retries:
+                        print(f"  Failed to retrieve chunk after {max_retries} attempts.")
+                        # Check if we reduced chunk size, if so, try again with smaller chunk
+                        if chunk_days < self.chunk_days:
+                            print(f"  Retrying same time period with reduced chunk size ({chunk_days} days)")
+                            continue  # Stay on the same chunk with smaller size
+                        else:
+                            print(f"  Cannot retrieve this chunk. Stopping data collection.")
+                            break  # Exit the main while loop
+                    else:
+                        continue  # Retry the same chunk
+                
+                # Move to next chunk - add 1 hour to avoid overlap  
+                current_start = current_end + pd.Timedelta(hours=1)
+                
+                # Be nice to the API - wait between requests
+                time.sleep(2)
+                
+                # Safety check to prevent infinite loops
+                if chunk_num > 1000:  # Arbitrary large number
+                    print("Safety limit reached (1000 chunks). Stopping.")
+                    break
+            
+            # Data is already saved, just verify final file
             try:
-                print("Requesting data from AirNow API...")
-                response = requests.get(url=URL, params=PARAMS)
-                airnow_data = response.json()
-                with open(save_dir, 'w') as file:
-                    json.dump(airnow_data, file)
-                    print(f"JSON data saved to '{save_dir}'")
+                with open(save_dir, 'r') as file:
+                    final_data = json.load(file)
+                print(f"✓ Complete dataset verified in '{save_dir}' ({len(final_data)} total records)")
             except Exception as e:
-                print(f"Error retrieving AirNow data: {e}")
+                print(f"Error verifying final file: {e}")
                 return []
 
         # Load and process the data
@@ -217,7 +415,15 @@ class AirNowData:
                     print(f"Error from AirNow API: {airnow_data[0]['WebServiceError']}")
                     return []
             
+            if not airnow_data:
+                print("Empty dataset loaded from file")
+                return []
+            
             airnow_df = pd.json_normalize(airnow_data)
+            
+            if airnow_df.empty:
+                print("No data after JSON normalization")
+                return []
             
             # Handle UTC column
             if 'UTC' not in airnow_df.columns:
@@ -225,12 +431,18 @@ class AirNowData:
                 if 'DateObserved' in airnow_df.columns and 'HourObserved' in airnow_df.columns:
                     print("Attempting to construct UTC from DateObserved and HourObserved...")
                     try:
-                        airnow_df['UTC'] = airnow_df.apply(
-                            lambda row: pd.Timestamp(row['DateObserved']).replace(
-                                hour=int(row['HourObserved'])
-                            ).strftime('%Y-%m-%dT%H:%M'),
-                            axis=1
-                        )
+                        def construct_utc(row):
+                            try:
+                                date_part = pd.to_datetime(row['DateObserved']).date()
+                                hour_part = int(float(row['HourObserved']))  # Handle string hours
+                                dt = datetime.combine(date_part, datetime.min.time().replace(hour=hour_part))
+                                return dt.strftime('%Y-%m-%dT%H:%M')
+                            except Exception as e:
+                                print(f"Error constructing UTC for row: {e}")
+                                return None
+                        
+                        airnow_df['UTC'] = airnow_df.apply(construct_utc, axis=1)
+                        airnow_df = airnow_df.dropna(subset=['UTC'])  # Remove rows with failed UTC construction
                     except Exception as e:
                         print(f"Failed to construct UTC: {e}")
                         return []
@@ -256,14 +468,27 @@ class AirNowData:
         latDist, lonDist = abs(latMax - latMin), abs(lonMax - lonMin)
         unInter = np.zeros((dim, dim))
         
-        required_columns = ['Latitude', 'Longitude', 'Value', 'SiteName']
+        # Handle different API response formats
+        value_column = None
+        if 'Value' in df.columns:
+            value_column = 'Value'  # Newer API format
+        elif 'RawConcentration' in df.columns:
+            value_column = 'RawConcentration'  # Older API format
+        else:
+            print(f"Error: No value column found. Available columns: {df.columns}")
+            return unInter
+        
+        required_columns = ['Latitude', 'Longitude', value_column, 'SiteName']
         if not all(col in df.columns for col in required_columns):
             print(f"Warning: Missing required columns in dataframe. Available columns: {df.columns}")
+            print(f"Required columns: {required_columns}")
             return unInter
             
         dfArr = np.array(df[required_columns])
         excluded_sensors = []
         included_sensors = []
+        
+        print(f"Processing {len(dfArr)} sensors using '{value_column}' as value column")
         
         for i in range(dfArr.shape[0]):
             # Calculate grid coordinates
@@ -303,17 +528,18 @@ class AirNowData:
                     continue  # Skip sensors in masked areas
             
             # Include sensor in grid
-            if dfArr[i,2] < 0:
-                unInter[x, y] = 0  # Set negative values to 0 (valid PM2.5 baseline)
+            value = dfArr[i,2]
+            if pd.isna(value) or value < 0:
+                unInter[x, y] = 0  # Set negative/invalid values to 0 (valid PM2.5 baseline)
             else:
-                unInter[x, y] = dfArr[i,2]
+                unInter[x, y] = value
                 sitename = dfArr[i,3]
                 self.air_sens_loc[sitename] = (x, y)
                 included_sensors.append({
                     'name': sitename,
                     'lat': dfArr[i,0],
                     'lon': dfArr[i,1],
-                    'value': dfArr[i,2],
+                    'value': value,
                     'grid_x': x,
                     'grid_y': y
                 })
@@ -448,7 +674,6 @@ class AirNowData:
                 elevation_list = self._find_elevations(x, y, coords)
                 vals = self._find_values(coords, unInter)
                 
-                # Always use IDW result - let the weights handle it naturally
                 value = self._idw_interpolate(x, y, vals, distance_list, elevation_list, self.idw_power)
                 interpolated[x, y] = max(0, value)  # PM2.5 can't be negative
         
