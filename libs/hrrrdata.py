@@ -11,6 +11,7 @@ from requests.exceptions import ConnectionError
 import subprocess
 from shutil import which
 import os
+import gc
 
 class HRRRData:
     def __init__(
@@ -25,7 +26,9 @@ class HRRRData:
         sample_setting=1,
         verbose=False,
         processed_cache_dir='data/hrrr_processed.npz',
-        force_reprocess=False
+        chunk_cache_dir='data/hrrr_chunks',
+        force_reprocess=False,
+        chunk_months=1
     ):
         '''
         Gets the HRRR data.
@@ -42,14 +45,21 @@ class HRRRData:
         Members:
             data: The complete processed HRRR data
         '''
-        # read from cache if enabled
+        self.chunk_months = chunk_months
+        self.chunk_cache_dir = chunk_cache_dir
+        
+        # Create chunk cache directory
+        if chunk_cache_dir is not None:
+            os.makedirs(chunk_cache_dir, exist_ok=True)
+        
+        # read from final cache if enabled
         if processed_cache_dir is not None:
             os.makedirs(os.path.dirname(processed_cache_dir), exist_ok=True)
 
             cache_exists = os.path.exists(processed_cache_dir)
             if not force_reprocess and cache_exists: 
                 print(
-                    f"📖 Loading processed HRRR data from cache: "
+                    f"📖 Loading processed HRRR data from final cache: "
                     f"{processed_cache_dir}"
                 )
                 try:
@@ -64,7 +74,7 @@ class HRRRData:
                     cached_extent = cached_data['extent']
                     cached_sample_setting = cached_data['sample_setting']
 
-                    print(f"🎉 Successfully loaded data from cache:")
+                    print(f"🎉 Successfully loaded data from final cache:")
                     print(
                         f"  - Data shape    : {self.data.shape}\n"
                         f"  - Date range    : [{cached_start}, "
@@ -76,90 +86,266 @@ class HRRRData:
                     return # return early if loading cache is successful
                 except Exception as e:
                     print(
-                        f"❗ Error loading from cache: {e}. "
-                        f"Will reprocess data.")
+                        f"❗ Error loading from final cache: {e}. "
+                        f"Will check for chunk caches or reprocess data.")
             else:
                 print(
-                    f"🔎 Either cache is empty, or force_reprocess flag "
-                    f"was raised. Either way, we will download and "
-                    f"process from scratch."
+                    f"🔎 Either final cache is empty, or force_reprocess flag "
+                    f"was raised. Checking for chunk caches..."
                 )
 
-        # pipeline
-        # frame-by-frame sampling
-        if sample_setting == 1:
-            herbie_ds = self._get_hrrr_data_frame_by_frame(
-                start_date, end_date, product, verbose
+        print(f"🗓️ Processing HRRR data in {chunk_months}-month chunks from {start_date} to {end_date}")
+        
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        
+        chunk_info = self._generate_chunk_list(start_dt, end_dt, chunk_months)
+        
+        existing_chunks, missing_chunks = self._check_chunk_cache_status(chunk_info, chunk_cache_dir, force_reprocess)
+        
+        if existing_chunks:
+            print(f"📦 Found {len(existing_chunks)} existing cached chunks")
+        if missing_chunks:
+            print(f"⚙️ Need to process {len(missing_chunks)} missing chunks")
+            
+            # Process missing chunks
+            self._process_missing_chunks(
+                missing_chunks, extent, extent_name, product, 
+                frames_per_sample, dim, sample_setting, verbose
             )
-            subregion_grib_ds = self._subregion_grib_files(
-                herbie_ds, extent, extent_name, product
-            )
-            subregion_frames = self._grib_to_np(subregion_grib_ds)
-            preprocessed_frames = self._interpolate_and_add_channel_axis(
-                subregion_frames, dim
-            )
-            processed_ds = self._sliding_window_of(
-                preprocessed_frames, frames_per_sample
-            )
-
-            # attributes
-            self.data = processed_ds
-
-        # offset-by-sample with forecast sampling
-        elif sample_setting == 2:
-            # generate a list of samples. each sample is n frames (forecasts)
-            # no sliding window needed; n frames already generated
-            herbie_ds = self._get_hrrr_data_offset_by_forecast(
-                start_date, end_date, frames_per_sample, product, verbose
-            )
-            subregion_grib_ds = self._subregion_grib_files(
-                herbie_ds, extent, extent_name, product
-            )
-            subregion_frames = self._grib_to_np(subregion_grib_ds)
-            preprocessed_frames = self._interpolate_and_add_channel_axis(
-                subregion_frames, dim
-            )
-            # sliding window needs to be offset by the number of frames
-            processed_ds = self._sliding_window_of(
-                frames=preprocessed_frames, 
-                window_size=frames_per_sample, 
-                full_slide=True 
-            )
-
-            # attributes
-            self.data = processed_ds
-
         else:
-            msg = (
-                "Argument \"sample_setting\" must be either:\n",
-                "1 - frame-by-frame\n",
-                "2 - offset-by-sample with forecasts\n"
-            )
-            raise ValueError(" ".join(msg))
+            print("✅ All chunks already cached!")
 
-        # cache the data
+        print(f"🔗 Loading and combining all {len(chunk_info)} chunks...")
+        self.data = self._load_and_combine_chunks(chunk_info)
+        print(f"🎉 Final combined data shape: {self.data.shape}")
+
         if processed_cache_dir is None:
-            print("🙅 No cache directory set. Data will not be cached.")
+            print("🙅 No final cache directory set. Combined data will not be cached.")
         else:
-            print(
-                f"💾 Saving processed HRRR data to cache: "
-                f"{processed_cache_dir}"
-            )
+            print(f"💾 Saving final combined data to cache: {processed_cache_dir}")
             try:
                 np.savez_compressed(
                     processed_cache_dir,
                     data=self.data,
                     date_range=np.array([start_date, end_date]),
                     product=np.array([product]),
-                    extent=np.array(extent) if not None else np.array([]),
+                    extent=np.array(extent) if extent is not None else np.array([]),
                     sample_setting=np.array([sample_setting])
                 )
-                print("🎉 Successfully saved processed data to cache.")
+                print("🎉 Successfully saved final combined data to cache.")
             except Exception as e:
-                print(
-                    f"⚠️  Warning: Could not save processed data to cache: "
-                    f"{e}"
+                print(f"⚠️  Warning: Could not save final combined data to cache: {e}")
+
+    def _generate_chunk_list(self, start_dt, end_dt, chunk_months):
+        """Generate list of chunk information (start, end, filename)."""
+        chunks = []
+        current_start = start_dt
+        chunk_num = 0
+        
+        while current_start < end_dt:
+            chunk_num += 1
+            current_end = min(
+                current_start + pd.DateOffset(months=chunk_months), 
+                end_dt
+            )
+            
+            chunk_filename = f"chunk_{chunk_num:03d}_{current_start.strftime('%Y%m%d')}_{current_end.strftime('%Y%m%d')}.npz"
+            
+            chunks.append({
+                'num': chunk_num,
+                'start': current_start,
+                'end': current_end,
+                'start_str': current_start.strftime('%Y-%m-%d-%H'),
+                'end_str': current_end.strftime('%Y-%m-%d-%H'),
+                'filename': chunk_filename
+            })
+            
+            current_start = current_end
+            
+        return chunks
+
+    def _check_chunk_cache_status(self, chunk_info, chunk_cache_dir, force_reprocess):
+        """Check which chunks exist in cache and which need processing."""
+        existing_chunks = []
+        missing_chunks = []
+        
+        for chunk in chunk_info:
+            chunk_path = os.path.join(chunk_cache_dir, chunk['filename'])
+            
+            if not force_reprocess and os.path.exists(chunk_path):
+                try:
+                    test_load = np.load(chunk_path)
+                    if 'data' in test_load:
+                        existing_chunks.append(chunk)
+                        print(f"✅ Chunk {chunk['num']}: {chunk['filename']} (cached)")
+                    else:
+                        missing_chunks.append(chunk)
+                        print(f"❌ Chunk {chunk['num']}: Invalid cache file, will reprocess")
+                except Exception as e:
+                    missing_chunks.append(chunk)
+                    print(f"❌ Chunk {chunk['num']}: Cache corrupt ({e}), will reprocess")
+            else:
+                missing_chunks.append(chunk)
+                status = "forced reprocess" if force_reprocess else "not cached"
+                print(f"⏳ Chunk {chunk['num']}: {chunk['filename']} ({status})")
+        
+        return existing_chunks, missing_chunks
+
+    def _process_missing_chunks(self, missing_chunks, extent, extent_name, 
+                              product, frames_per_sample, dim, sample_setting, verbose):
+        """Process and cache missing chunks individually."""
+        for chunk in missing_chunks:
+            print(f"\n📦 Processing chunk {chunk['num']}: {chunk['start_str']} to {chunk['end_str']}")
+            
+            try:
+                chunk_data = self._process_chunk(
+                    chunk['start_str'], chunk['end_str'],
+                    extent, extent_name, product, frames_per_sample, 
+                    dim, sample_setting, verbose
                 )
+                
+                if chunk_data is not None and len(chunk_data) > 0:
+                    chunk_path = os.path.join(self.chunk_cache_dir, chunk['filename'])
+                    np.savez_compressed(
+                        chunk_path,
+                        data=chunk_data,
+                        start_date=chunk['start_str'],
+                        end_date=chunk['end_str'],
+                        chunk_num=chunk['num']
+                    )
+                    print(f"✅ Chunk {chunk['num']} processed and cached: {chunk_data.shape}")
+                else:
+                    print(f"⚠️ Chunk {chunk['num']} returned no data")
+                    
+            except Exception as e:
+                print(f"❌ Error processing chunk {chunk['num']}: {e}")
+                
+            gc.collect()
+
+    def _load_and_combine_chunks(self, chunk_info):
+        """Load all cached chunks and combine them into final dataset."""
+        all_chunks = []
+        
+        for chunk in chunk_info:
+            chunk_path = os.path.join(self.chunk_cache_dir, chunk['filename'])
+            
+            try:
+                print(f"📖 Loading chunk {chunk['num']}: {chunk['filename']}")
+                cached_chunk = np.load(chunk_path)
+                chunk_data = cached_chunk['data']
+                all_chunks.append(chunk_data)
+                print(f"   ✅ Loaded chunk {chunk['num']}: {chunk_data.shape}")
+                
+            except Exception as e:
+                print(f"❌ Error loading chunk {chunk['num']}: {e}")
+                raise ValueError(f"Failed to load required chunk {chunk['num']}. Try reprocessing with force_reprocess=True")
+        
+        if not all_chunks:
+            raise ValueError("No chunks were successfully loaded")
+            
+        # Combine all chunks
+        print("🔗 Combining all chunks...")
+        combined_data = np.concatenate(all_chunks, axis=0)
+        
+        # Clear chunks from memory
+        del all_chunks
+        import gc
+        gc.collect()
+        
+        return combined_data
+
+    def _process_chunk(
+        self, 
+        start_date, 
+        end_date, 
+        extent, 
+        extent_name, 
+        product, 
+        frames_per_sample, 
+        dim, 
+        sample_setting, 
+        verbose
+    ):
+        """Process a single chunk of HRRR data."""
+        try:
+            # frame-by-frame sampling
+            if sample_setting == 1:
+                herbie_ds = self._get_hrrr_data_frame_by_frame(
+                    start_date, end_date, product, verbose
+                )
+                
+                if not herbie_ds:
+                    print(f"No herbie data for chunk {start_date} to {end_date}")
+                    return None
+                    
+                subregion_grib_ds = self._subregion_grib_files(
+                    herbie_ds, extent, extent_name, product
+                )
+                
+                if not subregion_grib_ds:
+                    print(f"No subregion data for chunk {start_date} to {end_date}")
+                    return None
+                    
+                subregion_frames = self._grib_to_np(subregion_grib_ds)
+                
+                if len(subregion_frames) == 0:
+                    print(f"No frames extracted for chunk {start_date} to {end_date}")
+                    return None
+                    
+                preprocessed_frames = self._interpolate_and_add_channel_axis(
+                    subregion_frames, dim
+                )
+                processed_ds = self._sliding_window_of(
+                    preprocessed_frames, frames_per_sample
+                )
+
+            # offset-by-sample with forecast sampling
+            elif sample_setting == 2:
+                herbie_ds = self._get_hrrr_data_offset_by_forecast(
+                    start_date, end_date, frames_per_sample, product, verbose
+                )
+                
+                if not herbie_ds:
+                    print(f"No herbie data for chunk {start_date} to {end_date}")
+                    return None
+                    
+                subregion_grib_ds = self._subregion_grib_files(
+                    herbie_ds, extent, extent_name, product
+                )
+                
+                if not subregion_grib_ds:
+                    print(f"No subregion data for chunk {start_date} to {end_date}")
+                    return None
+                    
+                subregion_frames = self._grib_to_np(subregion_grib_ds)
+                
+                if len(subregion_frames) == 0:
+                    print(f"No frames extracted for chunk {start_date} to {end_date}")
+                    return None
+                    
+                preprocessed_frames = self._interpolate_and_add_channel_axis(
+                    subregion_frames, dim
+                )
+                # sliding window needs to be offset by the number of frames
+                processed_ds = self._sliding_window_of(
+                    frames=preprocessed_frames, 
+                    window_size=frames_per_sample, 
+                    full_slide=True 
+                )
+            else:
+                msg = (
+                    "Argument \"sample_setting\" must be either:\n",
+                    "1 - frame-by-frame\n",
+                    "2 - offset-by-sample with forecasts\n"
+                )
+                raise ValueError(" ".join(msg))
+
+            return processed_ds
+            
+        except Exception as e:
+            print(f"Error in _process_chunk: {e}")
+            return None
 
     def _attempt_download(
         self, 
@@ -194,9 +380,8 @@ class HRRRData:
         lost_files = [H for H in herbies if H.grib is None]
         if len(lost_files) > 0:
             print(
-                f"⚠️  Could not find "
-                f"{len(lost_files)}/{len(self.file_exists) + len(lost_files)} "
-                f"GRIB files."
+                f"⚠️  Could not find the following grib files:\n"
+                f"{lost_files}"
             )
 
         # multithread download grib files 
@@ -206,7 +391,42 @@ class HRRRData:
             n_threads
         )
 
-        return herbies
+        # confirm xarray can read the grib files
+        for H in found_files:
+            self._verify_downloads(H, product)
+
+        return found_files
+
+    def _verify_downloads(self, H, product):
+        """
+        Will attempt to open the grib file with xarray.
+        If it cannot be opened, it will trigger a redownload
+
+        If successful, will continue. If unsuccessful, will 
+        attempt to redownload 5 times until re-raising the error.
+        """
+        success = False
+        attempt = 1
+        max_attempts = 5
+        while not success:
+            try:
+                file = H.get_localFilePath(product)
+                xr.open_dataset(file, engine="cfgrib", decode_timedelta=False)
+                success = True
+            except Exception as e:
+                # primarily meant to catch EOFError, but all errors should
+                if attempt > max_attempts:
+                    print("🚨 Max attempts reached, raising error.")
+                    raise
+
+                print(
+                    f"{e}\n"
+                    f"🤕 File corrupted while downloading; "
+                    f"beginning redownload attempt "
+                    f"{attempt}/{max_attempts}."
+                )
+                self._redownload(H, product, file)
+                attempt += 1
 
     # NOTE downloading helpers
     def _multithread_dl_grib_files(self, herbie_data, product, n_threads):
@@ -302,6 +522,10 @@ class HRRRData:
         end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
         dates = pd.date_range(start_date, end_date, freq="1h")
 
+        if len(dates) == 0:
+            print(f"No dates in range {start_date} to {end_date}")
+            return []
+
         FH = self._attempt_download(
             date_range=dates, 
             product=product, 
@@ -340,6 +564,10 @@ class HRRRData:
         offset_start_date = pd.to_datetime(start_date) + pd.Timedelta(hours=offset - 1)
         end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
         dates = pd.date_range(offset_start_date, end_date, freq="1h")
+
+        if len(dates) == 0:
+            print(f"No dates in range {offset_start_date} to {end_date}")
+            return []
 
         FH = self._attempt_download(
             date_range=dates,
@@ -394,12 +622,12 @@ class HRRRData:
                         f"⚠️  Issue found with file {file}.\n"
                         f"wgrib2 exit code: {e.returncode}, "
                         f"with error: {e.stderr}\n"
-                        f"Attempt {attempt}/{max_attempts}: "
+                        f"Attempt {attempts}/{max_attempts}: "
                         f"redownload and running subregion."
                     )
 
-                    self._redownload(self, H, product, file)
-                    attempt += 1
+                    self._redownload(H, product, file)
+                    attempts += 1
                 except Exception as e:
                     print(f"Unknown exception: {e}")
                     raise
@@ -412,7 +640,7 @@ class HRRRData:
         and use the Herbie object + the product to redownload the file
         '''
         p = subprocess.run(
-            f"{which("rm")} {file}",
+            f"{which('rm')} {file}",
             shell=True,
             capture_output=True,
             encoding="utf-8",
@@ -445,21 +673,30 @@ class HRRRData:
         '''
         np_of_grib = []
         for file in grib_files:
-            hrrr_xarr = xr.open_dataset(file, engine="cfgrib", decode_timedelta=False)
+            try:
+                hrrr_xarr = xr.open_dataset(file, engine="cfgrib", decode_timedelta=False)
 
-            # for now, we'll only accept Datasets with one variable
-            data_vars = [variable for variable in hrrr_xarr.data_vars]
-            if len(data_vars) != 1:
-                err_msg = (
-                    f"xarray Dataset should have only one data variable."
-                    f"Expected: 'unknown' for 'COLMD' or 'mdens' for 'MASSDEN',"
-                    f"Returned: {hrrr_xarr.data_vars.keys()}"
-                )
-                raise ValueError(" ".join(err_msg))
-            variable = data_vars[0]
+                # for now, we'll only accept Datasets with one variable
+                data_vars = [variable for variable in hrrr_xarr.data_vars]
+                if len(data_vars) != 1:
+                    err_msg = (
+                        f"xarray Dataset should have only one data variable."
+                        f"Expected: 'unknown' for 'COLMD' or 'mdens' for 'MASSDEN',"
+                        f"Returned: {hrrr_xarr.data_vars.keys()}"
+                    )
+                    print(f"Warning: {' '.join(err_msg)} for file {file}")
+                    continue
+                variable = data_vars[0]
 
-            # hrrr data comes in (y, x), so it will need to be flipped for (x, y)
-            np_of_grib.append(np.flip(hrrr_xarr[variable].to_numpy(), axis=0))
+                # hrrr data comes in (y, x), so it will need to be flipped for (x, y)
+                np_of_grib.append(np.flip(hrrr_xarr[variable].to_numpy(), axis=0))
+                
+                # Close the dataset to free memory
+                hrrr_xarr.close()
+                
+            except Exception as e:
+                print(f"Error processing file {file}: {e}")
+                continue
 
         return np.array(np_of_grib)
 
@@ -520,6 +757,10 @@ class HRRRData:
             if full_slide == False
             else n_frames // window_size
         )
+
+        if n_samples <= 0:
+            print(f"Warning: Not enough frames ({n_frames}) for window size ({window_size})")
+            return np.array([])
 
         samples = np.empty((n_samples, window_size, row, col, channels))
 

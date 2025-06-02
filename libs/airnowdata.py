@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
 import time
+from datetime import datetime
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -20,6 +21,7 @@ class AirNowData:
     Pipeline:
         - Downloads data from AirNow API in chunks to avoid record limits
         - Optionally filters sensors based on mask (excludes sensors outside valid areas)
+        - NEW: Optionally filters sensors based on whitelist (includes only specified sensors)
         - Converts ground site data into grids
         - Interpolates using 3D IDW (with elevation)
         - Creates sliding window samples for time series
@@ -37,9 +39,11 @@ class AirNowData:
         idw_power=2,
         elevation_path=None,
         mask_path=None,
-        use_mask=True,  # NEW: Control whether to use mask filtering
+        use_mask=True,
+        sensor_whitelist=None,
+        use_whitelist=False,
         force_reprocess=False,
-        chunk_days=30  # NEW: Configurable chunk size
+        chunk_days=30
     ):
         self.air_sens_loc = {}
         self.start_date = start_date
@@ -48,8 +52,15 @@ class AirNowData:
         self.dim = dim
         self.frames_per_sample = frames_per_sample
         self.idw_power = idw_power
-        self.use_mask = use_mask  # Store the mask usage preference
-        self.chunk_days = chunk_days  # Store chunk size
+        self.use_mask = use_mask
+        self.chunk_days = chunk_days
+        
+        self.use_whitelist = use_whitelist
+        self.sensor_whitelist = sensor_whitelist if sensor_whitelist else []
+        
+        if use_whitelist and sensor_whitelist:
+            print(f"Using sensor whitelist: {len(self.sensor_whitelist)} sensors")
+            print(f"Whitelisted sensors: {self.sensor_whitelist}")
         
         # Set default paths
         self.elevation_path = elevation_path if elevation_path else "inputs/elevation.npy"
@@ -161,6 +172,16 @@ class AirNowData:
         except Exception as e:
             print(f"Warning: Could not save processed data to cache: {e}")
     
+    def _is_sensor_whitelisted(self, sensor_name):
+        """Check if a sensor is in the whitelist."""
+        if not self.use_whitelist:
+            return True
+            
+        if not self.sensor_whitelist:
+            return True
+            
+        return sensor_name in self.sensor_whitelist
+    
     def _normalize_elevation(self, elevation_data):
         """Normalize elevation data to prevent overflow in calculations."""
         min_val = np.min(elevation_data)
@@ -219,7 +240,7 @@ class AirNowData:
             existing_data = []
         
         # Only proceed with download if we need more data
-        if not os.path.exists(save_dir) or latest_date < pd.to_datetime(end_date):
+        if not os.path.exists(save_dir) or 'latest_date' in locals() and latest_date < pd.to_datetime(end_date):
             print("Downloading AirNow data in chunks to avoid record limits...")
             
             bbox = f'{lon_bottom},{lat_bottom},{lon_top},{lat_top}'
@@ -258,7 +279,7 @@ class AirNowData:
                     'endDate': date_end,
                     'parameters': 'PM25',
                     'BBOX': bbox,
-                    'dataType': 'A',
+                    'dataType': 'B',
                     'format': 'application/json',
                     'verbose': '1',
                     'monitorType': '2',
@@ -463,7 +484,7 @@ class AirNowData:
             return []
 
     def _preprocess_ground_sites(self, df, dim, extent):
-        """Convert ground sites data into grid format, optionally filtering by mask."""
+        """Convert ground sites data into grid format, with optional whitelist filtering."""
         lonMin, lonMax, latMin, latMax = extent
         latDist, lonDist = abs(latMax - latMin), abs(lonMax - lonMin)
         unInter = np.zeros((dim, dim))
@@ -491,6 +512,18 @@ class AirNowData:
         print(f"Processing {len(dfArr)} sensors using '{value_column}' as value column")
         
         for i in range(dfArr.shape[0]):
+            sitename = dfArr[i,3]
+            
+            if self.use_whitelist and not self._is_sensor_whitelisted(sitename):
+                excluded_sensors.append({
+                    'name': sitename,
+                    'lat': dfArr[i,0],
+                    'lon': dfArr[i,1],
+                    'value': dfArr[i,2],
+                    'reason': 'not_whitelisted'
+                })
+                continue
+            
             # Calculate grid coordinates
             x = int(((latMax - dfArr[i,0]) / latDist) * dim)
             x = max(0, min(x, dim - 1))
@@ -504,7 +537,7 @@ class AirNowData:
                 if (x < 0 or x >= self.mask.shape[0] or 
                     y < 0 or y >= self.mask.shape[1]):
                     excluded_sensors.append({
-                        'name': dfArr[i,3],
+                        'name': sitename,
                         'lat': dfArr[i,0],
                         'lon': dfArr[i,1],
                         'value': dfArr[i,2],
@@ -517,7 +550,7 @@ class AirNowData:
                 # Then check if sensor is in a masked area (mask value == 0)
                 elif self.mask[x, y] == 0:
                     excluded_sensors.append({
-                        'name': dfArr[i,3],
+                        'name': sitename,
                         'lat': dfArr[i,0],
                         'lon': dfArr[i,1],
                         'value': dfArr[i,2],
@@ -533,7 +566,6 @@ class AirNowData:
                 unInter[x, y] = 0  # Set negative/invalid values to 0 (valid PM2.5 baseline)
             else:
                 unInter[x, y] = value
-                sitename = dfArr[i,3]
                 self.air_sens_loc[sitename] = (x, y)
                 included_sensors.append({
                     'name': sitename,
@@ -544,16 +576,17 @@ class AirNowData:
                     'grid_y': y
                 })
         
-        # Report filtering results
-        if self.use_mask and excluded_sensors:
+        if excluded_sensors:
+            whitelist_excluded = [s for s in excluded_sensors if s.get('reason') == 'not_whitelisted']
             out_of_bounds = [s for s in excluded_sensors if s.get('reason') == 'out_of_bounds']
             masked_areas = [s for s in excluded_sensors if s.get('reason') == 'masked_area']
             
-            print(f"Excluded {len(excluded_sensors)} sensors due to mask filtering:")
+            if whitelist_excluded:
+                print(f"Excluded {len(whitelist_excluded)} sensors due to whitelist filtering")
             if out_of_bounds:
-                print(f"  - {len(out_of_bounds)} sensors out of mask bounds")
+                print(f"Excluded {len(out_of_bounds)} sensors out of mask bounds")
             if masked_areas:
-                print(f"  - {len(masked_areas)} sensors in masked areas")
+                print(f"Excluded {len(masked_areas)} sensors in masked areas")
         
         print(f"Included {len(included_sensors)} sensors in interpolation")
         return unInter
@@ -918,7 +951,10 @@ class AirNowData:
                               fontsize=9, color='black', weight='bold',
                               bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.7))
         
-        plt.title('AirNow Sensor Locations', fontsize=16)
+        title = 'AirNow Sensor Locations'
+        if self.use_whitelist:
+            title += f' (Whitelisted: {len(self.air_sens_loc)} sensors)'
+        plt.title(title, fontsize=16)
         plt.legend(loc='upper right')
         
         if save_path:
@@ -1102,3 +1138,4 @@ class AirNowData:
             
         plt.tight_layout()
         return fig, axes
+
