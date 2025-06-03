@@ -48,6 +48,10 @@ class HRRRData:
         self.chunk_months = chunk_months
         self.chunk_cache_dir = chunk_cache_dir
         
+        # Store original dates for offset calculation
+        self.original_start_date = start_date
+        self.frames_per_sample = frames_per_sample
+        
         # Create chunk cache directory
         if chunk_cache_dir is not None:
             os.makedirs(chunk_cache_dir, exist_ok=True)
@@ -158,7 +162,8 @@ class HRRRData:
                 'end': current_end,
                 'start_str': current_start.strftime('%Y-%m-%d-%H'),
                 'end_str': current_end.strftime('%Y-%m-%d-%H'),
-                'filename': chunk_filename
+                'filename': chunk_filename,
+                'is_first_chunk': chunk_num == 1  # Add flag for first chunk
             })
             
             current_start = current_end
@@ -202,7 +207,7 @@ class HRRRData:
                 chunk_data = self._process_chunk(
                     chunk['start_str'], chunk['end_str'],
                     extent, extent_name, product, frames_per_sample, 
-                    dim, sample_setting, verbose
+                    dim, sample_setting, verbose, chunk['is_first_chunk']
                 )
                 
                 if chunk_data is not None and len(chunk_data) > 0:
@@ -265,11 +270,11 @@ class HRRRData:
         frames_per_sample, 
         dim, 
         sample_setting, 
-        verbose
+        verbose,
+        is_first_chunk
     ):
         """Process a single chunk of HRRR data."""
         try:
-            # frame-by-frame sampling
             if sample_setting == 1:
                 herbie_ds = self._get_hrrr_data_frame_by_frame(
                     start_date, end_date, product, verbose
@@ -300,10 +305,9 @@ class HRRRData:
                     preprocessed_frames, frames_per_sample
                 )
 
-            # offset-by-sample with forecast sampling
             elif sample_setting == 2:
                 herbie_ds = self._get_hrrr_data_offset_by_forecast(
-                    start_date, end_date, frames_per_sample, product, verbose
+                    start_date, end_date, frames_per_sample, product, verbose, is_first_chunk
                 )
                 
                 if not herbie_ds:
@@ -327,7 +331,6 @@ class HRRRData:
                 preprocessed_frames = self._interpolate_and_add_channel_axis(
                     subregion_frames, dim
                 )
-                # sliding window needs to be offset by the number of frames
                 processed_ds = self._sliding_window_of(
                     frames=preprocessed_frames, 
                     window_size=frames_per_sample, 
@@ -543,7 +546,8 @@ class HRRRData:
         end_date,
         offset,
         product,
-        verbose
+        verbose,
+        is_first_chunk
     ):
         '''
         Uses FastHerbie to grab the remote data, and download it; offset by the
@@ -555,13 +559,21 @@ class HRRRData:
             offset: The number of frames per sample we offset by
             product: regex of the product to download 
             verbose: Determines if Herbie objects should be printed
+            is_first_chunk: Whether this is the first chunk being processed
 
         Returns:
             The list of Herbie objects of the downloaded data
 
         '''
-        # if sample is t=0, pull init @ 00, fxx = 01 so we provide next-sample forecast
-        offset_start_date = pd.to_datetime(start_date) + pd.Timedelta(hours=offset - 1)
+        if is_first_chunk:
+            offset_start_date = pd.to_datetime(start_date) + pd.Timedelta(hours=offset - 1)
+            print(f"🔧 First chunk: applying offset of {offset-1} hours to start date")
+            print(f"   Original start: {start_date}")
+            print(f"   Offset start: {offset_start_date}")
+        else:
+            offset_start_date = pd.to_datetime(start_date)
+            print(f"📦 Subsequent chunk: no offset applied, using original start date: {start_date}")
+            
         end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
         dates = pd.date_range(offset_start_date, end_date, freq="1h")
 
