@@ -21,12 +21,24 @@ def _safe_herbie(date):
 
     Get Herbie object, handling connection reset error
     '''
-    success = False
     retries = 1 
     max_retries = 5
     while retries < max_retries: 
         try:
             return Herbie(date)
+        except ConnectionError as e:
+            retries += 1
+            print(f"Failed, attempt {retries}...")
+            time.sleep(5)
+
+    raise Exception("Retried too many times.")
+
+def _safe_get_localFilePath(H, product):
+    retries = 1 
+    max_retries = 5
+    while retries < max_retries: 
+        try:
+            return H.get_localFilePath(product) 
         except ConnectionError as e:
             retries += 1
             print(f"Failed, attempt {retries}...")
@@ -189,7 +201,7 @@ class TestHRRRData(unittest.TestCase):
 
         print()
         actual = [
-            H.get_localFilePath(PRODUCT)
+            _safe_get_localFilePath(H, PRODUCT) 
             for H in instance._attempt_download(
                 DATE_RANGE,
                 PRODUCT 
@@ -197,7 +209,7 @@ class TestHRRRData(unittest.TestCase):
         ]
 
         expected = [
-            H.get_localFilePath(PRODUCT) 
+            _safe_get_localFilePath(H, PRODUCT) 
             for H in [_safe_herbie(date) for date in DATE_RANGE]
         ]
 
