@@ -723,7 +723,7 @@ class AirNowData:
         
         return out
 
-    def _sliding_window_of(self, frames, frames_per_sample):
+    def _sliding_window_of(self, frames, frames_per_sample, target=False):
         """
         Create sliding window samples from frames.
 
@@ -759,7 +759,7 @@ class AirNowData:
     def _get_target_stations(self, X, gridded_data, sensor_locations):
         """Generate target values for prediction at sensor locations."""
         n_samples, n_frames = X.shape[0], X.shape[1] 
-        possible_samples = max(1, n_samples - n_frames + 1)
+        possible_samples = max(1, n_samples - n_frames)
         n_sensors = len(sensor_locations)
         
         if n_sensors == 0:
@@ -767,9 +767,11 @@ class AirNowData:
             
         Y = np.empty((possible_samples, n_frames, n_sensors))
         
+        # TODO the last element is not being populated. size issue?
         sliding_window_gridded_data = self._sliding_window_of(
-            np.array(gridded_data[n_frames:]), 
-            n_frames
+            frames=np.array(gridded_data[n_frames:]), 
+            frames_per_sample=n_frames,
+            target=True
         )
         for s, sample in enumerate(sliding_window_gridded_data):
             for f, frame in enumerate(sample):
