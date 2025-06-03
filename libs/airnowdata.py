@@ -724,10 +724,23 @@ class AirNowData:
         return out
 
     def _sliding_window_of(self, frames, frames_per_sample):
-        """Create sliding window samples from frames."""
-        n_frames, row, col, channels = frames.shape
+        """
+        Create sliding window samples from frames.
+
+        Expects frames to have the total number of frames in the first dimension
+            e.g (n_frames, ..., )
+        This way, we can accomodate differently shaped containers
+            e.g. 
+                - (n_frames, row, col, channels)
+                - (n_frames, sensors)
+        Output Adds a sample based on frames per sample, e.g.:
+            - (n_frames, sensors) -> (samples, frames_per_sample, sensors)
+            - (n_frames, r, c, ch) -> (samples, frames_per_sample, r, c, ch)
+        """
+        n_frames = frames.shape[0]
         n_samples = max(1, n_frames - frames_per_sample + 1)
-        samples = np.empty((n_samples, frames_per_sample, row, col, channels))
+        out_shape = (n_samples, frames_per_sample) + frames.shape[1:]
+        samples = np.empty(out_shape)
         
         for i in range(n_samples):
             end_idx = min(i + frames_per_sample, n_frames)
@@ -745,23 +758,24 @@ class AirNowData:
 
     def _get_target_stations(self, X, gridded_data, sensor_locations):
         """Generate target values for prediction at sensor locations."""
-        n_samples, frames_per_sample = X.shape[0], X.shape[1] 
+        n_samples, n_frames = X.shape[0], X.shape[1] 
+        possible_samples = max(1, n_samples - n_frames + 1)
         n_sensors = len(sensor_locations)
         
         if n_sensors == 0:
             raise ValueError("No sensor locations available to generate target stations")
             
-        Y = np.empty((n_samples, n_sensors))
+        Y = np.empty((possible_samples, n_frames, n_sensors))
         
-        for sample in range(len(Y)):
-            for i, (loc, coords) in enumerate(sensor_locations.items()):
-                x, y = coords
-                offset = sample + frames_per_sample
-                
-                if offset < len(gridded_data):
-                    Y[sample][i] = gridded_data[offset][x][y]
-                else:
-                    Y[sample][i] = gridded_data[-1][x][y]
+        sliding_window_gridded_data = self._sliding_window_of(
+            np.array(gridded_data[n_frames:]), 
+            n_frames
+        )
+        for s, sample in enumerate(sliding_window_gridded_data):
+            for f, frame in enumerate(sample):
+                for sensor, (loc, coords) in enumerate(sensor_locations.items()):
+                    x, y = coords
+                    Y[s][f][sensor] = frame[x][y]
 
         return Y
 
