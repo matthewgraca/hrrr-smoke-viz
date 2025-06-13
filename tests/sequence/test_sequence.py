@@ -1,8 +1,9 @@
 import unittest
-from libs.sequence import NumpySequence
+from libs.sequence import PWWBPyDataset 
 import numpy as np
+import math
 
-class TestNumpySequence(unittest.TestCase):
+class TestPWWBPyDataset(unittest.TestCase):
     def test_sequence_length_matches_data_batches(self):
         X_paths = [
             "tests/sequence/data/dummy_channel_1.npy",
@@ -10,11 +11,11 @@ class TestNumpySequence(unittest.TestCase):
         ]
         y_path = "tests/sequence/data/dummy_label.npy"
         batch_size = 4
-        generator = NumpySequence(X_paths, y_path, batch_size)
+        generator = PWWBPyDataset(X_paths, y_path, batch_size)
         actual = len(generator)
 
         a = np.load("tests/sequence/data/dummy_channel_1.npy")
-        expected = len(a) // batch_size
+        expected = math.ceil(len(a) / batch_size)
 
         msg = f"Sequence length doesn't match batched data size."
         self.assertEqual(expected, actual, msg)
@@ -29,4 +30,4 @@ class TestNumpySequence(unittest.TestCase):
         batch_size = 4
 
         with self.assertRaises(AssertionError):
-            NumpySequence(X_paths, y_path, batch_size)
+            PWWBPyDataset(X_paths, y_path, batch_size)
