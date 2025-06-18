@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Air Quality Prediction Training Script
-Extracted from notebook for systematic channel combination experiments
-"""
-
 # =============================================================================
 # CONFIGURATION - EDIT THESE PATHS AS NEEDED
 # =============================================================================
@@ -42,17 +36,13 @@ else:
     print("Using TensorFlow default device selection (GPU if available)")
 
 import keras
-from keras.models import Sequential, Model
-from keras.layers import (Conv3D, ConvLSTM2D, BatchNormalization, LayerNormalization,
-                         Convolution2D, MaxPooling3D, Flatten, Reshape, GlobalAveragePooling2D,
+from keras.models import Sequential
+from keras.layers import (Conv3D, ConvLSTM2D,
+                          Flatten,
                          TimeDistributed, Dropout, Dense, InputLayer)
 from keras.callbacks import EarlyStopping, TensorBoard
 
 sys.path.append(LIBS_PATH)
-from libs.sequence import PWWBPyDataset
-from libs.plotting import comprehensive_frame_analysis
-
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 class GradientLogger(tf.keras.callbacks.Callback):
     def __init__(self, log_dir, data_sample):
