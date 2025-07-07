@@ -1,7 +1,7 @@
 # =============================================================================
 # CONFIGURATION - EDIT THESE PATHS AS NEEDED
 # =============================================================================
-BASE_DATA_DIR = "final_input_data/two_years_pwwb_airnow_hrrr"
+BASE_DATA_DIR = "final_input_data/two_years_with_hrrr"
 LIBS_PATH = "../.."
 OUTPUT_BASE_DIR = "experiment_output"
 TENSORBOARD_DIR = "my_logs"
@@ -9,8 +9,8 @@ TENSORBOARD_DIR = "my_logs"
 CHANNEL_FILE_PATTERN = "{channel}_X_{split}.npy"
 TARGET_FILE_PATTERN = "Y_{split}.npy"
 
-DEFAULT_EPOCHS = 10
-DEFAULT_BATCH_SIZE = 8
+DEFAULT_EPOCHS = 100 
+DEFAULT_BATCH_SIZE = 16 
 
 FORCE_CPU = False
 
@@ -155,7 +155,8 @@ def create_current_pwwb_model(input_shape, output_size):
 
 def load_data_splits(channel_indices):
     """Load pre-split train/valid/test data"""
-    all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_COLMD']
+    #all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_COLMD']
+    all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_MASSDEN']
     
     selected_channels = [all_channel_names[i] for i in channel_indices]
     print(f"Loading pre-split dataset for channels: {selected_channels}")
@@ -177,7 +178,8 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     epochs = epochs or DEFAULT_EPOCHS
     batch_size = batch_size or DEFAULT_BATCH_SIZE
     
-    all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_COLMD']
+    #all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_COLMD']
+    all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_MASSDEN']
     channel_indices = channels
     selected_channels = [all_channel_names[i] for i in channel_indices]
     
@@ -357,6 +359,7 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     with open(os.path.join(results_dir, "comprehensive_analysis.txt"), 'w') as f:
         f.write(analysis_output.getvalue())
     
+    '''
     metadata = {
         'experiment_id': experiment_id,
         'channels': channel_indices,
@@ -370,7 +373,31 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
         'timestamp': datetime.now().isoformat(),
         'framework': 'tensorflow'
     }
-    
+    '''
+
+    ''' 
+    metadata that i'd like to use, that way I don't have to read files, just pull this one as a dataframe
+    '''
+    channels_used = [
+        {channel_name : 1.0 if channel_name in selected_channels else 0.0} 
+        for channel_name in all_channel_names
+    ]
+    errors = [
+        {'RMSE' : rmse(y_pred, Y_test)},
+        {'NRMSE': nrmse(y_pred, Y_test)},
+        {'MAE': mae(y_pred, Y_test)},
+        {'R2': r2_score(Y_test, y_pred)} 
+    ]
+
+    metadata = {
+        'experiment_id': experiment_id,
+        *channels_used,
+        'final_validation_loss': float(final_val_loss),
+        'batch_size': batch_size,
+        *errors,
+        'timestamp': datetime.now().isoformat(),
+    }
+
     with open(os.path.join(results_dir, "metadata.json"), 'w') as f:
         json.dump(metadata, f, indent=2)
     
