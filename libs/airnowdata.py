@@ -11,6 +11,7 @@ import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
 import time
 from datetime import datetime
+from tqdm import tqdm 
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -135,10 +136,10 @@ class AirNowData:
             raise ValueError("No valid AirNow data available.")
         
         print("Processing AirNow data with IDW interpolation (this may take time)...")    
-        ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in list_df]
+        ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in tqdm(list_df)]
         
         print(f"Interpolating {len(ground_site_grids)} frames...")
-        interpolated_grids = [self._interpolate_frame(frame) for frame in ground_site_grids]
+        interpolated_grids = [self._interpolate_frame(frame) for frame in tqdm(ground_site_grids)]
         
         frames = np.expand_dims(np.array(interpolated_grids), axis=-1)
         processed_ds = self._sliding_window_of(frames, frames_per_sample)
@@ -509,7 +510,9 @@ class AirNowData:
         excluded_sensors = []
         included_sensors = []
         
+        '''
         print(f"Processing {len(dfArr)} sensors using '{value_column}' as value column")
+        '''
         
         for i in range(dfArr.shape[0]):
             sitename = dfArr[i,3]
@@ -588,7 +591,9 @@ class AirNowData:
             if masked_areas:
                 print(f"Excluded {len(masked_areas)} sensors in masked areas")
         
+        '''
         print(f"Included {len(included_sensors)} sensors in interpolation")
+        '''
         return unInter
 
     def _find_closest_values(self, x, y, coordinates, n=10):
@@ -711,9 +716,12 @@ class AirNowData:
                 interpolated[x, y] = max(0, value)  # PM2.5 can't be negative
         
         # Apply smoothing
+        '''
         kernel_size = np.random.randint(0, 5, (self.dim, self.dim))
         out = self._variable_blur(interpolated, kernel_size)
         out = gaussian_filter(out, sigma=0.5)
+        '''
+        out = interpolated
         
         # Apply mask for geographic boundaries only if using mask
         if self.use_mask and self.mask is not None and np.any(self.mask != 1):
