@@ -37,10 +37,11 @@ else:
 
 import keras
 from keras.models import Sequential
-from keras.layers import (Conv3D, ConvLSTM2D,
-                          Flatten,
-                         TimeDistributed, Dropout, Dense, InputLayer)
-from keras.callbacks import EarlyStopping, TensorBoard
+from keras.layers import (
+    Conv3D, ConvLSTM2D,
+    Flatten, Dense, InputLayer, Reshape
+)
+from keras.callbacks import EarlyStopping, TensorBoard, ModelCheckpoint
 
 sys.path.append(LIBS_PATH)
 
@@ -70,7 +71,7 @@ class GradientLogger(tf.keras.callbacks.Callback):
 def get_run_logdir(root_logdir, run_id):
     return os.path.join(root_logdir, run_id)
 
-def create_classic_pwwb_model(input_shape, output_size):
+def create_classic_pwwb_model(input_shape, n_frames, n_stations):
     model = Sequential()
     model.add(InputLayer(shape=input_shape))
     
@@ -104,59 +105,15 @@ def create_classic_pwwb_model(input_shape, output_size):
         data_format='channels_last'
     ))
     
-    model.add(TimeDistributed(Flatten()))
-    model.add(Dense(output_size, activation='relu'))
-    
-    return model
-
-def create_current_pwwb_model(input_shape, output_size):
-    model = Sequential()
-    model.add(InputLayer(shape=input_shape))
-    
-    model.add(ConvLSTM2D(
-        filters=15, 
-        kernel_size=(3, 3),
-        padding='same', 
-        return_sequences=True,
-        dropout=0.6,
-        recurrent_dropout=0.6,
-        kernel_regularizer=keras.regularizers.l2(0.01)
-    ))
-    
-    model.add(ConvLSTM2D(
-        filters=30, 
-        kernel_size=(3, 3),
-        padding='same', 
-        return_sequences=True,
-        dropout=0.6,
-        recurrent_dropout=0.6,
-        kernel_regularizer=keras.regularizers.l2(0.01)
-    ))
-    
-    model.add(Conv3D(
-        filters=15, 
-        kernel_size=(3, 3, 3),
-        activation='relu',
-        padding='same'
-    ))
-    
-    model.add(Conv3D(
-        filters=1, 
-        kernel_size=(3, 3, 3),
-        activation='relu',
-        padding='same'
-    ))
-    
-    model.add(TimeDistributed(Flatten()))
-    model.add(Dropout(rate=0.6))
-    model.add(Dense(output_size, activation='relu'))
+    model.add(Flatten())
+    model.add(Dense(n_frames * n_stations, activation='relu'))
+    model.add(Reshape((n_frames, n_stations)))
     
     return model
 
 def load_data_splits(channel_indices):
     """Load pre-split train/valid/test data"""
-    #all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_COLMD']
-    all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_MASSDEN']
+    all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_COLMD']
     
     selected_channels = [all_channel_names[i] for i in channel_indices]
     print(f"Loading pre-split dataset for channels: {selected_channels}")
@@ -175,11 +132,11 @@ def load_data_splits(channel_indices):
     return splits['train'], splits['valid'], splits['test']
 
 def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None, batch_size=None):
+    # initialize model parameters
     epochs = epochs or DEFAULT_EPOCHS
     batch_size = batch_size or DEFAULT_BATCH_SIZE
     
-    #all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_COLMD']
-    all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_MASSDEN']
+    all_channel_names = ['MAIAC_AOD', 'TROPOMI_NO2', 'METAR_Wind_U', 'METAR_Wind_V', 'AirNow_PM25', 'HRRR_COLMD']
     channel_indices = channels
     selected_channels = [all_channel_names[i] for i in channel_indices]
     
@@ -189,29 +146,20 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     print(f"Architecture: {architecture}")
     print(f"{'='*60}")
     
+    # load data
     (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = load_data_splits(channel_indices)
     
     input_shape = X_test.shape[1:]
-    _, n_frames, output_size = Y_test.shape
+    _, n_frames, n_stations = Y_test.shape
     
     print(f"Input shape: {input_shape}")
-    print(f"Output shape: ({n_frames}, {output_size})")
+    print(f"Output shape: ({n_frames}, {n_stations})")
     
+    # load model architecture
     tf.keras.backend.set_image_data_format('channels_last')
     
     if architecture == 'classic':
-        model = create_classic_pwwb_model(input_shape, output_size)
-    elif architecture == 'current':
-        model = create_current_pwwb_model(input_shape, output_size)
-    else:
-        raise ValueError(f"Unknown architecture: {architecture}")
-    
-    if architecture == 'classic':
-        model.compile(
-            loss='mean_absolute_error', 
-            optimizer='adam'
-        )
-    elif architecture == 'current':
+        model = create_classic_pwwb_model(input_shape, n_frames, n_stations)
         model.compile(
             loss='mean_absolute_error', 
             optimizer=keras.optimizers.Adam(learning_rate=0.0001, weight_decay=0.01)
@@ -219,6 +167,7 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     else:
         raise ValueError(f"Unknown architecture: {architecture}")
     
+    # set up run directories
     if run_dir:
         output_dir = f"{run_dir}/{experiment_id}"
     else:
@@ -237,12 +186,17 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
             run_id=experiment_id
         )
     
+    results_dir = os.path.join(output_dir, "results")
+    os.makedirs(results_dir, exist_ok=True)
+
     callbacks = [
+        ModelCheckpoint(filepath=os.path.join(results_dir, "model.keras"), save_best_only=True)
         EarlyStopping(monitor='val_loss', patience=20),
         TensorBoard(run_logdir, histogram_freq=1),
         GradientLogger(run_logdir, data_sample=(X_test[:32], Y_test[:32]))
     ]
     
+    # run model training 
     print(f"Training with {X_train.shape[0]} samples")
     print("Starting training...")
     start_time = time.time()
@@ -260,19 +214,16 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     training_time = time.time() - start_time
     print(f"Training completed in {training_time:.1f} seconds ({training_time/60:.1f} minutes)")
     
+    # evaluate model, save results
     print("Evaluating model...")
     y_pred = model.predict(X_test, verbose=0)
     
     final_val_loss = min(history.history['val_loss'])
     
-    results_dir = os.path.join(output_dir, "results")
-    os.makedirs(results_dir, exist_ok=True)
-    
     np.save(os.path.join(results_dir, "y_pred.npy"), y_pred)
     np.save(os.path.join(results_dir, "Y_test.npy"), Y_test)
     
-    model.save(os.path.join(results_dir, "model.keras"))
-    
+    # perform model evaluation visualizations
     plt.figure(figsize=(10, 6))
     plt.plot(history.history['loss'], label='Training Loss')
     plt.plot(history.history['val_loss'], label='Validation Loss')
