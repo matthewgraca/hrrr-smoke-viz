@@ -28,7 +28,7 @@ run_experiment() {
     echo ">>> Architecture: $architecture"
     echo ">>> Will save to: $RUN_DIR/$exp_id"
     
-    if python3 channel_investigation.py \
+    if python3 training.py \
         --channels $channels \
         --architecture "$architecture" \
         --experiment-id "$exp_id" \
@@ -49,6 +49,7 @@ run_experiment() {
     else
         echo "$exp_id,$channels,,$architecture,,,FAILED_TRAINING" >> "$SUMMARY_FILE"
         echo "✗ Experiment $exp_id failed during training"
+        exit 1
     fi
 }
 
@@ -56,52 +57,52 @@ echo ""
 echo "=== Starting Channel Combination Experiments ==="
 
 run_experiment "4" "airnow_only" "classic"
-run_experiment "4" "airnow_only" "current"
+#run_experiment "4" "airnow_only" "current"
 
 run_experiment "4 1" "airnow_no2" "classic"
-run_experiment "4 1" "airnow_no2" "current"
+#run_experiment "4 1" "airnow_no2" "current"
 
 run_experiment "4 0" "airnow_aod" "classic"
-run_experiment "4 0" "airnow_aod" "current"
+#run_experiment "4 0" "airnow_aod" "current"
 
 run_experiment "4 2 3" "airnow_wind" "classic"
-run_experiment "4 2 3" "airnow_wind" "current"
+#run_experiment "4 2" "airnow_wind_spd" "current"
 
 run_experiment "4 5" "airnow_hrrr" "classic"
-run_experiment "4 5" "airnow_hrrr" "current"
+#run_experiment "4 5" "airnow_hrrr" "current"
 
 run_experiment "4 1 0" "airnow_no2_aod" "classic"
-run_experiment "4 1 0" "airnow_no2_aod" "current"
+#run_experiment "4 1 0" "airnow_no2_aod" "current"
 
 run_experiment "4 1 2 3" "airnow_no2_wind" "classic"
-run_experiment "4 1 2 3" "airnow_no2_wind" "current"
+#run_experiment "4 1 2" "airnow_no2_wind_spd" "current"
 
 run_experiment "4 1 5" "airnow_no2_hrrr" "classic"
-run_experiment "4 1 5" "airnow_no2_hrrr" "current"
+#run_experiment "4 1 5" "airnow_no2_hrrr" "current"
 
 run_experiment "4 0 2 3" "airnow_aod_wind" "classic"
-run_experiment "4 0 2 3" "airnow_aod_wind" "current"
+#run_experiment "4 0 2" "airnow_aod_wind_spd" "current"
 
 run_experiment "4 0 5" "airnow_aod_hrrr" "classic"
-run_experiment "4 0 5" "airnow_aod_hrrr" "current"
+#run_experiment "4 0 5" "airnow_aod_hrrr" "current"
 
 run_experiment "4 2 3 5" "airnow_wind_hrrr" "classic"
-run_experiment "4 2 3 5" "airnow_wind_hrrr" "current"
+#run_experiment "4 2 3 5" "airnow_wind_hrrr" "current"
 
 run_experiment "4 1 0 5" "airnow_no2_aod_hrrr" "classic"
-run_experiment "4 1 0 5" "airnow_no2_aod_hrrr" "current"
+#run_experiment "4 1 0 5" "airnow_no2_aod_hrrr" "current"
 
 run_experiment "4 1 2 3 5" "airnow_no2_wind_hrrr" "classic"
-run_experiment "4 1 2 3 5" "airnow_no2_wind_hrrr" "current"
+#run_experiment "4 1 2 3 5" "airnow_no2_wind_hrrr" "current"
 
 run_experiment "4 0 2 3 5" "airnow_aod_wind_hrrr" "classic"
-run_experiment "4 0 2 3 5" "airnow_aod_wind_hrrr" "current"
+#run_experiment "4 0 2 3 5" "airnow_aod_wind_hrrr" "current"
 
 run_experiment "4 1 0 2 3" "airnow_no2_aod_wind" "classic"
-run_experiment "4 1 0 2 3" "airnow_no2_aod_wind" "current"
+#run_experiment "4 1 0 2" "airnow_no2_aod_wind_spd" "current"
 
 run_experiment "4 1 0 2 3 5" "airnow_all_channels" "classic"
-run_experiment "4 1 0 2 3 5" "airnow_all_channels" "current"
+#run_experiment "4 1 0 2 3 5" "airnow_all_channels" "current"
 
 echo ""
 echo "=== All Experiments Completed ==="
