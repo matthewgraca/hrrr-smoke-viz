@@ -11,14 +11,22 @@ from libs.pwwb.data_sources.modis_fire_data import ModisFireDataSource
 from libs.pwwb.data_sources.merra2_data import Merra2DataSource
 from libs.pwwb.data_sources.metar_data import MetarDataSource
 
+# Import temporal aggregation utilities
+from libs.pwwb.utils.temporal_utils import (
+    aggregate_temporal_data, 
+    create_aggregation_config,
+    get_aggregation_method_for_variable
+)
+
 class PWWBData:
     def __init__(
         self,
         start_date="2018-01-01",
         end_date="2020-12-31",
         extent=(-118.75, -117.5, 33.5, 34.5),  # Default to LA County bounds
-        frames_per_sample=5,  # One day of hourly data
+        frames_per_sample=5,  # Number of time steps per sample
         dim=200,  # Spatial resolution
+        frequency='hourly',  # 'hourly' or 'daily'
         cache_dir='data/pwwb_cache/',
         use_cached_data=True,
         verbose=False,
@@ -33,19 +41,22 @@ class PWWBData:
         self.extent = extent
         self.frames_per_sample = frames_per_sample
         self.dim = dim
+        self.frequency = frequency  # Store frequency parameter
         self.verbose = verbose
         self.cache_dir = cache_dir
         self.use_cached_data = use_cached_data
         self.output_dir = output_dir
         
-        # Generate a cache prefix based on start/end dates if not provided
+        # Generate a cache prefix based on start/end dates and frequency if not provided
         if cache_prefix is None:
-            self.cache_prefix = f"{self.start_date.strftime('%Y%m%d')}-{self.end_date.strftime('%Y%m%d')}_"
+            freq_suffix = f"_{frequency}" if frequency != 'hourly' else ""
+            self.cache_prefix = f"{self.start_date.strftime('%Y%m%d')}-{self.end_date.strftime('%Y%m%d')}{freq_suffix}_"
         else:
             self.cache_prefix = f"{cache_prefix}_"
             
         if self.verbose:
             print(f"Using cache prefix: {self.cache_prefix}")
+            print(f"Target frequency: {frequency}")
         
         # Create cache directory if it doesn't exist
         os.makedirs(cache_dir, exist_ok=True)
@@ -111,12 +122,16 @@ class PWWBData:
         if not hasattr(self, 'tropomi_channels') and self.include_channels['tropomi']:
             self.tropomi_channels = ['TROPOMI_Methane', 'TROPOMI_NO2', 'TROPOMI_CO']
         
-        # Generate timestamps at hourly intervals
-        self.timestamps = pd.date_range(self.start_date, self.end_date, freq='h')
-        self.n_timestamps = len(self.timestamps)
+        # Generate timestamps at hourly intervals (always start hourly, then aggregate)
+        self.hourly_timestamps = pd.date_range(self.start_date, self.end_date, freq='h')
+        self.n_hourly_timestamps = len(self.hourly_timestamps)
+        
+        # These will be set after aggregation in _process_pipeline
+        self.timestamps = None
+        self.n_timestamps = None
         
         if self.verbose:
-            print(f"Initialized PWWBData with {self.n_timestamps} hourly timestamps")
+            print(f"Initialized PWWBData with {self.n_hourly_timestamps} hourly timestamps")
             print(f"Date range: {self.start_date} to {self.end_date}")
             print(f"Channels included: {[k for k, v in self.include_channels.items() if v]}")
             if hasattr(self, 'tropomi_channels'):
@@ -144,12 +159,12 @@ class PWWBData:
         channels = {}
         active_channels = {}
         
-        # Process each data source if included
+        # Process each data source if included (always collect hourly first)
         if self.include_channels['maiac']:
             if self.verbose:
                 print("Processing MAIAC AOD data...")
             maiac_source = MaiacDataSource(
-                timestamps=self.timestamps,
+                timestamps=self.hourly_timestamps,  # Always use hourly for collection
                 extent=self.extent,
                 dim=self.dim,
                 cache_dir=self.cache_dir,
@@ -165,7 +180,7 @@ class PWWBData:
             if self.verbose:
                 print("Processing TROPOMI data...")
             tropomi_source = TropomiDataSource(
-                timestamps=self.timestamps,
+                timestamps=self.hourly_timestamps,  # Always use hourly for collection
                 extent=self.extent,
                 dim=self.dim,
                 cache_dir=self.cache_dir,
@@ -182,7 +197,7 @@ class PWWBData:
             if self.verbose:
                 print("Processing MODIS fire data...")
             modis_source = ModisFireDataSource(
-                timestamps=self.timestamps,
+                timestamps=self.hourly_timestamps,  # Always use hourly for collection
                 extent=self.extent,
                 dim=self.dim,
                 cache_dir=self.cache_dir,
@@ -198,7 +213,7 @@ class PWWBData:
             if self.verbose:
                 print("Processing MERRA2 data...")
             merra2_source = Merra2DataSource(
-                timestamps=self.timestamps,
+                timestamps=self.hourly_timestamps,  # Always use hourly for collection
                 extent=self.extent,
                 dim=self.dim,
                 cache_dir=self.cache_dir,
@@ -218,7 +233,7 @@ class PWWBData:
             if self.verbose:
                 print("Processing METAR meteorological data...")
             metar_source = MetarDataSource(
-                timestamps=self.timestamps,
+                timestamps=self.hourly_timestamps,  # Always use hourly for collection
                 extent=self.extent,
                 dim=self.dim,
                 elevation_path="inputs/elevation.npy",
@@ -238,19 +253,119 @@ class PWWBData:
         if channel_list:
             self.all_channels = np.concatenate(channel_list, axis=-1)
             
+            # Apply temporal aggregation if needed
+            if self.frequency == 'daily':
+                if self.verbose:
+                    print(f"Aggregating from hourly to daily frequency...")
+                
+                # Get channel information for proper aggregation
+                channel_info = self.get_channel_info()
+                channel_names = channel_info['channel_names']
+                
+                # Create aggregation configuration
+                agg_config = create_aggregation_config(
+                    channel_names, 
+                    preserve_wind_vectors=True
+                )
+                
+                # Aggregate the data
+                self.all_channels, self.timestamps = aggregate_temporal_data(
+                    data=self.all_channels,
+                    timestamps=self.hourly_timestamps,
+                    target_frequency=self.frequency,
+                    aggregation_method='mean',  # Default method
+                    preserve_wind_vectors=True,
+                    wind_u_indices=agg_config['wind_u_indices'],
+                    wind_v_indices=agg_config['wind_v_indices'],
+                    verbose=self.verbose
+                )
+                
+                # Update individual data source arrays if they exist
+                self._update_individual_arrays_after_aggregation(agg_config)
+                
+            else:
+                # Keep hourly frequency
+                self.timestamps = self.hourly_timestamps
+            
+            self.n_timestamps = len(self.timestamps)
+            
             # Create sliding window samples
             self.data = self._sliding_window_of(self.all_channels, self.frames_per_sample)
             
             if self.verbose:
                 print(f"Final data shape: {self.data.shape}")
+                print(f"Using {len(self.timestamps)} timestamps at {self.frequency} frequency")
                 self._print_data_statistics()
         else:
             if self.verbose:
                 print("No channels were included. Data arrays are empty.")
             # Create empty arrays with proper dimensions
+            self.timestamps = self.hourly_timestamps if self.frequency == 'hourly' else pd.date_range(
+                self.start_date, self.end_date, freq='D'
+            )
+            self.n_timestamps = len(self.timestamps)
             self.all_channels = np.zeros((self.n_timestamps, self.dim, self.dim, 0))
             self.data = np.zeros((self.n_timestamps - self.frames_per_sample + 1, 
                                  self.frames_per_sample, self.dim, self.dim, 0))
+
+    def _update_individual_arrays_after_aggregation(self, agg_config):
+        """Update individual data source arrays after temporal aggregation."""
+        if self.frequency != 'daily':
+            return
+            
+        channel_info = self.get_channel_info()
+        
+        # Update MAIAC data
+        if self.include_channels['maiac'] and self.maiac_aod_data is not None:
+            maiac_data, _ = aggregate_temporal_data(
+                self.maiac_aod_data, self.hourly_timestamps, 'daily', 
+                aggregation_method='mean', verbose=False
+            )
+            self.maiac_aod_data = maiac_data
+            
+        # Update TROPOMI data
+        if self.include_channels['tropomi'] and self.tropomi_data is not None:
+            tropomi_data, _ = aggregate_temporal_data(
+                self.tropomi_data, self.hourly_timestamps, 'daily',
+                aggregation_method='mean', verbose=False
+            )
+            self.tropomi_data = tropomi_data
+            
+        # Update MODIS fire data (use max for fire)
+        if self.include_channels['modis_fire'] and self.modis_fire_data is not None:
+            fire_data, _ = aggregate_temporal_data(
+                self.modis_fire_data, self.hourly_timestamps, 'daily',
+                aggregation_method='max', verbose=False
+            )
+            self.modis_fire_data = fire_data
+            
+        # Update MERRA2 data
+        if self.include_channels['merra2'] and self.merra2_data is not None:
+            merra2_data, _ = aggregate_temporal_data(
+                self.merra2_data, self.hourly_timestamps, 'daily',
+                aggregation_method='mean', verbose=False
+            )
+            self.merra2_data = merra2_data
+            
+        # Update METAR data (with wind vector preservation)
+        if self.include_channels['metar'] and self.meteorological_data is not None:
+            # Find wind indices within METAR data
+            metar_wind_u_indices = []
+            metar_wind_v_indices = []
+            for i, channel_name in enumerate(channel_info['metar_channels']):
+                if 'wind_u' in channel_name.lower():
+                    metar_wind_u_indices.append(i)
+                elif 'wind_v' in channel_name.lower():
+                    metar_wind_v_indices.append(i)
+            
+            metar_data, _ = aggregate_temporal_data(
+                self.meteorological_data, self.hourly_timestamps, 'daily',
+                aggregation_method='mean', preserve_wind_vectors=True,
+                wind_u_indices=metar_wind_u_indices,
+                wind_v_indices=metar_wind_v_indices,
+                verbose=False
+            )
+            self.meteorological_data = metar_data
 
     def _sliding_window_of(self, frames, window_size):
         """
@@ -413,21 +528,33 @@ class PWWBData:
             Path to save the data file. If None, uses the cache directory with the cache prefix.
         """
         if filepath is None:
-            # Use default filepath in cache directory
-            filepath = os.path.join(self.cache_dir, f"{self.cache_prefix}full_data.npy")
+            # Use default filepath in cache directory with frequency suffix
+            freq_suffix = f"_{self.frequency}" if self.frequency != 'hourly' else ""
+            filepath = os.path.join(self.cache_dir, f"{self.cache_prefix}full_data{freq_suffix}.npy")
         
         np.save(filepath, self.data)
         
-        # Also save channel info
+        # Also save channel info and metadata
         channel_info = self.get_channel_info()
-        channel_info_file = os.path.splitext(filepath)[0] + "_channel_info.json"
+        metadata = {
+            'frequency': self.frequency,
+            'frames_per_sample': self.frames_per_sample,
+            'start_date': self.start_date.isoformat(),
+            'end_date': self.end_date.isoformat(),
+            'extent': self.extent,
+            'dim': self.dim,
+            'n_timestamps': self.n_timestamps
+        }
+        
+        channel_info.update(metadata)
+        channel_info_file = os.path.splitext(filepath)[0] + "_metadata.json"
         
         with open(channel_info_file, 'w') as f:
-            json.dump({k: v for k, v in channel_info.items() if isinstance(v, (list, str, int))}, f, indent=2)
+            json.dump({k: v for k, v in channel_info.items() if isinstance(v, (list, str, int, float))}, f, indent=2)
         
         if self.verbose:
             print(f"Data saved to {filepath}")
-            print(f"Channel info saved to {channel_info_file}")
+            print(f"Metadata saved to {channel_info_file}")
     
     def load_data(self, filepath=None):
         """
@@ -436,7 +563,7 @@ class PWWBData:
         Parameters:
         -----------
         filepath : str, optional
-            Path to the data file. If None, uses the cache directory with the cache prefix.
+            Path to the data file. If None, tries to find based on frequency.
         
         Returns:
         --------
@@ -444,8 +571,9 @@ class PWWBData:
             True if data was successfully loaded, False otherwise
         """
         if filepath is None:
-            # Use default filepath in cache directory
-            filepath = os.path.join(self.cache_dir, f"{self.cache_prefix}full_data.npy")
+            # Try to find file based on frequency
+            freq_suffix = f"_{self.frequency}" if self.frequency != 'hourly' else ""
+            filepath = os.path.join(self.cache_dir, f"{self.cache_prefix}full_data{freq_suffix}.npy")
         
         if not os.path.exists(filepath):
             if self.verbose:
@@ -454,15 +582,22 @@ class PWWBData:
             
         self.data = np.load(filepath)
         
-        # Also load channel info if available
-        channel_info_file = os.path.splitext(filepath)[0] + "_channel_info.json"
-        if os.path.exists(channel_info_file):
-            with open(channel_info_file, 'r') as f:
-                self._loaded_channel_info = json.load(f)
+        # Also load metadata if available
+        metadata_file = os.path.splitext(filepath)[0] + "_metadata.json"
+        if os.path.exists(metadata_file):
+            with open(metadata_file, 'r') as f:
+                self._loaded_metadata = json.load(f)
+                
+            # Verify frequency matches
+            loaded_freq = self._loaded_metadata.get('frequency', 'hourly')
+            if loaded_freq != self.frequency:
+                if self.verbose:
+                    print(f"Warning: Loaded data frequency ({loaded_freq}) differs from requested ({self.frequency})")
                 
             if self.verbose:
-                print(f"Loaded channel info from {channel_info_file}")
-                print(f"Channels: {self._loaded_channel_info.get('channel_names', [])}")
+                print(f"Loaded metadata from {metadata_file}")
+                print(f"Data frequency: {loaded_freq}")
+                print(f"Channels: {self._loaded_metadata.get('channel_names', [])}")
         
         if self.verbose:
             print(f"Data loaded from {filepath}")

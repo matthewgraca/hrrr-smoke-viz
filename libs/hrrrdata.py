@@ -23,6 +23,7 @@ class HRRRData:
         product='MASSDEN',
         frames_per_sample=1,
         dim=40,
+        frequency='hourly',
         sample_setting=1,
         verbose=False,
         processed_cache_dir='data/hrrr_processed.npz',
@@ -39,6 +40,7 @@ class HRRRData:
                 - (num_frames, row, col)
             - Interpolate and add a channel axis to the array of frames
                 - (num_frames, row, col, channel)
+            - Optionally aggregate to daily frequency
             - Create samples from a sliding window of frames
                 - (samples, frames, row, col, channel)
 
@@ -47,17 +49,27 @@ class HRRRData:
         '''
         self.chunk_months = chunk_months
         self.chunk_cache_dir = chunk_cache_dir
+        self.frequency = frequency
         
-        # Store original dates for offset calculation
         self.original_start_date = start_date
         self.frames_per_sample = frames_per_sample
         
-        # Create chunk cache directory
+        # Override sample_setting for daily frequency
+        if frequency == 'daily' and sample_setting == 2:
+            print(f"⚠️  Daily frequency requested with sample_setting=2.")
+            print(f"🔧 Automatically switching to sample_setting=1 for daily aggregation.")
+            print(f"   (sample_setting=2 forecast sequences are incompatible with daily aggregation)")
+            sample_setting = 1
+        
+        self.sample_setting = sample_setting
+        
         if chunk_cache_dir is not None:
             os.makedirs(chunk_cache_dir, exist_ok=True)
         
-        # read from final cache if enabled
         if processed_cache_dir is not None:
+            if frequency == 'daily':
+                processed_cache_dir = processed_cache_dir.replace('.npz', '_daily.npz')
+            
             os.makedirs(os.path.dirname(processed_cache_dir), exist_ok=True)
 
             cache_exists = os.path.exists(processed_cache_dir)
@@ -77,6 +89,7 @@ class HRRRData:
                     cached_product = cached_data['product']
                     cached_extent = cached_data['extent']
                     cached_sample_setting = cached_data['sample_setting']
+                    cached_frequency = cached_data.get('frequency', ['hourly'])[0]
 
                     print(f"🎉 Successfully loaded data from final cache:")
                     print(
@@ -85,6 +98,7 @@ class HRRRData:
                         f"{cached_end})\n"
                         f"  - Product used  : {cached_product}\n"
                         f"  - Extent        : {cached_extent}\n"
+                        f"  - Frequency     : {cached_frequency}\n"
                         f"  - Sample setting: {cached_sample_setting}"
                     )
                     return # return early if loading cache is successful
@@ -99,6 +113,8 @@ class HRRRData:
                 )
 
         print(f"🗓️ Processing HRRR data in {chunk_months}-month chunks from {start_date} to {end_date}")
+        print(f"📊 Target frequency: {frequency}")
+        print(f"🔧 Using sample_setting: {sample_setting}")
         
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
@@ -121,8 +137,16 @@ class HRRRData:
             print("✅ All chunks already cached!")
 
         print(f"🔗 Loading and combining all {len(chunk_info)} chunks...")
-        self.data = self._load_and_combine_chunks(chunk_info)
-        print(f"🎉 Final combined data shape: {self.data.shape}")
+        combined_data = self._load_and_combine_chunks(chunk_info)
+        
+        # Apply temporal aggregation if daily frequency requested
+        if self.frequency == 'daily':
+            print(f"📅 Aggregating from hourly to daily frequency...")
+            self.data = self._aggregate_to_daily(combined_data, start_dt, verbose)
+            print(f"🎉 Daily aggregated data shape: {self.data.shape}")
+        else:
+            self.data = combined_data
+            print(f"🎉 Final hourly data shape: {self.data.shape}")
 
         if processed_cache_dir is None:
             print("🙅 No final cache directory set. Combined data will not be cached.")
@@ -135,11 +159,67 @@ class HRRRData:
                     date_range=np.array([start_date, end_date]),
                     product=np.array([product]),
                     extent=np.array(extent) if extent is not None else np.array([]),
+                    frequency=np.array([frequency]),
                     sample_setting=np.array([sample_setting])
                 )
                 print("🎉 Successfully saved final combined data to cache.")
             except Exception as e:
                 print(f"⚠️  Warning: Could not save final combined data to cache: {e}")
+
+    def _aggregate_to_daily(self, hourly_data, start_dt, verbose=False):
+        """Aggregate hourly HRRR data to daily frequency using median."""
+        if verbose:
+            print(f"Aggregating {hourly_data.shape} hourly data to daily")
+        
+        # Calculate number of hours and days
+        n_hours = hourly_data.shape[0]
+        n_days = (n_hours + 23) // 24  # Round up to include partial days
+        
+        if verbose:
+            print(f"Converting {n_hours} hours to {n_days} days")
+        
+        # Initialize daily data array
+        daily_shape = (n_days,) + hourly_data.shape[1:]
+        daily_data = np.zeros(daily_shape)
+        
+        mixed_days_count = 0
+        
+        for day_idx in range(n_days):
+            start_hour_idx = day_idx * 24
+            end_hour_idx = min(start_hour_idx + 24, n_hours)
+            
+            if end_hour_idx <= start_hour_idx:
+                break
+            
+            day_hours = hourly_data[start_hour_idx:end_hour_idx]
+            
+            # Check if values change during the day (mixed day detection)
+            if len(day_hours) > 1:
+                first_frame = day_hours[0]
+                is_uniform = True
+                for hour_frame in day_hours[1:]:
+                    if not np.allclose(hour_frame, first_frame, atol=1e-6):
+                        is_uniform = False
+                        mixed_days_count += 1
+                        break
+                
+                if is_uniform:
+                    # All hours are identical - just use the first one
+                    daily_data[day_idx] = first_frame
+                else:
+                    # Values changed during day - use median for robustness
+                    daily_data[day_idx] = np.median(day_hours, axis=0)
+            else:
+                # Only one hour available
+                daily_data[day_idx] = day_hours[0]
+        
+        if verbose and mixed_days_count > 0:
+            print(f"Found {mixed_days_count} days with changing values (used median)")
+        
+        # Recreate sliding windows with daily data
+        return self._sliding_window_of(
+            daily_data, self.frames_per_sample, full_slide=False
+        )
 
     def _generate_chunk_list(self, start_dt, end_dt, chunk_months):
         """Generate list of chunk information (start, end, filename)."""
@@ -301,9 +381,12 @@ class HRRRData:
                 preprocessed_frames = self._interpolate_and_add_channel_axis(
                     subregion_frames, dim
                 )
-                processed_ds = self._sliding_window_of(
-                    preprocessed_frames, frames_per_sample
-                )
+                
+                # For daily frequency, return raw frames; for hourly, create windows
+                if self.frequency == 'daily':
+                    processed_ds = preprocessed_frames  # Raw frames (n_hours, row, col, channels)
+                else:
+                    processed_ds = self._sliding_window_of(preprocessed_frames, frames_per_sample)
 
             elif sample_setting == 2:
                 herbie_ds = self._get_hrrr_data_offset_by_forecast(
@@ -331,11 +414,16 @@ class HRRRData:
                 preprocessed_frames = self._interpolate_and_add_channel_axis(
                     subregion_frames, dim
                 )
-                processed_ds = self._sliding_window_of(
-                    frames=preprocessed_frames, 
-                    window_size=frames_per_sample, 
-                    full_slide=True 
-                )
+                
+                # For daily frequency, return raw frames; for hourly, create windows
+                if self.frequency == 'daily':
+                    processed_ds = preprocessed_frames  # Raw frames (n_hours, row, col, channels)
+                else:
+                    processed_ds = self._sliding_window_of(
+                        frames=preprocessed_frames, 
+                        window_size=frames_per_sample, 
+                        full_slide=True 
+                    )
             else:
                 msg = (
                     "Argument \"sample_setting\" must be either:\n",

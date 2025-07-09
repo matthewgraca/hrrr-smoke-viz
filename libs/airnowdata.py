@@ -11,6 +11,7 @@ import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
 import time
 from datetime import datetime
+from tqdm import tqdm 
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -21,9 +22,10 @@ class AirNowData:
     Pipeline:
         - Downloads data from AirNow API in chunks to avoid record limits
         - Optionally filters sensors based on mask (excludes sensors outside valid areas)
-        - NEW: Optionally filters sensors based on whitelist (includes only specified sensors)
+        - Optionally filters sensors based on whitelist (includes only specified sensors)
         - Converts ground site data into grids
         - Interpolates using 3D IDW (with elevation)
+        - Optionally aggregates to daily frequency
         - Creates sliding window samples for time series
     '''
     def __init__(
@@ -36,6 +38,7 @@ class AirNowData:
         processed_cache_dir='data/airnow_processed.npz',
         frames_per_sample=1,
         dim=200,
+        frequency='hourly',  # NEW: 'hourly' or 'daily'
         idw_power=2,
         elevation_path=None,
         mask_path=None,
@@ -51,6 +54,7 @@ class AirNowData:
         self.extent = extent
         self.dim = dim
         self.frames_per_sample = frames_per_sample
+        self.frequency = frequency  # Store frequency parameter
         self.idw_power = idw_power
         self.use_mask = use_mask
         self.chunk_days = chunk_days
@@ -61,6 +65,10 @@ class AirNowData:
         if use_whitelist and sensor_whitelist:
             print(f"Using sensor whitelist: {len(self.sensor_whitelist)} sensors")
             print(f"Whitelisted sensors: {self.sensor_whitelist}")
+        
+        # Update cache filename to include frequency
+        if frequency == 'daily':
+            processed_cache_dir = processed_cache_dir.replace('.npz', '_daily.npz')
         
         # Set default paths
         self.elevation_path = elevation_path if elevation_path else "inputs/elevation.npy"
@@ -121,12 +129,17 @@ class AirNowData:
                 else:
                     self.target_stations = None
                 
+                cached_frequency = cached_data.get('frequency', ['hourly'])[0] if 'frequency' in cached_data else 'hourly'
+                
                 print(f"✓ Successfully loaded processed data from cache")
                 print(f"  - Data shape: {self.data.shape}")
+                print(f"  - Frequency: {cached_frequency}")
                 print(f"  - Found {len(self.air_sens_loc)} sensor locations")
                 return
             except Exception as e:
                 print(f"Error loading from cache: {e}. Will reprocess data.")
+        
+        print(f"📊 Processing AirNow data with {frequency} frequency")
         
         # Process data from scratch
         list_df = self._get_airnow_data(start_date, end_date, extent, save_dir, airnow_api_key)
@@ -135,12 +148,19 @@ class AirNowData:
             raise ValueError("No valid AirNow data available.")
         
         print("Processing AirNow data with IDW interpolation (this may take time)...")    
-        ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in list_df]
+        ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in tqdm(list_df)]
         
         print(f"Interpolating {len(ground_site_grids)} frames...")
-        interpolated_grids = [self._interpolate_frame(frame) for frame in ground_site_grids]
+        interpolated_grids = [self._interpolate_frame(frame) for frame in tqdm(ground_site_grids)]
         
         frames = np.expand_dims(np.array(interpolated_grids), axis=-1)
+        
+        # Apply temporal aggregation if daily frequency requested
+        if self.frequency == 'daily':
+            print(f"📅 Aggregating from hourly to daily frequency...")
+            frames = self._aggregate_to_daily(frames, list_df)
+            print(f"🎉 Daily aggregated frames shape: {frames.shape}")
+        
         processed_ds = self._sliding_window_of(frames, frames_per_sample)
 
         self.data = processed_ds
@@ -159,6 +179,7 @@ class AirNowData:
             air_sens_loc_array = np.array([self.air_sens_loc])
             sensor_names_array = np.array(self.sensor_names)
             target_stations_array = self.target_stations if self.target_stations is not None else np.array([])
+            frequency_array = np.array([self.frequency])
             
             np.savez_compressed(
                 processed_cache_dir,
@@ -166,11 +187,77 @@ class AirNowData:
                 ground_site_grids=np.array(self.ground_site_grids, dtype=object),
                 air_sens_loc=air_sens_loc_array,
                 sensor_names=sensor_names_array,
-                target_stations=target_stations_array
+                target_stations=target_stations_array,
+                frequency=frequency_array
             )
             print("✓ Successfully saved processed data to cache")
         except Exception as e:
             print(f"Warning: Could not save processed data to cache: {e}")
+    
+    def _aggregate_to_daily(self, hourly_frames, list_df):
+        """Aggregate hourly frames to daily frequency."""
+        print(f"Aggregating {hourly_frames.shape[0]} hourly frames to daily")
+        
+        # Group frames by date
+        timestamps = []
+        for df in list_df:
+            if not df.empty and 'UTC' in df.columns:
+                utc_time = df['UTC'].iloc[0]
+                timestamps.append(pd.to_datetime(utc_time))
+        
+        if not timestamps:
+            print("Warning: No timestamps found, cannot aggregate to daily")
+            return hourly_frames
+        
+        # Create DataFrame with timestamps and frame indices
+        frame_df = pd.DataFrame({
+            'timestamp': timestamps[:len(hourly_frames)],
+            'frame_idx': range(len(hourly_frames))
+        })
+        frame_df['date'] = frame_df['timestamp'].dt.date
+        
+        # Group by date
+        daily_groups = frame_df.groupby('date')
+        daily_frames = []
+        mixed_days_count = 0
+        
+        print(f"Grouping {len(hourly_frames)} frames into {len(daily_groups)} daily groups")
+        
+        for date, group in daily_groups:
+            frame_indices = group['frame_idx'].values
+            
+            if len(frame_indices) == 0:
+                continue
+                
+            day_frames = hourly_frames[frame_indices]
+            
+            # Check if values change during the day (mixed day detection)
+            if len(day_frames) > 1:
+                first_frame = day_frames[0]
+                is_uniform = True
+                for frame in day_frames[1:]:
+                    if not np.allclose(frame, first_frame, atol=1e-6):
+                        is_uniform = False
+                        mixed_days_count += 1
+                        break
+                
+                if is_uniform:
+                    # All frames are identical - just use the first one
+                    daily_frame = first_frame
+                else:
+                    # Values changed during day - use median for robustness
+                    daily_frame = np.median(day_frames, axis=0)
+            else:
+                # Only one frame available
+                daily_frame = day_frames[0]
+            
+            daily_frames.append(daily_frame)
+        
+        if mixed_days_count > 0:
+            print(f"Found {mixed_days_count} days with changing values (used median)")
+        
+        print(f"Aggregated to {len(daily_frames)} daily frames")
+        return np.array(daily_frames)
     
     def _is_sensor_whitelisted(self, sensor_name):
         """Check if a sensor is in the whitelist."""
@@ -509,7 +596,9 @@ class AirNowData:
         excluded_sensors = []
         included_sensors = []
         
+        '''
         print(f"Processing {len(dfArr)} sensors using '{value_column}' as value column")
+        '''
         
         for i in range(dfArr.shape[0]):
             sitename = dfArr[i,3]
@@ -588,7 +677,9 @@ class AirNowData:
             if masked_areas:
                 print(f"Excluded {len(masked_areas)} sensors in masked areas")
         
+        '''
         print(f"Included {len(included_sensors)} sensors in interpolation")
+        '''
         return unInter
 
     def _find_closest_values(self, x, y, coordinates, n=10):
@@ -711,9 +802,12 @@ class AirNowData:
                 interpolated[x, y] = max(0, value)  # PM2.5 can't be negative
         
         # Apply smoothing
+        '''
         kernel_size = np.random.randint(0, 5, (self.dim, self.dim))
         out = self._variable_blur(interpolated, kernel_size)
         out = gaussian_filter(out, sigma=0.5)
+        '''
+        out = interpolated
         
         # Apply mask for geographic boundaries only if using mask
         if self.use_mask and self.mask is not None and np.any(self.mask != 1):
@@ -759,24 +853,44 @@ class AirNowData:
     def _get_target_stations(self, X, gridded_data, sensor_locations):
         """Generate target values for prediction at sensor locations."""
         n_samples, n_frames = X.shape[0], X.shape[1] 
-        possible_samples = max(1, n_samples - n_frames)
         n_sensors = len(sensor_locations)
         
         if n_sensors == 0:
             raise ValueError("No sensor locations available to generate target stations")
-            
-        Y = np.empty((possible_samples, n_frames, n_sensors))
         
-        # TODO the last element is not being populated. size issue?
+        # Create sliding window from gridded data (skip first n_frames to align with X)
         sliding_window_gridded_data = self._sliding_window_of(
             frames=np.array(gridded_data[n_frames:]), 
             frames_per_sample=n_frames,
             target=True
         )
+        
+        # Use the actual length of sliding_window_gridded_data instead of calculating
+        actual_samples = len(sliding_window_gridded_data)
+        
+        print(f"Debug: X.shape={X.shape}, gridded_data length={len(gridded_data)}")
+        print(f"Debug: actual_samples={actual_samples}, n_frames={n_frames}, n_sensors={n_sensors}")
+        
+        Y = np.empty((actual_samples, n_frames, n_sensors))
+        
         for s, sample in enumerate(sliding_window_gridded_data):
+            if s >= Y.shape[0]:  # Safety check
+                print(f"Warning: Sample index {s} exceeds Y size {Y.shape[0]}")
+                break
+                
             for f, frame in enumerate(sample):
+                if f >= Y.shape[1]:  # Safety check
+                    print(f"Warning: Frame index {f} exceeds Y frame size {Y.shape[1]}")
+                    break
+                    
                 for sensor, (loc, coords) in enumerate(sensor_locations.items()):
+                    if sensor >= Y.shape[2]:  # Safety check
+                        print(f"Warning: Sensor index {sensor} exceeds Y sensor size {Y.shape[2]}")
+                        break
+                        
                     x, y = coords
+                    x = max(0, min(x, frame.shape[0] - 1))
+                    y = max(0, min(y, frame.shape[1] - 1))
                     Y[s][f][sensor] = frame[x][y]
 
         return Y
@@ -970,6 +1084,8 @@ class AirNowData:
         title = 'AirNow Sensor Locations'
         if self.use_whitelist:
             title += f' (Whitelisted: {len(self.air_sens_loc)} sensors)'
+        if self.frequency == 'daily':
+            title += f' - Daily Frequency'
         plt.title(title, fontsize=16)
         plt.legend(loc='upper right')
         
@@ -1154,4 +1270,3 @@ class AirNowData:
             
         plt.tight_layout()
         return fig, axes
-
