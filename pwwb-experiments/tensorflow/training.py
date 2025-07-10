@@ -1,7 +1,7 @@
 # =============================================================================
 # CONFIGURATION - EDIT THESE PATHS AS NEEDED
 # =============================================================================
-BASE_DATA_DIR = "final_input_data/two_years_with_hrrr"
+BASE_DATA_DIR = "final_input_data/two_yrs_daily"
 LIBS_PATH = "../.."
 OUTPUT_BASE_DIR = "experiment_output"
 TENSORBOARD_DIR = "my_logs"
@@ -9,7 +9,7 @@ TENSORBOARD_DIR = "my_logs"
 CHANNEL_FILE_PATTERN = "{channel}_X_{split}.npy"
 TARGET_FILE_PATTERN = "Y_{split}.npy"
 
-DEFAULT_EPOCHS = 100 
+DEFAULT_EPOCHS = 100
 DEFAULT_BATCH_SIZE = 16 
 
 FORCE_CPU = False
@@ -20,13 +20,14 @@ matplotlib.use('Agg')
 
 import os
 import sys
+sys.path.append(LIBS_PATH)
 import json
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import time
-
+from libs.plotting import *
 import tensorflow as tf
 
 if FORCE_CPU:
@@ -42,8 +43,6 @@ from keras.layers import (
     Flatten, Dense, InputLayer, Reshape
 )
 from keras.callbacks import EarlyStopping, TensorBoard, ModelCheckpoint
-
-sys.path.append(LIBS_PATH)
 
 class GradientLogger(tf.keras.callbacks.Callback):
     def __init__(self, log_dir, data_sample):
@@ -148,6 +147,27 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     
     # load data
     (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = load_data_splits(channel_indices)
+
+    # modify in/out/stations
+    def modify_stations(Y_train, Y_test, Y_valid, next_n_frames=5, all_stations=True):
+        """
+        Use only 9 for all stations, otherwise pick only the LA station (4)
+        """
+        if all_stations:
+            train = Y_train[:, :next_n_frames, :9].copy()
+            test = Y_test[:, :next_n_frames, :9].copy() 
+            valid = Y_valid[:, :next_n_frames, :9].copy()
+        else:
+            train = Y_train[:, :next_n_frames, [4]].copy()
+            test = Y_test[:, :next_n_frames, [4]].copy() 
+            valid = Y_valid[:, :next_n_frames, [4]].copy()
+        return train, test, valid
+    
+    Y_train, Y_test, Y_valid = modify_stations(
+        Y_train, Y_test, Y_valid,
+        next_n_frames=1, 
+        all_stations=True, 
+    )
     
     input_shape = X_test.shape[1:]
     _, n_frames, n_stations = Y_test.shape
@@ -190,7 +210,7 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     os.makedirs(results_dir, exist_ok=True)
 
     callbacks = [
-        ModelCheckpoint(filepath=os.path.join(results_dir, "model.keras"), save_best_only=True)
+        ModelCheckpoint(filepath=os.path.join(results_dir, "model.keras"), save_best_only=True),
         EarlyStopping(monitor='val_loss', patience=20),
         TensorBoard(run_logdir, histogram_freq=1),
         GradientLogger(run_logdir, data_sample=(X_test[:32], Y_test[:32]))
@@ -237,18 +257,8 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     
     sensor_names = [
         'Simi Valley - Cochran Street', 'Reseda', 'Santa Clarita', 'North Holywood', 
-        'Los Angeles - N. Main Street', 'Compton', 'Long Beach Signal Hill', 'Glendora - Laurel'
-    ]
-    
-    from libs.plotting import (
-        plot_frame_by_frame_rmse,
-        plot_avg_rmse_per_station, 
-        plot_frame_heatmap,
-        plot_frame_time_series,
-        plot_frame_scatter,
-        print_summary_table,
-        print_detailed_frame_stats
-    )
+        'Los Angeles - N. Main Street', 'Compton', 'Long Beach Signal Hill', 'Anaheim', 'Glendora - Laurel'
+    ] 
     
     plots_dir = os.path.join(results_dir, "plots")
     frame_plots_dir = os.path.join(plots_dir, "frame_analysis")
@@ -329,24 +339,23 @@ def train_model(channels, architecture, experiment_id, run_dir=None, epochs=None
     ''' 
     metadata that i'd like to use, that way I don't have to read files, just pull this one as a dataframe
     '''
-    channels_used = [
-        {channel_name : 1.0 if channel_name in selected_channels else 0.0} 
+    channels_used = {
+        channel_name : 1.0 if channel_name in selected_channels else 0.0
         for channel_name in all_channel_names
-    ]
-    errors = [
-        {'RMSE' : rmse(y_pred, Y_test)},
-        {'NRMSE': nrmse(y_pred, Y_test)},
-        {'MAE': mae(y_pred, Y_test)},
-        {'R2': r2_score(Y_test, y_pred)} 
-    ]
+    }
 
     metadata = {
         'experiment_id': experiment_id,
-        *channels_used,
-        'final_validation_loss': float(final_val_loss),
-        'batch_size': batch_size,
-        *errors,
         'timestamp': datetime.now().isoformat(),
+        'batch_size': batch_size,
+        'final_validation_loss': float(final_val_loss),
+        'training_time_seconds': float(training_time),
+        'channel_names': selected_channels,
+        **channels_used,
+        'RMSE' : rmse(y_pred, Y_test),
+        'NRMSE': nrmse(y_pred, Y_test),
+        'MAE': mae(y_pred, Y_test),
+        'R2': r2_score(Y_test, y_pred), 
     }
 
     with open(os.path.join(results_dir, "metadata.json"), 'w') as f:
