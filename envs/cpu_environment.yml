@@ -20,5 +20,5 @@ dependencies:
   - earthaccess
   - conda-forge::dask
   - goes2go
-  - conda-forge::geopandas
+  - conda-forge::xesmf
 prefix: /home/mgraca/miniconda3/envs/tf-hrrrenv
