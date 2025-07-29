@@ -23,13 +23,18 @@ class GOESData:
             4. Subregion data to exent
             5. Resize dimensions
         """
-        #TODO: realized that for data on 2022-12-01-00, we need to ingest
-        # 2022-11-30-00 to 59; the value AT 12/1 is the previous hour's average!
         # TODO: Investiage -- Something interesting, it seems like during the night, the use the same image as captured during the day. Why? I'd rather do that on my end so I'm not ingesting so much data. Is there a way to check if the data is "real" and not just an imputation?
         # I don't think this is a bug; but I should definitely plot out the first 12 hours of the nc4 files to see what's happening; and if it is just copying, see if I can avoid downloading it.
         # My guess is this data is a bunch of nans, auto generated in some manner to maintain consistency
         self.data = []
-        dates = pd.date_range(start_date, end_date, freq='h', inclusive='left')
+        # Note: the "value" of a given hour is he average AOD of the previous hour
+        # e.g. AOD @ 1:00 is the average AOD from 0:00-0:59
+        dates = pd.date_range(
+            start_date - pd.Timedelta(hours=1),
+            end_date,
+            freq='h',
+            inclusive='left'
+        )
         for date in tqdm(dates):
             start, end = date, date + pd.Timedelta(minutes=59, seconds=59)
             try:
