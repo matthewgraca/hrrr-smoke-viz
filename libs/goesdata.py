@@ -2,9 +2,10 @@ from datetime import datetime
 import numpy as np
 import cartopy.crs as ccrs
 from goes2go.data import goes_timerange
-import xesmf as xe
 import xarray as xr
 import matplotlib.pyplot as plt
+import rioxarray
+import cv2
 
 class GOESData:
     def __init__(
@@ -14,15 +15,29 @@ class GOESData:
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
     ):
+        """
+        Pipeline:
+            1. Ingest data
+            2. Compute mean AOD for the day
+            3. Reproject data to Plate Carree
+            4. Subregion data to exent
+            5. Resize dimensions
+        """
         ds = self._ingest_dataset(start_date, end_date)
-        ds = self._preprocess_dataset_before_gridding_data(ds, extent)
-        self.data = self._ds_to_gridded_data(ds, extent, dim)
+        goes_crs = ds.FOV.crs # save crs for reprojection
+        ds = self._convert_radians_to_meters(ds)
+        ds = self._compute_high_quality_mean_aod(ds)
+        ds = self._reproject(ds, goes_crs)
+        gridded_data = self._subregion(ds, extent).data
+        self.data = cv2.resize(gridded_data, (dim, dim))
 
-    ### NOTE: Methods for ingesting the data (as an xarray Dataset)
+    ### NOTE: Methods for ingesting and preprocessing the data
 
     def _ingest_dataset(self, start_date, end_date):
         """
         Ingests the GOES data; expects a date range, not one timestamp.
+        Also performs a preliminary preprocessing step of converting coordinates
+        from radians to meters.
         """
         ds = goes_timerange(
             start=start_date,
@@ -36,91 +51,67 @@ class GOESData:
         
         return ds
 
-    ### NOTE: Methods for preprocessing the Dataset
-
-    def _preprocess_dataset_before_gridding_data(self, ds, extent):
+    def _subregion(self, ds, extent):
         """
-        Pipeline to preprocess the dataset before converting it gridded data.
-        1. Convert coordinates from radians to lat/lon
-        2. Subregion the data by the extent
-        3. Compute the mean over time using high quality AOD
+        Subregions the data based on lat/lon extent. Assumes that 
+        the data has been reprojected with lat/lon.
         """
-        processed_ds = self._convert_radians_to_latlon(ds)
-        processed_ds = self._subregion_ds(processed_ds, extent)
-        processed_ds = self._compute_high_quality_mean_aod(processed_ds)
-
-        return processed_ds
-
-    def _convert_radians_to_latlon(self, ds):
-        """
-        Converts coordinates from radians to lat/lon
-        """
-        temp_ds = ds.copy(deep=True)
-        sat_height = temp_ds['goes_imager_projection'].attrs['perspective_point_height']
-        temp_ds.coords['x'] = temp_ds.coords['x'] * sat_height 
-        temp_ds.coords['y'] = temp_ds.coords['y'] * sat_height 
-
-        X, Y = np.meshgrid(temp_ds.x, temp_ds.y)
-        a = ccrs.PlateCarree().transform_points(temp_ds.FOV.crs, X, Y)
-        lons, lats, _ = a[:, :, 0], a[:, :, 1], a[:, :, 2]
-        temp_ds.coords["lon"] = (("y", "x"), lons)
-        temp_ds.coords["lat"] = (("y", "x"), lats)
-
-        return temp_ds
-
-    def _subregion_ds(self, ds, extent):
         lon_bottom, lon_top, lat_bottom, lat_top = extent
-        sub_ds = ds.where(
-            (ds.coords['lon'] >= lon_bottom) &
-            (ds.coords['lon'] <= lon_top) &
-            (ds.coords['lat'] >= lat_bottom) &
-            (ds.coords['lat'] <= lat_top),
-            drop=True
+        subset = ds.sel(
+            x=slice(lon_bottom, lon_top),
+            y=slice(lat_top, lat_bottom)  # y is latitude, decreasing
         )
 
-        return sub_ds
+        return subset
 
     def _compute_high_quality_mean_aod(self, ds):
         """
-        Store mean AOD (with quality 2+) into sub_ds as 'AOD_mean'.
+        Calculates mean AOD, and returns a Dataset with that data only
         Expects dataset with time component (e.g. (t, x, y)).
         """
-        quality_AOD_ds = ds.where(ds['DQF'] >= 1)
-        quality_AOD_ds['AOD_mean'] = quality_AOD_ds['AOD'].mean(dim='t', skipna=True)
-
-        return quality_AOD_ds 
+        ds['AOD_mean'] = ds['AOD'].where(ds['DQF'] > 0).mean(dim='t', skipna=True)
+        return ds['AOD_mean']
 
     ### NOTE: Methods for reprojections
 
-    def _reproject_gridded_data(self, ds, extent, dim):
+    def _convert_radians_to_meters(self, ds):
         """
-        Reproject data to plate carree (equirectangular).
-        Expects a Dataset with 'AOD_mean' attribute
+        Converts coordinates from radians to meters
         """
-        # Remove a touch of padding, otherwise dummy values appear the edges
-        epsilon = 0.05
-        lon_bottom, lon_top, lat_bottom, lat_top = extent
-        target_lon = np.linspace(lon_bottom + epsilon, lon_top - epsilon, dim)
-        target_lat = np.linspace(lat_bottom + epsilon, lat_top - epsilon, dim)
+        temp_ds = ds.copy(deep=True)
+        h = temp_ds['goes_imager_projection'].attrs['perspective_point_height']
+        temp_ds.coords['x'] = temp_ds.coords['x'] * h 
+        temp_ds.coords['y'] = temp_ds.coords['y'] * h 
 
-        target_grid = xr.Dataset(
-            {
-                "lon": (["lon"], target_lon),
-                "lat": (["lat"], target_lat),
-            }
+        return temp_ds
+
+    def _calculate_reprojection_resolution(self, ds):
+        """
+        Calculates the resolution for the reprojection. 
+        Assumes coordinates have already been converted from radians to meters.
+        """
+        # meters per pixel
+        dx_m = np.diff(ds.x).mean()
+        dy_m = np.diff(ds.y).mean()
+
+        # 1 degree / (meridonial or equatorial circumference / 360 degrees) = degree per meter lon or lat
+        # not 1000% precise, but it's sufficient
+        # you could also just use goes' resolution of 0.02; it's not 1-1, but it's pretty close (0.018)
+        deg_per_meter_lon = 1 / 111320
+        deg_per_meter_lat = 1 / 110574
+
+        # degrees of each pixel
+        dx_deg = dx_m * deg_per_meter_lon
+        dy_deg = dy_m * deg_per_meter_lat
+
+        return dx_deg, dy_deg
+
+    def _reproject(self, ds, goes_crs):
+        temp_ds = ds.rio.write_crs(goes_crs)
+        dx_deg, dy_deg = self._calculate_reprojection_resolution(temp_ds)
+        reprojected_ds = temp_ds.rio.reproject(
+            dst_crs="EPSG:4326", 
+            resolution=(dx_deg, dy_deg)
         )
 
-        regridder = xe.Regridder(ds['AOD_mean'], target_grid, method="bilinear")
-        regridded_ds = regridder(ds['AOD_mean'])
-        regridded_data = regridded_ds.values
-
-        return regridded_data
-    
-    def _ds_to_gridded_data(self, ds, extent, dim):
-        """
-        Grabs AOD_mean data from Dataset and converts it to a grid in numpy.
-        """
-        regridded_data = self._reproject_gridded_data(ds, extent, dim)
-        reoriented_data = np.rot90((regridded_data.transpose())) 
-
-        return reoriented_data
+        return reprojected_ds
