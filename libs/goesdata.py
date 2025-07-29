@@ -24,10 +24,8 @@ class GOESData:
             5. Resize dimensions
         """
         ds = self._ingest_dataset(start_date, end_date)
-        goes_crs = ds.FOV.crs # save crs for reprojection
-        ds = self._convert_radians_to_meters(ds)
         ds = self._compute_high_quality_mean_aod(ds)
-        ds = self._reproject(ds, goes_crs)
+        ds = self._reproject(ds)
         gridded_data = self._subregion(ds, extent).data
         self.data = cv2.resize(gridded_data, (dim, dim))
 
@@ -66,11 +64,13 @@ class GOESData:
 
     def _compute_high_quality_mean_aod(self, ds):
         """
-        Calculates mean AOD, and returns a Dataset with that data only
+        Calculates mean AOD, and returns a Dataset with the added mean data
         Expects dataset with time component (e.g. (t, x, y)).
         """
-        ds['AOD_mean'] = ds['AOD'].where(ds['DQF'] > 0).mean(dim='t', skipna=True)
-        return ds['AOD_mean']
+        temp_ds = ds.assign(
+            AOD_mean=ds['AOD'].where(ds['DQF'] > 0).mean(dim='t', skipna=True)
+        )
+        return temp_ds
 
     ### NOTE: Methods for reprojections
 
@@ -79,9 +79,11 @@ class GOESData:
         Converts coordinates from radians to meters
         """
         temp_ds = ds.copy(deep=True)
-        h = temp_ds['goes_imager_projection'].attrs['perspective_point_height']
-        temp_ds.coords['x'] = temp_ds.coords['x'] * h 
-        temp_ds.coords['y'] = temp_ds.coords['y'] * h 
+        H = temp_ds['goes_imager_projection'].attrs['perspective_point_height']
+        temp_ds = temp_ds.assign_coords({
+            'x': temp_ds.x * H,
+            'y': temp_ds.y * H
+        })
 
         return temp_ds
 
@@ -106,8 +108,15 @@ class GOESData:
 
         return dx_deg, dy_deg
 
-    def _reproject(self, ds, goes_crs):
-        temp_ds = ds.rio.write_crs(goes_crs)
+    def _reproject(self, ds):
+        """
+        Performs a reprojection on the Dataset to Plate Carree.
+        Expects the main variable to be AOD_mean, to avoid reprojection 
+            over multiple variables.
+        """
+        temp_ds = self._convert_radians_to_meters(ds)
+        temp_ds = temp_ds['AOD_mean']
+        temp_ds = temp_ds.rio.write_crs(ds.FOV.crs)
         dx_deg, dy_deg = self._calculate_reprojection_resolution(temp_ds)
         reprojected_ds = temp_ds.rio.reproject(
             dst_crs="EPSG:4326", 
