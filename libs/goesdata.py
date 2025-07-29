@@ -6,6 +6,7 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import rioxarray
 import cv2
+from pyproj import Geod
 
 class GOESData:
     def __init__(
@@ -25,7 +26,7 @@ class GOESData:
         """
         ds = self._ingest_dataset(start_date, end_date)
         ds = self._compute_high_quality_mean_aod(ds)
-        ds = self._reproject(ds)
+        ds = self._reproject(ds, extent)
         gridded_data = self._subregion(ds, extent).data
         self.data = cv2.resize(gridded_data, (dim, dim))
 
@@ -87,28 +88,36 @@ class GOESData:
 
         return temp_ds
 
-    def _calculate_reprojection_resolution(self, ds):
+    def _calculate_reprojection_resolution(self, ds, extent):
         """
-        Calculates the resolution for the reprojection. 
+        Calculates the resolution in degrees for the reprojection. 
         Assumes coordinates have already been converted from radians to meters.
+
+        We *could* just use the native satellite resolution at nadir 
+            (0.02 deg); but it's not *precisely* that. For example, for the 
+            LA region, the resolution (x, y) is (0.02169, 0.01806)
         """
-        # meters per pixel
-        dx_m = np.diff(ds.x).mean()
-        dy_m = np.diff(ds.y).mean()
+        # prepare geodetic conversions between degrees and meters from lat/lon
+        geod = Geod(ellps="WGS84")
+        lon_bottom, lon_top, lat_bottom, lat_top = extent
+        lat_center = (lat_top + lat_bottom) / 2
 
-        # 1 degree / (meridonial or equatorial circumference / 360 degrees) = degree per meter lon or lat
-        # not 1000% precise, but it's sufficient
-        # you could also just use goes' resolution of 0.02; it's not 1-1, but it's pretty close (0.018)
-        deg_per_meter_lon = 1 / 111320
-        deg_per_meter_lat = 1 / 110574
+        # calculate meters per degree, relative to the center latitude
+        _, _, m_per_deg_lat = geod.inv(0, lat_center, 0, lat_center + 1)
+        _, _, m_per_deg_lon = geod.inv(0, lat_center, 1, lat_center)
 
-        # degrees of each pixel
-        dx_deg = dx_m * deg_per_meter_lon
-        dy_deg = dy_m * deg_per_meter_lat
+        # calculate average grid resolution from lat/lon gaps in meters
+        sat_res_x_in_meters = np.diff(ds.x).mean()
+        sat_res_y_in_meters = np.diff(ds.y).mean()
 
-        return dx_deg, dy_deg
+        # convert resolution from meters to degrees
+        res_y = sat_res_x_in_meters / m_per_deg_lat
+        res_x = sat_res_y_in_meters / m_per_deg_lon
 
-    def _reproject(self, ds):
+        # in total: the resolution of the average pixel, in degrees yipee
+        return res_x, res_y
+
+    def _reproject(self, ds, extent):
         """
         Performs a reprojection on the Dataset to Plate Carree.
         Expects the main variable to be AOD_mean, to avoid reprojection 
@@ -117,10 +126,10 @@ class GOESData:
         temp_ds = self._convert_radians_to_meters(ds)
         temp_ds = temp_ds['AOD_mean']
         temp_ds = temp_ds.rio.write_crs(ds.FOV.crs)
-        dx_deg, dy_deg = self._calculate_reprojection_resolution(temp_ds)
+        x_deg, y_deg = self._calculate_reprojection_resolution(temp_ds, extent)
         reprojected_ds = temp_ds.rio.reproject(
             dst_crs="EPSG:4326", 
-            resolution=(dx_deg, dy_deg)
+            resolution=(x_deg, y_deg)
         )
 
         return reprojected_ds
