@@ -23,15 +23,39 @@ class GOESData:
             4. Subregion data to exent
             5. Resize dimensions
         """
+        #TODO: realized that for data on 2022-12-01-00, we need to ingest
+        # 2022-11-30-00 to 59; the value AT 12/1 is the previous hour's average!
+        # TODO: Investiage -- Something interesting, it seems like during the night, the use the same image as captured during the day. Why? I'd rather do that on my end so I'm not ingesting so much data. Is there a way to check if the data is "real" and not just an imputation?
+        # I don't think this is a bug; but I should definitely plot out the first 12 hours of the nc4 files to see what's happening; and if it is just copying, see if I can avoid downloading it.
+        # My guess is this data is a bunch of nans, auto generated in some manner to maintain consistency
         self.data = []
         dates = pd.date_range(start_date, end_date, freq='h', inclusive='left')
         for date in tqdm(dates):
             start, end = date, date + pd.Timedelta(minutes=59, seconds=59)
-            ds = self._ingest_dataset(start, end)
-            ds = self._compute_high_quality_mean_aod(ds)
-            ds = self._reproject(ds, extent)
-            gridded_data = self._subregion(ds, extent).data
-            self.data.append(cv2.resize(gridded_data, (dim, dim)))
+            try:
+                ds = self._ingest_dataset(start, end)
+                ds = self._compute_high_quality_mean_aod(ds)
+                ds = self._reproject(ds, extent)
+                gridded_data = self._subregion(ds, extent).data
+                self.data.append(cv2.resize(gridded_data, (dim, dim)))
+            # TODO: errors impute with empty grid for now; plan to use prev frame/next frame 
+            except FileNotFoundError:
+                # file not found in aws s3 bucket, i.e. satellite outage
+                print(
+                    f"🛰️ ❓ "
+                    f"Outage on {start.strftime('%m/%d/%Y %H:%M:%S')} to "
+                    f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
+                )
+                self.data.append(np.zeros((dim, dim)))
+            except Exception as e:
+                print(
+                    f"🤨 ⁉️  "
+                    f"Unhandled error occurred while ingesting on "
+                    f"{start.strftime('%m/%d/%Y %H:%M:%S')} to "
+                    f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
+                    f"\n\tError raised: {e}"
+                )
+                self.data.append(np.zeros((dim, dim)))
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
@@ -51,7 +75,7 @@ class GOESData:
             verbose=False,
             ignore_missing=False
         )
-        
+
         return ds
 
     def _subregion(self, ds, extent):
