@@ -1,12 +1,11 @@
-from datetime import datetime
-import numpy as np
-import cartopy.crs as ccrs
 from goes2go.data import goes_timerange
+import numpy as np
 import xarray as xr
-import matplotlib.pyplot as plt
+import pandas as pd
 import rioxarray
 import cv2
 from pyproj import Geod
+from tqdm import tqdm 
 
 class GOESData:
     def __init__(
@@ -24,11 +23,15 @@ class GOESData:
             4. Subregion data to exent
             5. Resize dimensions
         """
-        ds = self._ingest_dataset(start_date, end_date)
-        ds = self._compute_high_quality_mean_aod(ds)
-        ds = self._reproject(ds, extent)
-        gridded_data = self._subregion(ds, extent).data
-        self.data = cv2.resize(gridded_data, (dim, dim))
+        self.data = []
+        dates = pd.date_range(start_date, end_date, freq='h', inclusive='left')
+        for date in tqdm(dates):
+            start, end = date, date + pd.Timedelta(minutes=59, seconds=59)
+            ds = self._ingest_dataset(start, end)
+            ds = self._compute_high_quality_mean_aod(ds)
+            ds = self._reproject(ds, extent)
+            gridded_data = self._subregion(ds, extent).data
+            self.data.append(cv2.resize(gridded_data, (dim, dim)))
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
@@ -46,6 +49,7 @@ class GOESData:
             return_as='xarray',
             max_cpus=12,
             verbose=False,
+            ignore_missing=False
         )
         
         return ds
