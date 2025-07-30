@@ -112,9 +112,12 @@ class GOESData:
         Calculates mean AOD, and returns a Dataset with the added mean data
         Expects dataset with time component (e.g. (t, x, y)).
         """
+        high, medium, low, no_retrieval = 0, 1, 2, 3
+        quality_aod = ds['AOD'].where(ds['DQF'] <= medium)
         temp_ds = ds.assign(
-            AOD_mean=ds['AOD'].where(ds['DQF'] > 0).mean(dim='t', skipna=True)
+            AOD_mean=quality_aod.mean(dim='t', skipna=True)
         )
+
         return temp_ds
 
     ### NOTE: Methods for reprojections
