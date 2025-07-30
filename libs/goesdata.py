@@ -4,6 +4,8 @@ import xarray as xr
 import pandas as pd
 import rioxarray
 import cv2
+import io
+from contextlib import redirect_stdout
 from pyproj import Geod
 from tqdm import tqdm 
 
@@ -14,6 +16,7 @@ class GOESData:
         end_date="2025-01-10 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
+        verbose=False
     ):
         """
         Pipeline:
@@ -29,57 +32,65 @@ class GOESData:
         self.data = []
         # Note: the "value" of a given hour is he average AOD of the previous hour
         # e.g. AOD @ 1:00 is the average AOD from 0:00-0:59
+        offset_start_date = pd.to_datetime(start_date) - pd.Timedelta(hours=1)
+        offset_end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
         dates = pd.date_range(
-            start_date - pd.Timedelta(hours=1),
-            end_date,
+            offset_start_date,
+            offset_end_date,
             freq='h',
             inclusive='left'
         )
         for date in tqdm(dates):
             start, end = date, date + pd.Timedelta(minutes=59, seconds=59)
             try:
-                ds = self._ingest_dataset(start, end)
+                ds = self._ingest_dataset(start, end, verbose)
                 ds = self._compute_high_quality_mean_aod(ds)
                 ds = self._reproject(ds, extent)
                 gridded_data = self._subregion(ds, extent).data
                 self.data.append(cv2.resize(gridded_data, (dim, dim)))
             # TODO: errors impute with empty grid for now; plan to use prev frame/next frame 
             except FileNotFoundError:
-                # file not found in aws s3 bucket, i.e. satellite outage
-                print(
-                    f"🛰️ ❓ "
-                    f"Outage on {start.strftime('%m/%d/%Y %H:%M:%S')} to "
-                    f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
-                )
                 self.data.append(np.zeros((dim, dim)))
             except Exception as e:
-                print(
-                    f"🤨 ⁉️  "
-                    f"Unhandled error occurred while ingesting on "
-                    f"{start.strftime('%m/%d/%Y %H:%M:%S')} to "
-                    f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
-                    f"\n\tError raised: {e}"
-                )
+                tqdm.write(self._unhandled_error_msg(start, end, e))
                 self.data.append(np.zeros((dim, dim)))
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
-    def _ingest_dataset(self, start_date, end_date):
+    def _ingest_dataset(self, start_date, end_date, verbose):
         """
         Ingests the GOES data; expects a date range, not one timestamp.
         Also performs a preliminary preprocessing step of converting coordinates
         from radians to meters.
         """
-        ds = goes_timerange(
-            start=start_date,
-            end=end_date,
-            satellite='goes18',
-            product="ABI-L2-AODC",
-            return_as='xarray',
-            max_cpus=12,
-            verbose=False,
-            ignore_missing=False
-        )
+        try:
+            if verbose:
+                ds = goes_timerange(
+                    start=start_date,
+                    end=end_date,
+                    satellite='goes18',
+                    product="ABI-L2-AODC",
+                    return_as='xarray',
+                    max_cpus=12,
+                    verbose=False,
+                    ignore_missing=False
+                )
+            else:
+                with redirect_stdout(io.StringIO()):
+                    ds = goes_timerange(
+                        start=start_date,
+                        end=end_date,
+                        satellite='goes18',
+                        product="ABI-L2-AODC",
+                        return_as='xarray',
+                        max_cpus=12,
+                        verbose=False,
+                        ignore_missing=False
+                    )
+        except FileNotFoundError:
+            # file not found in aws s3 bucket, i.e. satellite outage
+            tqdm.write(self._filenotfound_error_msg(start_date, end_date))
+            raise
 
         return ds
 
@@ -166,3 +177,21 @@ class GOESData:
         )
 
         return reprojected_ds
+
+    ### NOTE: Error message strings
+
+    def _unhandled_error_msg(self, start, end, e):
+        return(
+            f"🤷⁉️  "
+            f"Unhandled error occurred while ingesting on "
+            f"{start.strftime('%m/%d/%Y %H:%M:%S')} to "
+            f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
+            f"\n\tError raised: {e}"
+        )
+
+    def _filenotfound_error_msg(self, start, end):
+        return(
+            f"🛰️ 🪦 "
+            f"Outage on {start.strftime('%m/%d/%Y %H:%M:%S')} to "
+            f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
+        )
