@@ -111,6 +111,21 @@ class GOESData:
         """
         Calculates mean AOD, and returns a Dataset with the added mean data
         Expects dataset with time component (e.g. (t, x, y)).
+
+        What is meant by "Quality AOD"?
+            • High Quality AOD is most accurate but is missing part of the 
+            smoke plume, also big gaps along coastlines 
+            (very stringent screening)
+            • High + Medium Quality AOD (“top 2 qualities”) fills in 
+            most of smoke plume and some of the gaps along coastlines
+            • High + Medium + Low Quality AOD (“all qualities”) fully 
+            resolves the smoke plume, but at the expense of erroneous high AOD 
+            values along coastlines and over inland shallow lakes
+            • Bottom Line: Make sure you process AOD using the appropriate 
+            data quality flags!
+                • Avoid low quality AOD for most situations.
+                • Use high + medium (“top 2”) qualities AOD for routine 
+                operational applications!
         """
         high, medium, low, no_retrieval = 0, 1, 2, 3
         quality_aod = ds['AOD'].where(ds['DQF'] <= medium)
