@@ -34,6 +34,9 @@ class GOESData:
             5. Resize dimensions
             6. Interpolate data gaps
         """
+        # define for one-time calculation of reprojected spatial resolution
+        res_x, res_y = None, None
+
         self.data = []
         for date in tqdm(self._realigned_date_range(start_date, end_date)):
             try:
@@ -43,7 +46,7 @@ class GOESData:
                     verbose=verbose
                 )
                 ds = self._compute_high_quality_mean_aod(ds)
-                ds = self._reproject(ds, extent)
+                ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
                 gridded_data = self._subregion(ds, extent).data
                 gridded_data = cv2.resize(gridded_data, (dim, dim))
                 gridded_data = (
@@ -158,7 +161,7 @@ class GOESData:
 
         return temp_ds
 
-    def _calculate_reprojection_resolution(self, ds, extent):
+    def _calculate_reprojection_resolution(self, ds, extent, x, y):
         """
         Calculates the resolution in degrees for the reprojection. 
         Assumes coordinates have already been converted from radians to meters.
@@ -166,7 +169,13 @@ class GOESData:
         We *could* just use the native satellite resolution at nadir 
             (0.02 deg); but it's not *precisely* that. For example, for the 
             LA region, the resolution (x, y) is (0.02169, 0.01806)
+
+        If you pass in your own x and y, that will be returned
         """
+        # if x and y are defined, passthrough
+        if x is not None and y is not None:
+            return x, y
+
         # prepare geodetic conversions between degrees and meters from lat/lon
         geod = Geod(ellps="WGS84")
         lon_bottom, lon_top, lat_bottom, lat_top = extent
@@ -187,25 +196,26 @@ class GOESData:
         # in total: the resolution of the average pixel, in degrees yipee
         return res_x, res_y
 
-    def _reproject(self, ds, extent):
+    def _reproject(self, ds, extent, x, y):
         """
         Performs a reprojection on the Dataset to Plate Carree.
         Expects the main variable to be AOD_mean, to avoid reprojection 
             over multiple variables.
 
-        Performs a one-time calculation of the reprojection resolution
-            on `res_x` and `res_y`.
+        x and y make up the dimensions of the spatial grid, in Plate Carree.
         """
         temp_ds = self._convert_radians_to_meters(ds)
         temp_ds = temp_ds['AOD_mean']
         temp_ds = temp_ds.rio.write_crs(ds.FOV.crs)
-        res_x, res_y = self._calculate_reprojection_resolution(temp_ds, extent)
+        res_x, res_y = self._calculate_reprojection_resolution(
+            temp_ds, extent, x, y
+        )
         reprojected_ds = temp_ds.rio.reproject(
             dst_crs="EPSG:4326", 
             resolution=(res_x, res_y)
         )
 
-        return reprojected_ds
+        return reprojected_ds, res_x, res_y
 
     ### NOTE: Error message strings
 
