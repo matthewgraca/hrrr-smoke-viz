@@ -35,6 +35,7 @@ class GOESData:
             6. Interpolate data gaps
         """
         self.data = []
+        self._res_x, self._res_y = None, None
         for date in tqdm(self._realigned_date_range(start_date, end_date)):
             try:
                 ds = self._ingest_dataset(
@@ -192,14 +193,21 @@ class GOESData:
         Performs a reprojection on the Dataset to Plate Carree.
         Expects the main variable to be AOD_mean, to avoid reprojection 
             over multiple variables.
+
+        Performs a one-time calculation of the reprojection resolution
+            on `res_x` and `res_y`.
         """
         temp_ds = self._convert_radians_to_meters(ds)
         temp_ds = temp_ds['AOD_mean']
         temp_ds = temp_ds.rio.write_crs(ds.FOV.crs)
-        x_deg, y_deg = self._calculate_reprojection_resolution(temp_ds, extent)
+        x, y = (
+            self._calculate_reprojection_resolution(temp_ds, extent)
+            if self._res_x is None or self._res_y is None
+            else (self._res_x, self._res_y)
+        )
         reprojected_ds = temp_ds.rio.reproject(
             dst_crs="EPSG:4326", 
-            resolution=(x_deg, y_deg)
+            resolution=(x, y)
         )
 
         return reprojected_ds
