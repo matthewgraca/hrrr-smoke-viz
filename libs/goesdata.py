@@ -34,24 +34,14 @@ class GOESData:
             5. Resize dimensions
             6. Interpolate data gaps
         """
-        # TODO: Investiage -- Something interesting, it seems like during the night, the use the same image as captured during the day. Why? I'd rather do that on my end so I'm not ingesting so much data. Is there a way to check if the data is "real" and not just an imputation?
-        # I don't think this is a bug; but I should definitely plot out the first 12 hours of the nc4 files to see what's happening; and if it is just copying, see if I can avoid downloading it.
-        # My guess is this data is a bunch of nans, auto generated in some manner to maintain consistency
         self.data = []
-        # Note: the "value" of a given hour is he average AOD of the previous hour
-        # e.g. AOD @ 1:00 is the average AOD from 0:00-0:59
-        offset_start_date = pd.to_datetime(start_date) - pd.Timedelta(hours=1)
-        offset_end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
-        dates = pd.date_range(
-            offset_start_date,
-            offset_end_date,
-            freq='h',
-            inclusive='left'
-        )
-        for date in tqdm(dates):
-            start, end = date, date + pd.Timedelta(minutes=59, seconds=59)
+        for date in tqdm(self._realigned_date_range(start_date, end_date)):
             try:
-                ds = self._ingest_dataset(start, end, verbose)
+                ds = self._ingest_dataset(
+                    start_date=date, 
+                    end_date=date + pd.Timedelta(minutes=59, seconds=59), 
+                    verbose=verbose
+                )
                 ds = self._compute_high_quality_mean_aod(ds)
                 ds = self._reproject(ds, extent)
                 gridded_data = self._subregion(ds, extent).data
@@ -61,12 +51,15 @@ class GOESData:
                     if self._data_meets_nonnan_threshold(gridded_data, 0.20)
                     else self._use_prev_frame(self.data, dim)
                 )
-                self.data.append(gridded_data)
             except FileNotFoundError:
-                self.data.append(self._use_prev_frame(self.data, dim))
+                # file not found in aws, i.e. satellite outage; use prev frame
+                gridded_data = self._use_prev_frame(self.data, dim)
             except Exception as e:
+                # generic message, default to empty frame
                 tqdm.write(self._unhandled_error_msg(start, end, e))
-                self.data.append(np.zeros((dim, dim)))
+                gridded_data = np.zeros((dim, dim))
+
+            self.data.append(gridded_data)
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
@@ -75,6 +68,9 @@ class GOESData:
         Ingests the GOES data; expects a date range, not one timestamp.
         Also performs a preliminary preprocessing step of converting coordinates
         from radians to meters.
+
+        Raises FileNotFoundError if the aws s3 bucket doesn't have data for 
+            the given time range.
         """
         try:
             if verbose:
@@ -101,7 +97,6 @@ class GOESData:
                         ignore_missing=False
                     )
         except FileNotFoundError:
-            # file not found in aws s3 bucket, i.e. satellite outage
             tqdm.write(self._filenotfound_error_msg(start_date, end_date))
             raise
 
@@ -228,6 +223,22 @@ class GOESData:
         )
 
     ### NOTE: Utilities, helper methods
+
+    def _realigned_date_range(self, start_date, end_date):
+        """
+        The "value" of a given hour is he average AOD of the previous hour
+            e.g. AOD @ 1:00 is the average AOD from 0:00-0:59,
+            thus the offset.
+        """
+        offset_start_date = pd.to_datetime(start_date) - pd.Timedelta(hours=1)
+        offset_end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
+        return pd.date_range(
+            offset_start_date,
+            offset_end_date,
+            freq='h',
+            inclusive='left'
+        )
+
     def _data_meets_nonnan_threshold(self, data, threshold=0.0):
         # threshold assumed to be [0.0, 1.0]
         x, y = data.shape
