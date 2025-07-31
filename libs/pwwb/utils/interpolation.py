@@ -49,7 +49,7 @@ def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist, allow
     return grid
 
 
-def interpolate_frame(f, dim):
+def interpolate_frame(f, dim, apply_filter=False, interp_flag=0):
     """
     Interpolates sparse data across a grid using Inverse Distance Weighting (IDW).
     
@@ -59,6 +59,10 @@ def interpolate_frame(f, dim):
         Sparse grid with values at known locations
     dim : int
         Grid dimension
+    apply_filter : bool
+        Determines if IDW should apply Gaussian filter
+    interp_flag : any
+        Value that IDW should interpolate over. Usually 0 or np.nan 
     
     Returns:
     --------
@@ -66,13 +70,18 @@ def interpolate_frame(f, dim):
         Smoothly interpolated grid
     """
     x_list, y_list, values = [], [], []
-    
     for x in range(f.shape[0]):
         for y in range(f.shape[1]):
-            if f[x, y] != 0:
-                x_list.append(x)
-                y_list.append(y)
-                values.append(f[x, y])
+            if np.isnan(interp_flag):
+                if not np.isnan(f[x, y]):
+                    x_list.append(x)
+                    y_list.append(y)
+                    values.append(f[x, y])
+            else:
+                if f[x, y] != interp_flag:
+                    x_list.append(x)
+                    y_list.append(y)
+                    values.append(f[x, y])
     
     coords = list(zip(x_list, y_list))
     
@@ -113,8 +122,11 @@ def interpolate_frame(f, dim):
                 normalized_weights = weights / np.sum(weights)
                 interpolated[i, j] = np.sum(normalized_weights * np.array(values))
         
-        interpolated = gaussian_filter(interpolated, sigma=1.5, mode='constant', cval=0)
-        return interpolated
+        return (
+            gaussian_filter(interpolated, sigma=1.5, mode='constant', cval=0)
+            if apply_filter 
+            else interpolated
+        )
         
     except Exception as e:
         print(f"Error in IDW interpolation: {e}")
