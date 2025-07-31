@@ -9,6 +9,13 @@ from contextlib import redirect_stdout
 from pyproj import Geod
 from tqdm import tqdm 
 
+#TODO figure out how to import this util funciton without this
+import sys
+sys.path.append('/home/mgraca/Workspace/hrrr-smoke-viz/libs')
+sys.path.append('/home/mgraca/Workspace/hrrr-smoke-viz')
+
+from pwwb.utils.interpolation import interpolate_frame
+
 class GOESData:
     def __init__(
         self,
@@ -16,7 +23,7 @@ class GOESData:
         end_date="2025-01-10 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
-        verbose=False
+        verbose=False,
     ):
         """
         Pipeline:
@@ -25,6 +32,7 @@ class GOESData:
             3. Reproject data to Plate Carree
             4. Subregion data to exent
             5. Resize dimensions
+            6. Interpolate data gaps
         """
         # TODO: Investiage -- Something interesting, it seems like during the night, the use the same image as captured during the day. Why? I'd rather do that on my end so I'm not ingesting so much data. Is there a way to check if the data is "real" and not just an imputation?
         # I don't think this is a bug; but I should definitely plot out the first 12 hours of the nc4 files to see what's happening; and if it is just copying, see if I can avoid downloading it.
@@ -47,10 +55,15 @@ class GOESData:
                 ds = self._compute_high_quality_mean_aod(ds)
                 ds = self._reproject(ds, extent)
                 gridded_data = self._subregion(ds, extent).data
-                self.data.append(cv2.resize(gridded_data, (dim, dim)))
-            # TODO: errors impute with empty grid for now; plan to use prev frame/next frame 
+                gridded_data = cv2.resize(gridded_data, (dim, dim))
+                gridded_data = (
+                    interpolate_frame(gridded_data, dim, interp_flag=np.nan)
+                    if self._data_meets_nonnan_threshold(gridded_data, 0.20)
+                    else self._use_prev_frame(self.data, dim)
+                )
+                self.data.append(gridded_data)
             except FileNotFoundError:
-                self.data.append(np.zeros((dim, dim)))
+                self.data.append(self._use_prev_frame(self.data, dim))
             except Exception as e:
                 tqdm.write(self._unhandled_error_msg(start, end, e))
                 self.data.append(np.zeros((dim, dim)))
@@ -213,3 +226,12 @@ class GOESData:
             f"Outage on {start.strftime('%m/%d/%Y %H:%M:%S')} to "
             f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
         )
+
+    ### NOTE: Utilities, helper methods
+    def _data_meets_nonnan_threshold(self, data, threshold=0.0):
+        # threshold assumed to be [0.0, 1.0]
+        x, y = data.shape
+        return np.count_nonzero(~np.isnan(data)) / (x * y) >= threshold
+
+    def _use_prev_frame(self, data, dim):
+        return data[-1] if len(data) > 0 else np.zeros((dim, dim))
