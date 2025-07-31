@@ -13,7 +13,6 @@ from tqdm import tqdm
 import sys
 sys.path.append('/home/mgraca/Workspace/hrrr-smoke-viz/libs')
 sys.path.append('/home/mgraca/Workspace/hrrr-smoke-viz')
-
 from pwwb.utils.interpolation import interpolate_frame
 
 class GOESData:
@@ -23,6 +22,7 @@ class GOESData:
         end_date="2025-01-10 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
+        save_dir=None,
         verbose=False,
     ):
         """
@@ -43,6 +43,7 @@ class GOESData:
                 ds = self._ingest_dataset(
                     start_date=date, 
                     end_date=date + pd.Timedelta(minutes=59, seconds=59), 
+                    save_dir=save_dir,
                     verbose=verbose
                 )
                 ds = self._compute_high_quality_mean_aod(ds)
@@ -66,7 +67,7 @@ class GOESData:
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
-    def _ingest_dataset(self, start_date, end_date, verbose):
+    def _ingest_dataset(self, start_date, end_date, save_dir, verbose):
         """
         Ingests the GOES data; expects a date range, not one timestamp.
         Also performs a preliminary preprocessing step of converting coordinates
@@ -75,30 +76,25 @@ class GOESData:
         Raises FileNotFoundError if the aws s3 bucket doesn't have data for 
             the given time range.
         """
+        default_kwargs = {
+            'start' : start_date,
+            'end' : end_date,
+            'satellite': 'goes18',
+            'product': 'ABI-L2-AODC',
+            'return_as': 'xarray',
+            'max_cpus': 12,
+            'verbose' : False,
+            'ignore_missing' : False
+        }
+        if save_dir is not None:
+            default_kwargs['save_dir'] = save_dir
+
         try:
             if verbose:
-                ds = goes_timerange(
-                    start=start_date,
-                    end=end_date,
-                    satellite='goes18',
-                    product="ABI-L2-AODC",
-                    return_as='xarray',
-                    max_cpus=12,
-                    verbose=False,
-                    ignore_missing=False
-                )
+                ds = goes_timerange(**default_kwargs)
             else:
                 with redirect_stdout(io.StringIO()):
-                    ds = goes_timerange(
-                        start=start_date,
-                        end=end_date,
-                        satellite='goes18',
-                        product="ABI-L2-AODC",
-                        return_as='xarray',
-                        max_cpus=12,
-                        verbose=False,
-                        ignore_missing=False
-                    )
+                    ds = goes_timerange(**default_kwargs)
         except FileNotFoundError:
             tqdm.write(self._filenotfound_error_msg(start_date, end_date))
             raise
@@ -161,7 +157,7 @@ class GOESData:
 
         return temp_ds
 
-    def _calculate_reprojection_resolution(self, ds, extent, x, y):
+    def _calculate_reprojection_resolution(self, ds, extent, x=None, y=None):
         """
         Calculates the resolution in degrees for the reprojection. 
         Assumes coordinates have already been converted from radians to meters.
@@ -170,7 +166,9 @@ class GOESData:
             (0.02 deg); but it's not *precisely* that. For example, for the 
             LA region, the resolution (x, y) is (0.02169, 0.01806)
 
-        If you pass in your own x and y, that will be returned
+        If you pass in your own x and y, it is assumed you've calculated the
+            resolutions already, and don't want to recalculate them, and will 
+            return x, y as-is.
         """
         # if x and y are defined, passthrough
         if x is not None and y is not None:
