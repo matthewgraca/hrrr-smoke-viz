@@ -44,6 +44,7 @@ class AirNowData:
         sensor_whitelist=None,
         use_whitelist=False,
         force_reprocess=False,
+        use_variable_blur=False,
         chunk_days=30
     ):
         self.air_sens_loc = {}
@@ -139,7 +140,10 @@ class AirNowData:
         ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in tqdm(list_df)]
         
         print(f"Interpolating {len(ground_site_grids)} frames...")
-        interpolated_grids = [self._interpolate_frame(frame) for frame in tqdm(ground_site_grids)]
+        interpolated_grids = [
+            self._interpolate_frame(frame, use_variable_blur) 
+            for frame in tqdm(ground_site_grids)
+        ]
         
         frames = np.expand_dims(np.array(interpolated_grids), axis=-1)
         processed_ds = self._sliding_window_of(frames, frames_per_sample)
@@ -687,7 +691,7 @@ class AirNowData:
                     
         return data_blurred
 
-    def _interpolate_frame(self, unInter):
+    def _interpolate_frame(self, unInter, use_variable_blur):
         """Interpolate a frame using 3D IDW method."""
         nonzero_indices = np.nonzero(unInter)
         coordinates = list(zip(nonzero_indices[0], nonzero_indices[1]))
@@ -715,13 +719,13 @@ class AirNowData:
                 value = self._idw_interpolate(x, y, vals, distance_list, elevation_list, self.idw_power)
                 interpolated[x, y] = max(0, value)  # PM2.5 can't be negative
         
-        # Apply smoothing
-        '''
-        kernel_size = np.random.randint(0, 5, (self.dim, self.dim))
-        out = self._variable_blur(interpolated, kernel_size)
-        out = gaussian_filter(out, sigma=0.5)
-        '''
         out = interpolated
+
+        # Apply smoothing
+        if use_variable_blur:
+            kernel_size = np.random.randint(0, 5, (self.dim, self.dim))
+            out = self._variable_blur(interpolated, kernel_size)
+            out = gaussian_filter(out, sigma=0.5)
         
         # Apply mask for geographic boundaries only if using mask
         if self.use_mask and self.mask is not None and np.any(self.mask != 1):
