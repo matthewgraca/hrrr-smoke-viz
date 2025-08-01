@@ -23,6 +23,7 @@ class GOESData:
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
         save_dir=None,
+        cache_path=None,
         verbose=False,
     ):
         """
@@ -34,17 +35,28 @@ class GOESData:
             5. Resize dimensions
             6. Interpolate data gaps
         """
+        if cache_path is not None:
+            self.data = self._load_cached_data(cache_path)
+            return
+
         # define for one-time calculation of reprojected spatial resolution
         res_x, res_y = None, None
 
         self.data = []
-        for date in tqdm(self._realigned_date_range(start_date, end_date)):
+        prog_bar = tqdm(self._realigned_date_range(start_date, end_date))
+        for date in prog_bar:
             try:
+                prog_bar.set_description(
+                    f"Retrieving data for {date.strftime('%m/%d/%Y %H:%M')}" 
+                )
                 ds = self._ingest_dataset(
                     start_date=date, 
                     end_date=date + pd.Timedelta(minutes=59, seconds=59), 
                     save_dir=save_dir,
                     verbose=verbose
+                )
+                prog_bar.set_description(
+                    f"Processing data for {date.strftime('%m/%d/%Y %H:%M')}" 
                 )
                 ds = self._compute_high_quality_mean_aod(ds)
                 ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
@@ -63,7 +75,24 @@ class GOESData:
                 tqdm.write(self._unhandled_error_msg(start, end, e))
                 gridded_data = np.zeros((dim, dim))
 
+            prog_bar.set_description(
+                f"Completed data for {date.strftime('%m/%d/%Y %H:%M')} " 
+            )
             self.data.append(gridded_data)
+
+    ### NOTE: Methods for handling the cache
+
+    def _load_cached_data(self, cache_path):
+        """
+        Loads cached data.
+        """
+        try:
+            cached_data = np.load(cache_path)
+        except Exception as e:
+            print(self._loading_cache_error_msg(cache_path, e))
+            cached_data = None
+
+        return cached_data
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
@@ -231,6 +260,14 @@ class GOESData:
             f"🛰️ 🪦 "
             f"Outage on {start.strftime('%m/%d/%Y %H:%M:%S')} to "
             f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
+        )
+
+    def _loading_cache_error_msg(self, path, e):
+        return(
+            f"📖❗ "
+            f"Error occurred while attempting to load cache from "
+            f"'{path}', exiting.\n"
+            f"\tError raised: {e}"
         )
 
     ### NOTE: Utilities, helper methods
