@@ -201,3 +201,123 @@ class TestAirNowData(unittest.TestCase):
 
         msg = f"Expected {expected_sensors}, returned {actual_sensors}"
         self.assertEqual(actual, expected, msg)
+
+    def test_getting_all_stations_closest_to_all_sensors(self):
+        ad = self.ad
+        loc_to_sensor = {v : k for k, v in ad.air_sens_loc.items()}
+
+        actual = ad._get_closest_stations_to_each_sensor(
+            ad.air_sens_loc
+        )
+        actual_sensors = {
+            sensor : [loc_to_sensor[loc] for loc in locations]
+            for sensor, locations in actual.items()
+        }
+        
+        expected = {
+            'Simi Valley - Cochran Street': [
+                (12, 6), (4, 7), (12, 12), (17, 16),
+                (23, 17), (28, 18), (14, 28), (26, 25)
+            ], 
+            'Reseda': [
+                (8, 2), (12, 12), (4, 7), (17, 16), 
+                (23, 17), (28, 18), (14, 28), (26, 25)
+            ], 
+            'Santa Clarita': [
+                (8, 2), (12, 6), (12, 12), (17, 16), 
+                (23, 17), (14, 28), (28, 18), (26, 25)
+            ], 
+            'North Holywood': [
+                (12, 6), (17, 16), (4, 7), (8, 2), 
+                (23, 17), (14, 28), (28, 18), (26, 25)
+            ], 
+            'Los Angeles - N. Main Street': [
+                (23, 17), (12, 12), (12, 6), (28, 18), 
+                (14, 28), (26, 25), (4, 7), (8, 2)
+            ], 
+            'Compton': [
+                (28, 18), (17, 16), (26, 25), (12, 12), 
+                (14, 28), (12, 6), (8, 2), (4, 7)
+            ], 
+            'Long Beach Signal Hill': [
+                (23, 17), (26, 25), (17, 16), (12, 12), 
+                (14, 28), (12, 6), (8, 2), (4, 7)
+            ], 
+            'Anaheim': [
+                (28, 18), (23, 17), (14, 28), (17, 16), 
+                (12, 12), (12, 6), (4, 7), (8, 2)
+            ], 
+            'Glendora - Laurel': [
+                (26, 25), (17, 16), (23, 17), (12, 12), 
+                (28, 18), (12, 6), (4, 7), (8, 2)
+            ]
+        }
+
+        expected_sensors = {
+            sensor : [loc_to_sensor[loc] for loc in locations]
+            for sensor, locations in expected.items()
+        }
+
+        msg = f"Expected {expected_sensors}, returned {actual_sensors}"
+        self.assertEqual(actual, expected, msg)
+
+    def test_imputing_ground_sites(self):
+        '''
+        Check if ground sites will be imputed with average of 3 closest sensors
+        '''
+        ad = self.ad
+        air_sens_loc = ad.air_sens_loc
+        synthetic_data = np.zeros((40, 40))
+        # closest locations to glendora (14, 28)
+        locations = ad._find_closest_values(
+            *air_sens_loc['Glendora - Laurel'],
+            list(air_sens_loc.values()),
+            len(air_sens_loc)
+        )[0][1:]
+        locations_data = [100] * len(locations)
+        locations_data[0] = 5
+        locations_data[1] = 6
+        locations_data[2] = 7
+
+        for loc, data in zip(locations, locations_data):
+            synthetic_data[*loc] = data 
+
+        actual_grid = ad._impute_ground_site_grids([synthetic_data], air_sens_loc)
+        actual = actual_grid[0, *air_sens_loc['Glendora - Laurel']]
+        expected = 6
+
+        msg = f"Expected {expected}, returned {actual}"
+        self.assertEqual(actual, expected, msg)
+
+    def test_imputing_ground_sites_with_a_dead_neighbor(self):
+        '''
+        Check if ground sites will be imputed with average of 3 closest valid sensors
+        '''
+        ad = self.ad
+        air_sens_loc = ad.air_sens_loc
+        synthetic_data = np.zeros((40, 40))
+        # closest locations to glendora (14, 28)
+        locations = ad._find_closest_values(
+            *air_sens_loc['Glendora - Laurel'],
+            list(air_sens_loc.values()),
+            len(air_sens_loc)
+        )[0][1:]
+        # be very careful here; because we're actually peforming TWO imputations
+        # at the same time. chased a crazy bug here expecting only one impute
+        # on Glendora, when it's neighbor we set to 0 was also getting imputed,
+        # thus Glendora getting imputed based on that imputation AFTER its 
+        # neighbor got imputed first.
+        locations_data = [100] * len(locations)
+        locations_data[0] = 0
+
+        for loc, data in zip(locations, locations_data):
+            synthetic_data[*loc] = data 
+
+        actual_grid = ad._impute_ground_site_grids([synthetic_data], air_sens_loc)
+        actual = actual_grid[0, *air_sens_loc['Glendora - Laurel']]
+        expected = 100
+
+        msg = f"Expected {expected}, returned {actual}"
+        msg = f"{locations}, {locations_data}"
+        msg = f"{actual_grid[actual_grid != 0]}"
+        self.assertEqual(actual, expected, msg)
