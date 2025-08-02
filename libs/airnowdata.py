@@ -44,6 +44,7 @@ class AirNowData:
         sensor_whitelist=None,
         use_whitelist=False,
         force_reprocess=False,
+        use_variable_blur=False,
         chunk_days=30
     ):
         self.air_sens_loc = {}
@@ -137,9 +138,14 @@ class AirNowData:
         
         print("Processing AirNow data with IDW interpolation (this may take time)...")    
         ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in tqdm(list_df)]
+        # preprocess ground sites initializes air_sens_loc, so it should be usable here.
+        ground_site_grids = self._impute_ground_site_grids(ground_site_grids, self.air_sens_loc)
         
         print(f"Interpolating {len(ground_site_grids)} frames...")
-        interpolated_grids = [self._interpolate_frame(frame) for frame in tqdm(ground_site_grids)]
+        interpolated_grids = [
+            self._interpolate_frame(frame, use_variable_blur) 
+            for frame in tqdm(ground_site_grids)
+        ]
         
         frames = np.expand_dims(np.array(interpolated_grids), axis=-1)
         processed_ds = self._sliding_window_of(frames, frames_per_sample)
@@ -148,7 +154,11 @@ class AirNowData:
         self.ground_site_grids = ground_site_grids
         
         if self.air_sens_loc:
-            self.target_stations = self._get_target_stations(self.data, self.ground_site_grids, self.air_sens_loc)
+            self.target_stations = self._get_target_stations(
+                self.data, 
+                self.ground_site_grids, 
+                self.air_sens_loc
+            )
             self.sensor_names = list(self.air_sens_loc.keys())
         else:
             self.target_stations = None
@@ -596,6 +606,43 @@ class AirNowData:
         '''
         return unInter
 
+    def _impute_ground_site_grids(self, ground_sites, air_sens_loc):
+        """
+        Another method to consider here for imputing is performing IDW, and just
+        plucking that value out of the interpolated frame. I did not go this route
+        because if we applied smoothing, that would create a less "real" target; so
+        as long as blur is possible, we shouldn't use IDW as targets (unless the 
+        interpolated frame itself becomes the target we want to predict)
+        """
+        imputed_ground_sites = np.array(ground_sites)
+
+        # get closest sensors to each station
+        sensor_to_closest_stations = self._get_closest_stations_to_each_sensor(
+            air_sens_loc
+        )
+
+        loc_to_sensor = {v : k for k, v in air_sens_loc.items()}
+        # pick from top 3 nonzero
+        for frame in imputed_ground_sites:
+            for x, y in air_sens_loc.values():
+                if frame[x, y] == 0:
+                    closest_loc_to_xy = sensor_to_closest_stations[loc_to_sensor[(x, y)]]
+                    sensor_data = np.array([frame[a, b] for a, b in closest_loc_to_xy])
+                    frame[x, y] = np.mean(sensor_data[sensor_data != 0][:3])
+
+        return imputed_ground_sites
+
+    def _get_closest_stations_to_each_sensor(self, air_sens_loc):
+        return {
+            station : self._find_closest_values(
+                x=location[0], 
+                y=location[1], 
+                coordinates=list(air_sens_loc.values()),
+                n=len(air_sens_loc)
+            )[0][1:] 
+            for station, location in air_sens_loc.items()
+        }
+
     def _find_closest_values(self, x, y, coordinates, n=10):
         """Find n closest sensor locations for interpolation."""
         if not coordinates:
@@ -687,7 +734,7 @@ class AirNowData:
                     
         return data_blurred
 
-    def _interpolate_frame(self, unInter):
+    def _interpolate_frame(self, unInter, use_variable_blur):
         """Interpolate a frame using 3D IDW method."""
         nonzero_indices = np.nonzero(unInter)
         coordinates = list(zip(nonzero_indices[0], nonzero_indices[1]))
@@ -715,13 +762,13 @@ class AirNowData:
                 value = self._idw_interpolate(x, y, vals, distance_list, elevation_list, self.idw_power)
                 interpolated[x, y] = max(0, value)  # PM2.5 can't be negative
         
-        # Apply smoothing
-        '''
-        kernel_size = np.random.randint(0, 5, (self.dim, self.dim))
-        out = self._variable_blur(interpolated, kernel_size)
-        out = gaussian_filter(out, sigma=0.5)
-        '''
         out = interpolated
+
+        # Apply smoothing
+        if use_variable_blur:
+            kernel_size = np.random.randint(0, 5, (self.dim, self.dim))
+            out = self._variable_blur(interpolated, kernel_size)
+            out = gaussian_filter(out, sigma=0.5)
         
         # Apply mask for geographic boundaries only if using mask
         if self.use_mask and self.mask is not None and np.any(self.mask != 1):
