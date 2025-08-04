@@ -8,6 +8,9 @@ import io
 from contextlib import redirect_stdout
 from pyproj import Geod
 from tqdm import tqdm 
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from libs.pwwb.utils.interpolation import interpolate_frame
 
 class GOESData:
@@ -67,14 +70,25 @@ class GOESData:
                 gridded_data = (
                     interpolate_frame(gridded_data, dim, interp_flag=np.nan)
                     if self._data_meets_nonnan_threshold(gridded_data, 0.20)
-                    else self._use_prev_frame(self.data, dim)
+                    else self._use_prev_frame(self.data, dim, date, verbose)
                 )
             except FileNotFoundError:
                 # file not found in aws, i.e. satellite outage; use prev frame
                 gridded_data = self._use_prev_frame(self.data, dim)
             except Exception as e:
                 # generic message, default to empty frame
-                tqdm.write(self._unhandled_error_msg(start, end, e))
+                # unhandled excpetions always print through verbose level
+                df = self._ingest_dataset(
+                    start_date=date, 
+                    end_date=date + pd.Timedelta(minutes=59, seconds=59), 
+                    save_dir=save_dir,
+                    verbose=verbose,
+                    load=False
+                )
+                tqdm.write(self._unhandled_error_msg(date, e))
+                pd.set_option('display.max_colwidth', None)
+                tqdm.write(f"Offending files: \n{df.file}")
+                tqdm.write("Imputing with empty frame.")
                 gridded_data = np.zeros((dim, dim))
 
             prog_bar.set_description(
@@ -130,21 +144,124 @@ class GOESData:
             'satellite': 'goes18',
             'product': 'ABI-L2-AODC',
             'return_as': 'xarray' if load else 'filelist',
-            'max_cpus': 12,
+            'max_cpus': None,
             'verbose' : False,
             'ignore_missing' : False,
         }
         if save_dir is not None:
             default_kwargs['save_dir'] = save_dir
 
+        f = io.StringIO()
         try:
-            if verbose:
+            with redirect_stdout(f):
                 ds = goes_timerange(**default_kwargs)
-            else:
-                with redirect_stdout(io.StringIO()):
-                    ds = goes_timerange(**default_kwargs)
+
+            if verbose: tqdm.write(f.getvalue())
         except FileNotFoundError:
+            # aws missing file; reraise and let pipeline handle it
             raise
+        except ValueError as e:
+            # blows up when opening with xarray, usually time fill value
+            if verbose: tqdm.write(self._decode_times_error_msg(
+                start_date, end_date, e)
+            )
+
+            with redirect_stdout(f):
+                default_kwargs['return_as'] = 'filelist' 
+                df = goes_timerange(**default_kwargs)
+                ds = self._as_xarray(df, **default_kwargs)
+
+            if verbose: tqdm.write(f"🍾  Reread success!")
+
+        return ds
+
+    # NOTE df->xarray methods courtesy of Brian Blaylock.
+    '''
+    We copy and paste these functions because sometimes we'll need to load the
+        xarray using decode_times=False. Unfortunately, it's not a kwarg.
+    '''
+
+    def _as_xarray_MP(self, src, save_dir, i=None, n=None, verbose=True):
+        """Open a file as a xarray.Dataset -- a multiprocessing helper."""
+        # File destination
+        local_copy = Path(save_dir) / src
+
+        if local_copy.is_file():
+            if verbose:
+                print(
+                    f"\r📖💽 Reading ({i:,}/{n:,}) file from LOCAL COPY [{local_copy}].",
+                    end=" ",
+                )
+            with open(local_copy, "rb") as f:
+                ds = xr.load_dataset(f, decode_times=False)
+        else:
+            raise FileNotFoundError(f"Local copy of {local_copy} not found!")
+
+        # Turn some attributes to coordinates so they will be preserved
+        # when we concat multiple GOES DataSets together.
+        attr2coord = [
+            "dataset_name",
+            "date_created",
+            "time_coverage_start",
+            "time_coverage_end",
+        ]
+        for i in attr2coord:
+            if i in ds.attrs:
+                ds.coords[i] = ds.attrs.pop(i)
+
+        ds["filename"] = src
+
+        return ds
+
+    def _as_xarray(self, df, **params):
+        """Download files in the list to the desired path.
+
+        Use multiprocessing to speed up the download process.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            A list of files in the GOES s3 bucket.
+            This DataFrame must have a column of "files"
+        params : dict
+            Parameters from `goes_*` function.
+        """
+        params.setdefault("max_cpus", None)
+        params.setdefault("verbose", True)
+        save_dir = params["save_dir"]
+        max_cpus = params["max_cpus"]
+        verbose = params["verbose"]
+
+        n = len(df.file)
+        if n == 0:
+            print("🛸 No data....🌌")
+        elif n == 1:
+            # If we only have one file, we don't need multiprocessing
+            ds = self._as_xarray_MP(df.iloc[0].file, save_dir, 1, 1, verbose)
+        else:
+            # Use Multiprocessing to read multiple files.
+            if max_cpus is None:
+                max_cpus = multiprocessing.cpu_count()
+            cpus = np.minimum(multiprocessing.cpu_count(), max_cpus)
+            cpus = np.minimum(cpus, n)
+
+            inputs = [(src, save_dir, i, n) for i, src in enumerate(df.file, start=1)]
+
+            with multiprocessing.Pool(cpus) as p:
+                results = p.starmap(self._as_xarray_MP, inputs)
+                p.close()
+                p.join()
+
+            # Need some work to concat the datasets
+            if df.attrs["product"].startswith("ABI"):
+                print("concatenate Datasets", end="")
+                ds = xr.concat(results, dim="t")
+            else:
+                ds = results
+
+        if verbose:
+            print(f"\r{'':1000}\r📚 Finished reading [{n}] files into xarray.Dataset.")
+        ds.attrs["path"] = df.file.to_list()
 
         return ds
 
@@ -176,18 +293,15 @@ class GOESData:
                     )
                 outages += 1
             except Exception as e:
-                # generic message, default to empty frame
-                tqdm.write(self._unhandled_error_msg(start, end, e))
+                # generic message, just skip by default
+                tqdm.write(self._unhandled_error_msg(date, e))
             prog_bar.set_description(
                 f"Completed ingest for {date.strftime('%m/%d/%Y %H:%M')} " 
             )
 
-        if outages > 0:
-            print(
-                f"🛰️ 🪦 {outages} outage(s) reported; "
-                f"skipping ingest on affected dates. "
-                f"These dates will be imputed using previous frames."
-            )
+        if outages > 0: print(self._outages_msg(outages))
+
+        return
 
     def _subregion(self, ds, extent):
         """
@@ -303,32 +417,6 @@ class GOESData:
 
         return reprojected_ds, res_x, res_y
 
-    ### NOTE: Error message strings
-
-    def _unhandled_error_msg(self, start, end, e):
-        return(
-            f"🤷⁉️  "
-            f"Unhandled error occurred while ingesting on "
-            f"{start.strftime('%m/%d/%Y %H:%M:%S')} to "
-            f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
-            f"\n\tError raised: {e}"
-        )
-
-    def _filenotfound_error_msg(self, start, end):
-        return(
-            f"🛰️ 🪦 "
-            f"Outage on {start.strftime('%m/%d/%Y %H:%M:%S')} to "
-            f"{end.strftime('%m/%d/%Y %H:%M:%S')}, skipping and imputing data."
-        )
-
-    def _loading_cache_error_msg(self, path, e):
-        return(
-            f"📖❗ "
-            f"Error occurred while attempting to load cache from "
-            f"'{path}', exiting.\n"
-            f"\tError raised: {e}"
-        )
-
     ### NOTE: Utilities, helper methods
 
     def _realigned_date_range(self, start_date, end_date):
@@ -351,5 +439,54 @@ class GOESData:
         x, y = data.shape
         return np.count_nonzero(~np.isnan(data)) / (x * y) >= threshold
 
-    def _use_prev_frame(self, data, dim):
+    def _use_prev_frame(self, data, dim, date, verbose):
+        if verbose: tqdm.write(self._use_prev_frame_msg(date))
         return data[-1] if len(data) > 0 else np.zeros((dim, dim))
+
+    ### NOTE: Error message strings/strings that are long
+
+    def _unhandled_error_msg(self, date, e):
+        return(
+            f"🤷⁉️  Unhandled error occurred while ingesting "
+            f"on {date.strftime('%m/%d/%Y %H:%M:%S')}.\n"
+            f"Error raised: {e}"
+        )
+
+    def _filenotfound_error_msg(self, start, end):
+        return(
+            f"🛰️ 🪦 "
+            f"Outage on {start.strftime('%m/%d/%Y %H:%M:%S')} to "
+            f"{end.strftime('%m/%d/%Y %H:%M:%S')}, skipping and imputing data."
+        )
+
+    def _loading_cache_error_msg(self, path, e):
+        return(
+            f"📖❗ "
+            f"Error occurred while attempting to load cache from "
+            f"'{path}', exiting.\n"
+            f"\tError raised: {e}"
+        )
+
+    def _decode_times_error_msg(self, start_date, end_date, e):
+        return(
+            f"⌚  Error while processing files on "
+            f"{start_date.strftime('%m/%d/%Y %H:%M')}-"
+            f"{end_date.strftime('%H:%M')}, likely due to time decoding:\n"
+            f"\t{e}\n"
+            f"🤔  Attempting to reread with decode_times=False..."
+        )
+
+    def _use_prev_frame_msg(self, date):
+        return(
+            "🚮 Data either doesn't meet threshold for real values or is "
+            f"night on {date.strftime('%m/%d/%Y %H:%M')}; "
+            "imputing with zeroes/using previous frame."
+        )
+
+    def _outages_msg(outages):
+        return(
+            f"🛰️ 🪦 {outages} outage(s) reported; "
+            f"skipping ingest on affected dates. "
+            f"These dates will be imputed using previous frames."
+        )
+
