@@ -22,8 +22,10 @@ class GOESData:
         end_date="2025-01-10 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
-        save_dir=None,
-        cache_path=None,
+        save_dir=None,      # where nc4 files should be saved to
+        cache_path=None,    # location where to save or load cache data
+        load_cache=False,   # determines if data should be loaded from cache_dir
+        save_cache=True,    # determines if data should be read to cache_dir
         verbose=False,
     ):
         """
@@ -35,19 +37,20 @@ class GOESData:
             5. Resize dimensions
             6. Interpolate data gaps
         """
-        if cache_path is not None:
-            self.data = self._load_cached_data(cache_path)
+        if cache_path is not None and load_cache:
+            self.data = self._load_cache_data(cache_path)
             return
+
+        self._download_dataset(start_date, end_date, save_dir, verbose)
 
         # define for one-time calculation of reprojected spatial resolution
         res_x, res_y = None, None
-
         self.data = []
         prog_bar = tqdm(self._realigned_date_range(start_date, end_date))
         for date in prog_bar:
             try:
                 prog_bar.set_description(
-                    f"Retrieving data for {date.strftime('%m/%d/%Y %H:%M')}" 
+                    f"Retrieving data for {date.strftime('%m/%d/%Y %H:%M')}    " 
                 )
                 ds = self._ingest_dataset(
                     start_date=date, 
@@ -56,12 +59,15 @@ class GOESData:
                     verbose=verbose
                 )
                 prog_bar.set_description(
-                    f"Processing data for {date.strftime('%m/%d/%Y %H:%M')}" 
+                    f"Preprocessing data for {date.strftime('%m/%d/%Y %H:%M')} " 
                 )
                 ds = self._compute_high_quality_mean_aod(ds)
                 ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
                 gridded_data = self._subregion(ds, extent).data
                 gridded_data = cv2.resize(gridded_data, (dim, dim))
+                prog_bar.set_description(
+                    f"Interpolating data for {date.strftime('%m/%d/%Y %H:%M')} " 
+                )
                 gridded_data = (
                     interpolate_frame(gridded_data, dim, interp_flag=np.nan)
                     if self._data_meets_nonnan_threshold(gridded_data, 0.20)
@@ -79,12 +85,22 @@ class GOESData:
                 f"Completed data for {date.strftime('%m/%d/%Y %H:%M')} " 
             )
             self.data.append(gridded_data)
+        
+        self.data = np.array(self.data)
+        if cache_path is not None and save_cache:
+            np.savez_compressed(
+                cache_path,
+                data=self.data,
+                start_date=start_date,
+                end_date=end_date,
+                extent=extent
+            )
 
     ### NOTE: Methods for handling the cache
 
-    def _load_cached_data(self, cache_path):
+    def _load_cache_data(self, cache_path):
         """
-        Loads cached data.
+        Loads cache data.
         """
         try:
             cached_data = np.load(cache_path)
@@ -92,7 +108,7 @@ class GOESData:
             print(self._loading_cache_error_msg(cache_path, e))
             cached_data = None
 
-        return cached_data
+        return cached_data['data']
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
@@ -125,10 +141,49 @@ class GOESData:
                 with redirect_stdout(io.StringIO()):
                     ds = goes_timerange(**default_kwargs)
         except FileNotFoundError:
-            tqdm.write(self._filenotfound_error_msg(start_date, end_date))
             raise
 
         return ds
+
+    def _download_dataset(self, start_date, end_date, save_dir, verbose):
+        """
+        Strictly responsible for downloading the dataset
+        This is different from ingest in that it tracks the ingest itself
+            with a progress bar and error messages
+        """
+        outages = 0
+        prog_bar = tqdm(self._realigned_date_range(start_date, end_date))
+        for date in prog_bar:
+            try:
+                prog_bar.set_description(
+                    f"Downloading data for {date.strftime('%m/%d/%Y %H:%M')} " 
+                )
+                ds = self._ingest_dataset(
+                    start_date=date, 
+                    end_date=date + pd.Timedelta(minutes=59, seconds=59), 
+                    save_dir=save_dir,
+                    verbose=verbose
+                )
+            except FileNotFoundError:
+                # file not found in aws; just ignore since this is just ingest 
+                if verbose:
+                    tqdm.write(
+                        self._filenotfound_error_msg(start_date, end_date)
+                    )
+                outages += 1
+            except Exception as e:
+                # generic message, default to empty frame
+                tqdm.write(self._unhandled_error_msg(start, end, e))
+            prog_bar.set_description(
+                f"Completed ingest for {date.strftime('%m/%d/%Y %H:%M')} " 
+            )
+
+        if outages > 0:
+            print(
+                f"🛰️ 🪦 {outages} outage(s) reported; "
+                f"skipping ingest on affected dates. "
+                f"These dates will be imputed using previous frames."
+            )
 
     def _subregion(self, ds, extent):
         """
@@ -259,7 +314,7 @@ class GOESData:
         return(
             f"🛰️ 🪦 "
             f"Outage on {start.strftime('%m/%d/%Y %H:%M:%S')} to "
-            f"{end.strftime('%m/%d/%Y %H:%M:%S')}, imputing data."
+            f"{end.strftime('%m/%d/%Y %H:%M:%S')}, skipping and imputing data."
         )
 
     def _loading_cache_error_msg(self, path, e):
