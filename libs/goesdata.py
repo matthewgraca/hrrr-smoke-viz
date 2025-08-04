@@ -8,12 +8,7 @@ import io
 from contextlib import redirect_stdout
 from pyproj import Geod
 from tqdm import tqdm 
-
-#TODO figure out how to import this util funciton without this
-import sys
-sys.path.append('/home/mgraca/Workspace/hrrr-smoke-viz/libs')
-sys.path.append('/home/mgraca/Workspace/hrrr-smoke-viz')
-from pwwb.utils.interpolation import interpolate_frame
+from libs.pwwb.utils.interpolation import interpolate_frame
 
 class GOESData:
     def __init__(
@@ -56,7 +51,8 @@ class GOESData:
                     start_date=date, 
                     end_date=date + pd.Timedelta(minutes=59, seconds=59), 
                     save_dir=save_dir,
-                    verbose=verbose
+                    verbose=verbose,
+                    load=True
                 )
                 prog_bar.set_description(
                     f"Preprocessing data for {date.strftime('%m/%d/%Y %H:%M')} " 
@@ -112,7 +108,14 @@ class GOESData:
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
-    def _ingest_dataset(self, start_date, end_date, save_dir, verbose):
+    def _ingest_dataset(
+        self, 
+        start_date, 
+        end_date, 
+        save_dir, 
+        verbose, 
+        load    # load as dataset or not. toggle off if only downloading.
+    ):
         """
         Ingests the GOES data; expects a date range, not one timestamp.
         Also performs a preliminary preprocessing step of converting coordinates
@@ -126,10 +129,10 @@ class GOESData:
             'end' : end_date,
             'satellite': 'goes18',
             'product': 'ABI-L2-AODC',
-            'return_as': 'xarray',
+            'return_as': 'xarray' if load else 'filelist',
             'max_cpus': 12,
             'verbose' : False,
-            'ignore_missing' : False
+            'ignore_missing' : False,
         }
         if save_dir is not None:
             default_kwargs['save_dir'] = save_dir
@@ -162,7 +165,8 @@ class GOESData:
                     start_date=date, 
                     end_date=date + pd.Timedelta(minutes=59, seconds=59), 
                     save_dir=save_dir,
-                    verbose=verbose
+                    verbose=verbose,
+                    load=False
                 )
             except FileNotFoundError:
                 # file not found in aws; just ignore since this is just ingest 
