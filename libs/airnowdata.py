@@ -136,12 +136,12 @@ class AirNowData:
         if not list_df:
             raise ValueError("No valid AirNow data available.")
         
-        print("Processing AirNow data with IDW interpolation (this may take time)...")    
+        print("Processing ground sites and imputing dead sensors and outliers...")
         ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in tqdm(list_df)]
         # preprocess ground sites initializes air_sens_loc, so it should be usable here.
         ground_site_grids = self._impute_ground_site_grids(ground_site_grids, self.air_sens_loc)
         
-        print(f"Interpolating {len(ground_site_grids)} frames...")
+        print(f"Performing IDW interpolation on {len(ground_site_grids)} frames...")
         interpolated_grids = [
             self._interpolate_frame(frame, use_variable_blur) 
             for frame in tqdm(ground_site_grids)
@@ -614,23 +614,39 @@ class AirNowData:
         as long as blur is possible, we shouldn't use IDW as targets (unless the 
         interpolated frame itself becomes the target we want to predict)
         """
+        # replace dead sensors and outliers with nan
         imputed_ground_sites = np.array(ground_sites)
+        for x, y in air_sens_loc.values():
+            sensor_vals = imputed_ground_sites[:, x, y]
+            sensor_vals = self._replace_dead_sensors_with_nan(sensor_vals)
+            sensor_vals = self._replace_outliers_with_nan(sensor_vals)
+            imputed_ground_sites[:, x, y] = sensor_vals
 
         # get closest sensors to each station
         sensor_to_closest_stations = self._get_closest_stations_to_each_sensor(
             air_sens_loc
         )
 
+        # pick from closest 3 non-nans 
         loc_to_sensor = {v : k for k, v in air_sens_loc.items()}
-        # pick from top 3 nonzero
         for frame in imputed_ground_sites:
             for x, y in air_sens_loc.values():
-                if frame[x, y] == 0:
+                if np.isnan(frame[x, y]):
                     closest_loc_to_xy = sensor_to_closest_stations[loc_to_sensor[(x, y)]]
                     sensor_data = np.array([frame[a, b] for a, b in closest_loc_to_xy])
-                    frame[x, y] = np.mean(sensor_data[sensor_data != 0][:3])
+                    frame[x, y] = np.mean(sensor_data[~np.isnan(sensor_data)][:3])
 
         return imputed_ground_sites
+
+    def _replace_outliers_with_nan(self, data, max_z_score=3):
+        return np.where(
+            abs(data - np.nanmean(data)) < max_z_score * np.nanstd(data),
+            data,
+            np.nan,
+        )
+
+    def _replace_dead_sensors_with_nan(self, data):
+        return np.where(data == 0, np.nan, data)
 
     def _get_closest_stations_to_each_sensor(self, air_sens_loc):
         return {
