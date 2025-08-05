@@ -44,7 +44,9 @@ class AirNowData:
         sensor_whitelist=None,
         use_whitelist=False,
         force_reprocess=False,
-        use_variable_blur=False,
+        use_interpolation=True, # determines if interpolation should be run
+        use_imputation=True,    # determines if outliers/dead values are imputed
+        use_variable_blur=False,# determines if variable blur is used after interpolation
         chunk_days=30
     ):
         self.air_sens_loc = {}
@@ -138,14 +140,23 @@ class AirNowData:
         
         print("Processing ground sites and imputing dead sensors and outliers...")
         ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in tqdm(list_df)]
-        # preprocess ground sites initializes air_sens_loc, so it should be usable here.
-        ground_site_grids = self._impute_ground_site_grids(ground_site_grids, self.air_sens_loc)
+        if not use_imputation:
+            print("Imputation disabled. Dead sensors and outliers will be kept in the data.")
+        else:
+            # preprocess ground sites initializes air_sens_loc, so it should be usable here.
+            # this is why i hate using self, object state can change in any function...
+            ground_site_grids = self._impute_ground_site_grids(ground_site_grids, self.air_sens_loc)
         
         print(f"Performing IDW interpolation on {len(ground_site_grids)} frames...")
-        interpolated_grids = [
-            self._interpolate_frame(frame, use_variable_blur) 
-            for frame in tqdm(ground_site_grids)
-        ]
+        if not use_interpolation:
+            print("Interpolation disabled. Grids will be returned as-is with sensor data.")
+        interpolated_grids = (
+            ground_site_grids if not use_interpolation
+            else [
+                self._interpolate_frame(frame, use_variable_blur) 
+                for frame in tqdm(ground_site_grids)
+            ]
+        )
         
         frames = np.expand_dims(np.array(interpolated_grids), axis=-1)
         processed_ds = self._sliding_window_of(frames, frames_per_sample)
