@@ -1,6 +1,10 @@
 import unittest
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from libs.pwwb.utils.dataset import sliding_window 
+from libs.pwwb.utils.dataset import PWWBPyDataset
 import numpy as np
+import math
 
 class TestUtils(unittest.TestCase):
     def test_targets_are_n_samples_from_training(self):
@@ -44,3 +48,32 @@ class TestUtils(unittest.TestCase):
             )),
             msg
         )
+
+class TestPWWBPyDataset(unittest.TestCase):
+    def test_sequence_length_matches_data_batches(self):
+        X_paths = [
+            "tests/utils/data/dummy_channel_1.npy",
+            "tests/utils/data/dummy_channel_2.npy"
+        ]
+        y_path = "tests/utils/data/dummy_label.npy"
+        batch_size = 4
+        generator = PWWBPyDataset(X_paths, y_path, batch_size)
+        actual = len(generator)
+
+        a = np.load("tests/utils/data/dummy_channel_1.npy")
+        expected = math.ceil(len(a) / batch_size)
+
+        msg = f"Sequence length doesn't match batched data size."
+        self.assertEqual(expected, actual, msg)
+
+    def test_assert_raised_when_channels_dont_match(self):
+        X_paths = [
+            "tests/utils/data/dummy_channel_1.npy",
+            "tests/utils/data/dummy_channel_2.npy",
+            "tests/utils/data/dummy_channel_3.npy"
+        ]
+        y_path = "tests/utils/data/dummy_label.npy"
+        batch_size = 4
+
+        with self.assertRaises(AssertionError):
+            PWWBPyDataset(X_paths, y_path, batch_size)
