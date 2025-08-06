@@ -5,6 +5,7 @@ import pandas as pd
 import rioxarray
 import cv2
 import io
+import os
 from contextlib import redirect_stdout
 from pyproj import Geod
 from tqdm import tqdm 
@@ -12,6 +13,7 @@ import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from libs.pwwb.utils.interpolation import interpolate_frame
+from libs.pwwb.utils.dataset import sliding_window
 
 class GOESData:
     def __init__(
@@ -20,11 +22,13 @@ class GOESData:
         end_date="2025-01-10 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
+        frames_per_sample=5,
         save_dir=None,      # where nc4 files should be saved to
         cache_path=None,    # location where to save or load cache data
         load_cache=False,   # determines if data should be loaded from cache_dir
         save_cache=True,    # determines if data should be read to cache_dir
         verbose=False,
+        pre_downloaded=False,   # set to True if user already dl'd from aws
     ):
         """
         Pipeline:
@@ -34,39 +38,59 @@ class GOESData:
             4. Subregion data to exent
             5. Resize dimensions
             6. Interpolate data gaps
+
+        On save_dir, save_cache, load_cache, save_cache:
+            - save_dir is just where the nc files will be saved, NOT the cache 
+            - cache_path is where the numpy data file lives
+            - save_cache/load_cache tells us if we should save/read the data
+                from cache_path
+
+        On pre_downloaded:
+            - We split the download and the reading of the data into two 
+                discrete steps. Both of these steps load data into memory;
+                but if you've downloaded the data already, you don't need
+                the first step.
+            - It's worth setting this flag to True if you already have 
+                downloaded the data; for reference, just verifying the 
+                ingest takes 36 minutes of compute due to disk read/write 
         """
-        if cache_path is not None and load_cache:
+        # validate parameters
+        if save_cache or load_cache:
+            self._validate_cache_path(save_cache, load_cache, cache_path)
+
+        if load_cache:
             self.data = self._load_cache_data(cache_path)
             return
 
-        self._download_dataset(start_date, end_date, save_dir, verbose)
+        if not pre_downloaded:
+            self._download_dataset(start_date, end_date, save_dir, verbose)
 
         # define for one-time calculation of reprojected spatial resolution
         res_x, res_y = None, None
         self.data = []
         prog_bar = tqdm(self._realigned_date_range(start_date, end_date))
+        outages = 0
+        errors = 0
         for date in prog_bar:
             try:
                 prog_bar.set_description(
-                    f"Retrieving data for {date.strftime('%m/%d/%Y %H:%M')}    " 
+                    f"Retrieving data for {date.strftime('%m/%d/%Y %H:%M')} " 
                 )
                 ds = self._ingest_dataset(
                     start_date=date, 
                     end_date=date + pd.Timedelta(minutes=59, seconds=59), 
                     save_dir=save_dir,
                     verbose=verbose,
-                    load=True
+                    load=True,
+                    download=False,
                 )
                 prog_bar.set_description(
-                    f"Preprocessing data for {date.strftime('%m/%d/%Y %H:%M')} " 
+                    f"Processing data for {date.strftime('%m/%d/%Y %H:%M')} " 
                 )
                 ds = self._compute_high_quality_mean_aod(ds)
                 ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
                 gridded_data = self._subregion(ds, extent).data
                 gridded_data = cv2.resize(gridded_data, (dim, dim))
-                prog_bar.set_description(
-                    f"Interpolating data for {date.strftime('%m/%d/%Y %H:%M')} " 
-                )
                 gridded_data = (
                     interpolate_frame(gridded_data, dim, interp_flag=np.nan)
                     if self._data_meets_nonnan_threshold(gridded_data, 0.20)
@@ -74,30 +98,29 @@ class GOESData:
                 )
             except FileNotFoundError:
                 # file not found in aws, i.e. satellite outage; use prev frame
-                gridded_data = self._use_prev_frame(self.data, dim)
+                outages += 1
+                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
             except Exception as e:
-                # generic message, default to empty frame
-                # unhandled excpetions always print through verbose level
-                df = self._ingest_dataset(
-                    start_date=date, 
-                    end_date=date + pd.Timedelta(minutes=59, seconds=59), 
-                    save_dir=save_dir,
-                    verbose=verbose,
-                    load=False
-                )
+                # generic message, default to prev frame
+                # unknown errors should print thru verbose level
+                errors += 1
                 tqdm.write(self._unhandled_error_msg(date, e))
-                pd.set_option('display.max_colwidth', None)
-                tqdm.write(f"Offending files: \n{df.file}")
-                tqdm.write("Imputing with empty frame.")
-                gridded_data = np.zeros((dim, dim))
+                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
 
             prog_bar.set_description(
                 f"Completed data for {date.strftime('%m/%d/%Y %H:%M')} " 
             )
+            
             self.data.append(gridded_data)
         
         self.data = np.array(self.data)
+        self.data, _ = sliding_window(self.data, frames_per_sample)
+
+        if outages > 0: print(f"🛰️ 🪦 {outages} outage(s) imputed.")
+        if errors > 0: print(f"🤷⁉️  {errors} error(s) imputed.")
+
         if cache_path is not None and save_cache:
+            print("💾 Saving data to {cache_path}...", end=" ")
             np.savez_compressed(
                 cache_path,
                 data=self.data,
@@ -105,6 +128,7 @@ class GOESData:
                 end_date=end_date,
                 extent=extent
             )
+            print("✅ Complete!")
 
     ### NOTE: Methods for handling the cache
 
@@ -120,6 +144,26 @@ class GOESData:
 
         return cached_data['data']
 
+    def _validate_cache_path(self, save_cache, load_cache, cache_path):
+        """
+        Raises ValueErrors if the params don't agree
+        """
+        msg = (
+            "In order to load from or save to cache, a cache path must be "
+            "provided. "
+            "Either set `load_cache` and `save_cache` to False to "
+            "prevent cache loading/saving, or provide a valid `cache_path`."
+        )
+        if cache_path is None:
+            raise ValueError(f"Cache path is None. {msg}")
+        # we won't make the save directories for you
+        if save_cache and not os.path.isdir(os.path.dirname(cache_path)):
+            raise ValueError(f"Directory does not exist.")
+        # only check if cache exists loading, b/c it will be made when saving
+        if load_cache and not os.path.exists(cache_path):
+            raise ValueError(f"Cache path does not exist. {msg}")
+        return True
+
     ### NOTE: Methods for ingesting and preprocessing the data
 
     def _ingest_dataset(
@@ -128,7 +172,8 @@ class GOESData:
         end_date, 
         save_dir, 
         verbose, 
-        load    # load as dataset or not. toggle off if only downloading.
+        load,    # load as dataset or not. toggle off if only downloading.
+        download=True
     ):
         """
         Ingests the GOES data; expects a date range, not one timestamp.
@@ -147,6 +192,7 @@ class GOESData:
             'max_cpus': None,
             'verbose' : False,
             'ignore_missing' : False,
+            'download' : download,
         }
         if save_dir is not None:
             default_kwargs['save_dir'] = save_dir
@@ -483,7 +529,7 @@ class GOESData:
             "imputing with zeroes/using previous frame."
         )
 
-    def _outages_msg(outages):
+    def _outages_msg(self, outages):
         return(
             f"🛰️ 🪦 {outages} outage(s) reported; "
             f"skipping ingest on affected dates. "
