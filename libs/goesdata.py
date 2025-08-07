@@ -26,7 +26,7 @@ class GOESData:
         save_dir=None,      # where nc4 files should be saved to
         cache_path=None,    # location where to save or load cache data
         load_cache=False,   # determines if data should be loaded from cache_dir
-        save_cache=True,    # determines if data should be read to cache_dir
+        save_cache=True,    # determines if data should be written to cache_dir
         verbose=False,
         pre_downloaded=False,   # set to True if user already dl'd from aws
     ):
@@ -110,7 +110,9 @@ class GOESData:
         )
 
         if cache_path is not None and save_cache:
-            self._save_to_cache(cache_path, data, start_date, end_date, extent)
+            self._save_to_cache(
+                cache_path, self.data, start_date, end_date, extent
+            )
 
     ### NOTE: Methods for handling the cache
 
@@ -131,7 +133,7 @@ class GOESData:
         return cached_data
     
     def _save_to_cache(self, cache_path, data, start_date, end_date, extent):
-        print("💾 Saving data to {cache_path}...", end=" ")
+        print(f"💾 Saving data to {cache_path}...", end=" ")
         np.savez_compressed(
             cache_path,
             data=self.data,
