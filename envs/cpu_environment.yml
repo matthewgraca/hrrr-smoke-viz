@@ -10,7 +10,7 @@ dependencies:
   - conda-forge::opencv
   - conda-forge::notebook
   - conda-forge::sqlite[version='>=3.45']
-  - matplotlib==3.8.4
+  - matplotlib==3.10.0
   - conda-forge::scikit-image
   - conda-forge::gdal
   - conda-forge::python-dotenv
