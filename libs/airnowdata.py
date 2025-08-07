@@ -650,8 +650,12 @@ class AirNowData:
         return imputed_ground_sites
 
     def _replace_outliers_with_nan(self, data, max_z_score=3):
+        """
+        If all data is just nan, then the mean will also be nan and 
+        a runtime warning will pop up.
+        """
         return np.where(
-            abs(data - np.nanmean(data)) < max_z_score * np.nanstd(data),
+            abs(data - np.nanmean(data)) <= max_z_score * np.nanstd(data),
             data,
             np.nan,
         )
