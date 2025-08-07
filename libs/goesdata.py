@@ -38,6 +38,8 @@ class GOESData:
             4. Subregion data to exent
             5. Resize dimensions
             6. Interpolate data gaps
+            7. Apply sliding window to frames
+            8. Save to cache (if enabled)
 
         On save_dir, save_cache, load_cache, save_cache:
             - save_dir is just where the nc files will be saved, NOT the cache 
@@ -59,7 +61,8 @@ class GOESData:
             self._validate_cache_path(save_cache, load_cache, cache_path)
 
         if load_cache:
-            self.data = self._load_cache_data(cache_path)
+            cache_data = self._load_cache(cache_path)
+            self.data = cache_data['data'] 
             return
 
         if not pre_downloaded:
@@ -67,82 +70,78 @@ class GOESData:
 
         # define for one-time calculation of reprojected spatial resolution
         res_x, res_y = None, None
+        outages, errors = 0, 0
         self.data = []
         prog_bar = tqdm(self._realigned_date_range(start_date, end_date))
-        outages = 0
-        errors = 0
         for date in prog_bar:
             try:
-                prog_bar.set_description(
-                    f"Retrieving data for {date.strftime('%m/%d/%Y %H:%M')} " 
-                )
+                # ingest
+                prog_bar.set_description(self._retrieve_data_str(date))
+                start, end = date, date + pd.Timedelta(minutes=59, seconds=59)
                 ds = self._ingest_dataset(
-                    start_date=date, 
-                    end_date=date + pd.Timedelta(minutes=59, seconds=59), 
-                    save_dir=save_dir,
-                    verbose=verbose,
-                    load=True,
-                    download=False,
+                    start, end, save_dir, verbose, load=True
                 )
-                prog_bar.set_description(
-                    f"Processing data for {date.strftime('%m/%d/%Y %H:%M')} " 
-                )
-                ds = self._compute_high_quality_mean_aod(ds)
-                ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
-                gridded_data = self._subregion(ds, extent).data
-                gridded_data = cv2.resize(gridded_data, (dim, dim))
-                gridded_data = (
-                    interpolate_frame(gridded_data, dim, interp_flag=np.nan)
-                    if self._data_meets_nonnan_threshold(gridded_data, 0.20)
-                    else self._use_prev_frame(self.data, dim, date, verbose)
+                # process dataset -> gridded data
+                prog_bar.set_description(self._process_data_str(date))
+                ds, res_x, res_y = self._process_ds(ds, extent, res_x, res_y)
+                gridded_data = self._ds_to_gridded_data(
+                    ds, extent, dim, date, verbose
                 )
             except FileNotFoundError:
                 # file not found in aws, i.e. satellite outage; use prev frame
                 outages += 1
                 gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
             except Exception as e:
-                # generic message, default to prev frame
+                # generic message, default to prev frame. usually corrupt data
                 # unknown errors should print thru verbose level
                 errors += 1
                 tqdm.write(self._unhandled_error_msg(date, e))
                 gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
 
-            prog_bar.set_description(
-                f"Completed data for {date.strftime('%m/%d/%Y %H:%M')} " 
-            )
-            
+            prog_bar.set_description(self._complete_ingest_str(date))
             self.data.append(gridded_data)
         
-        self.data = np.array(self.data)
-        self.data, _ = sliding_window(self.data, frames_per_sample)
-
         if outages > 0: print(f"🛰️ 🪦 {outages} outage(s) imputed.")
         if errors > 0: print(f"🤷⁉️  {errors} error(s) imputed.")
 
+        self.data, _ = sliding_window(
+            np.expand_dims(np.array(self.data), -1),
+            frames_per_sample
+        )
+
         if cache_path is not None and save_cache:
-            print("💾 Saving data to {cache_path}...", end=" ")
-            np.savez_compressed(
-                cache_path,
-                data=self.data,
-                start_date=start_date,
-                end_date=end_date,
-                extent=extent
-            )
-            print("✅ Complete!")
+            self._save_to_cache(cache_path, data, start_date, end_date, extent)
 
     ### NOTE: Methods for handling the cache
 
-    def _load_cache_data(self, cache_path):
+    def _load_cache(self, cache_path):
         """
         Loads cache data.
         """
-        try:
-            cached_data = np.load(cache_path)
-        except Exception as e:
-            print(self._loading_cache_error_msg(cache_path, e))
-            cached_data = None
+        print(f"📂 Loading data from {cache_path}...", end=" ")
+        cached_data = np.load(cache_path)
 
-        return cached_data['data']
+        # ensure data can be loaded
+        data = cached_data['data']
+        start_date = cached_data['start_date']
+        end_date = cached_data['end_date']
+        extent = cached_data['extent']
+        print(f"✅ Completed!")
+
+        return cached_data
+    
+    def _save_to_cache(self, cache_path, data, start_date, end_date, extent):
+        print("💾 Saving data to {cache_path}...", end=" ")
+        np.savez_compressed(
+            cache_path,
+            data=self.data,
+            start_date=start_date,
+            end_date=end_date,
+            extent=extent
+        )
+        print("✅ Complete!")
+
+        return
 
     def _validate_cache_path(self, save_cache, load_cache, cache_path):
         """
@@ -173,7 +172,6 @@ class GOESData:
         save_dir, 
         verbose, 
         load,    # load as dataset or not. toggle off if only downloading.
-        download=True
     ):
         """
         Ingests the GOES data; expects a date range, not one timestamp.
@@ -192,7 +190,6 @@ class GOESData:
             'max_cpus': None,
             'verbose' : False,
             'ignore_missing' : False,
-            'download' : download,
         }
         if save_dir is not None:
             default_kwargs['save_dir'] = save_dir
@@ -220,6 +217,40 @@ class GOESData:
             if verbose: tqdm.write(f"🍾  Reread success!")
 
         return ds
+
+    def _ds_to_gridded_data(self, ds, extent, dim, date, verbose):
+        """
+        Aliases the pipeline of converting the processed dataset into gridded
+            data.
+        1. Subregions dataset
+        2. Resizes to given dimensions
+        3. Interpolation/imputation of bad data
+        """
+        gridded_data = self._subregion(ds, extent).data
+        gridded_data = cv2.resize(gridded_data, (dim, dim))
+        gridded_data = (
+            interpolate_frame(gridded_data, dim, interp_flag=np.nan)
+            if self._data_meets_nonnan_threshold(gridded_data, 0.20)
+            else self._use_prev_frame(self.data, dim, date, verbose)
+        )
+        
+        return gridded_data
+
+    def _process_ds(self, ds, extent, res_x, res_y):
+        """
+        Aliases the pipeline of converting the raw dataset into a dataset 
+            that can be directly converted to gridded data
+        1. Compute high quality mean AOD across time
+        2. Reproject the dataset to Plate Carree (equirectangular)
+
+        Also returns the resolution (x, y) of each pixel. We do this because
+            we only actually need to compute it once; its set so that if 
+            res_x and res_y are not None, they pass through; else they 
+            are computed and returned.
+        """
+        ds = self._compute_high_quality_mean_aod(ds)
+        ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
+        return ds, res_x, res_y
 
     # NOTE df->xarray methods courtesy of Brian Blaylock.
     '''
@@ -505,14 +536,6 @@ class GOESData:
             f"{end.strftime('%m/%d/%Y %H:%M:%S')}, skipping and imputing data."
         )
 
-    def _loading_cache_error_msg(self, path, e):
-        return(
-            f"📖❗ "
-            f"Error occurred while attempting to load cache from "
-            f"'{path}', exiting.\n"
-            f"\tError raised: {e}"
-        )
-
     def _decode_times_error_msg(self, start_date, end_date, e):
         return(
             f"⌚  Error while processing files on "
@@ -536,3 +559,11 @@ class GOESData:
             f"These dates will be imputed using previous frames."
         )
 
+    def _retrieve_data_str(self, date):
+        return f"Retrieving data for {date.strftime('%m/%d/%Y %H:%M')} " 
+
+    def _process_data_str(self, date):
+        return f"Processing data for {date.strftime('%m/%d/%Y %H:%M')} " 
+
+    def _complete_ingest_str(self, date):
+        return f"Completed data for {date.strftime('%m/%d/%Y %H:%M')} " 
