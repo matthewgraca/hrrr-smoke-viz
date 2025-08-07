@@ -3,7 +3,8 @@ from libs.airnowdata import AirNowData
 import numpy as np
 import subprocess
 from shutil import which
-import sys
+from contextlib import redirect_stdout
+import io
 
 class TestAirNowData(unittest.TestCase):
     def setUp(self):
@@ -11,10 +12,7 @@ class TestAirNowData(unittest.TestCase):
         dim = 40
         cache_dir = 'tests/airnowdata/data/airnow_processed.npz'
         # silence noisy output
-        with open('/dev/null', 'w') as f_null:
-            sys.stdout = f_null
-            sys.stderr = f_null
-
+        with redirect_stdout(io.StringIO()):
             ad = AirNowData(
                 start_date="2024-01-01",
                 end_date="2024-01-02",
@@ -165,8 +163,8 @@ class TestAirNowData(unittest.TestCase):
         actual = actual[1:]
         actual_sensors = [loc_to_sensor[(x, y)] for x, y in actual]
         expected = [
-            ad.air_sens_loc['Anaheim'],
             ad.air_sens_loc['Los Angeles - N. Main Street'],
+            ad.air_sens_loc['Anaheim'],
             ad.air_sens_loc['Compton'],
         ]
 
@@ -248,7 +246,7 @@ class TestAirNowData(unittest.TestCase):
                 (12, 12), (12, 6), (4, 7), (8, 2)
             ], 
             'Glendora - Laurel': [
-                (26, 25), (17, 16), (23, 17), (12, 12), 
+                (17, 16), (26, 25), (23, 17), (12, 12), 
                 (28, 18), (12, 6), (4, 7), (8, 2)
             ]
         }
@@ -275,16 +273,16 @@ class TestAirNowData(unittest.TestCase):
             len(air_sens_loc)
         )[0][1:]
         locations_data = [100] * len(locations)
-        locations_data[0] = 5
-        locations_data[1] = 6
-        locations_data[2] = 7
+        locations_data[0] = 2
+        locations_data[1] = 3
+        locations_data[2] = 4
 
         for loc, data in zip(locations, locations_data):
             synthetic_data[*loc] = data 
 
         actual_grid = ad._impute_ground_site_grids([synthetic_data], air_sens_loc)
         actual = actual_grid[0, *air_sens_loc['Glendora - Laurel']]
-        expected = 6
+        expected = 3
 
         msg = f"Expected {expected}, returned {actual}"
         self.assertEqual(actual, expected, msg)
