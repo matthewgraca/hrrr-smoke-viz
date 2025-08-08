@@ -222,7 +222,7 @@ class PWWBData:
                 timestamps=self.timestamps,
                 extent=self.extent,
                 dim=self.dim,
-                elevation_path="../inputs/elevation.npy",
+                elevation_path="../../libs/inputs/elevation.npy",
                 cache_dir=self.cache_dir,
                 cache_prefix=self.cache_prefix,
                 use_cached_data=self.use_cached_data,
