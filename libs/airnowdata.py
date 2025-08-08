@@ -159,7 +159,7 @@ class AirNowData:
             ]
         )
         
-        self.data, self.target_stations = sliding_window(
+        self.data, gridded_target_data = sliding_window(
             data=np.expand_dims(np.array(interpolated_grids), axis=-1),
             frames=frames_per_sample,
             compute_targets=True
@@ -168,6 +168,9 @@ class AirNowData:
         self.ground_site_grids = ground_site_grids
         
         if self.air_sens_loc:
+            self.target_stations = self._get_sensor_vals_from_gridded_data(
+                gridded_target_data, self.air_sens_loc 
+            )
             self.sensor_names = list(self.air_sens_loc.keys())
         else:
             self.target_stations = None
@@ -806,6 +809,33 @@ class AirNowData:
             out = out_masked
         
         return out
+
+    def _get_sensor_vals_from_gridded_data(self, gridded_data, sensor_locations):
+        """
+        Extracts the sensor values from gridded data.
+
+        Assumes the data to be in the shape:
+            (n_samples, n_frames, xdim, ydim, channels)
+        """
+        n_samples, n_frames, xdim, ydim, channel = gridded_data.shape
+        n_sensors = len(sensor_locations)
+
+        if n_sensors == 0:
+            raise ValueError("No sensor locations available to generate target stations")
+
+        s = []
+        for sample in np.squeeze(gridded_data):
+            f = []
+            for frame in sample:
+                t = []
+                for sensor, (loc, coords) in enumerate(sensor_locations.items()):
+                    x, y = coords
+                    sensor_val = frame[x, y]
+                    t.append(sensor_val)
+                f.append(t)
+            s.append(f)
+
+        return np.array(s)
 
     def _grid_to_latlon(self, x, y):
         """Convert grid coordinates to latitude/longitude."""
