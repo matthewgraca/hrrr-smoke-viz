@@ -12,6 +12,7 @@ from matplotlib.colors import LinearSegmentedColormap
 import time
 from datetime import datetime
 from tqdm import tqdm 
+from libs.pwwb.utils.dataset import sliding_window
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -158,18 +159,15 @@ class AirNowData:
             ]
         )
         
-        frames = np.expand_dims(np.array(interpolated_grids), axis=-1)
-        processed_ds = self._sliding_window_of(frames, frames_per_sample)
+        self.data, self.target_stations = sliding_window(
+            data=np.expand_dims(np.array(interpolated_grids), axis=-1),
+            frames=frames_per_sample,
+            compute_targets=True
+        )
 
-        self.data = processed_ds
         self.ground_site_grids = ground_site_grids
         
         if self.air_sens_loc:
-            self.target_stations = self._get_target_stations(
-                self.data, 
-                self.ground_site_grids, 
-                self.air_sens_loc
-            )
             self.sensor_names = list(self.air_sens_loc.keys())
         else:
             self.target_stations = None
@@ -808,64 +806,6 @@ class AirNowData:
             out = out_masked
         
         return out
-
-    def _sliding_window_of(self, frames, frames_per_sample, target=False):
-        """
-        Create sliding window samples from frames.
-
-        Expects frames to have the total number of frames in the first dimension
-            e.g (n_frames, ..., )
-        This way, we can accomodate differently shaped containers
-            e.g. 
-                - (n_frames, row, col, channels)
-                - (n_frames, sensors)
-        Output Adds a sample based on frames per sample, e.g.:
-            - (n_frames, sensors) -> (samples, frames_per_sample, sensors)
-            - (n_frames, r, c, ch) -> (samples, frames_per_sample, r, c, ch)
-        """
-        n_frames = frames.shape[0]
-        n_samples = max(1, n_frames - frames_per_sample + 1)
-        out_shape = (n_samples, frames_per_sample) + frames.shape[1:]
-        samples = np.empty(out_shape)
-        
-        for i in range(n_samples):
-            end_idx = min(i + frames_per_sample, n_frames)
-            if end_idx - i < frames_per_sample:
-                sample_frames = []
-                for j in range(i, end_idx):
-                    sample_frames.append(frames[j])
-                for j in range(end_idx - i, frames_per_sample):
-                    sample_frames.append(frames[end_idx-1] if end_idx > 0 else frames[0])
-                samples[i] = np.array(sample_frames)
-            else:
-                samples[i] = np.array([frames[j] for j in range(i, i + frames_per_sample)])
-            
-        return samples
-
-    def _get_target_stations(self, X, gridded_data, sensor_locations):
-        """Generate target values for prediction at sensor locations."""
-        n_samples, n_frames = X.shape[0], X.shape[1] 
-        possible_samples = max(1, n_samples - n_frames)
-        n_sensors = len(sensor_locations)
-        
-        if n_sensors == 0:
-            raise ValueError("No sensor locations available to generate target stations")
-            
-        Y = np.empty((possible_samples, n_frames, n_sensors))
-        
-        # TODO the last element is not being populated. size issue?
-        sliding_window_gridded_data = self._sliding_window_of(
-            frames=np.array(gridded_data[n_frames:]), 
-            frames_per_sample=n_frames,
-            target=True
-        )
-        for s, sample in enumerate(sliding_window_gridded_data):
-            for f, frame in enumerate(sample):
-                for sensor, (loc, coords) in enumerate(sensor_locations.items()):
-                    x, y = coords
-                    Y[s][f][sensor] = frame[x][y]
-
-        return Y
 
     def _grid_to_latlon(self, x, y):
         """Convert grid coordinates to latitude/longitude."""
