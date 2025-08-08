@@ -6,10 +6,22 @@
 # do a second pass since scaling requires statistics from the whole channel.
 # e.g. process + create batches, collecting statistics. Then a second pass over each batch to scale.
 
+'''
+File contents:
+    - PyDataset class that allows lazy loading for datasets too large to fit 
+        into RAM.
+    - Sliding window method.
+    - Train-valid-test split method.
+    - Standard scalers method.
+'''
+
 from keras.utils import PyDataset
 from keras.utils import timeseries_dataset_from_array
 import numpy as np
 import math
+import joblib
+import os
+from sklearn.preprocessing import StandardScaler
 
 class PWWBPyDataset(PyDataset):
     def __init__(self, X_paths, y_path, batch_size, **kwargs):
@@ -103,3 +115,105 @@ def sliding_window(data, frames, compute_targets=False):
     Y = create_timeseries_dataset(data[frames:]) if compute_targets else None
 
     return X, Y
+
+def train_test_valid_split(
+    X, 
+    Y=None, 
+    train_size=0.7, 
+    test_size=0.2, 
+    valid_size=0.1,
+    verbose=True
+):
+    '''
+    Performs a train/test/valid split on a given dataset.
+        - No shuffle option
+        - Performs this split on the first axis
+        - Contains an option to include/exclude a targets (Y) dataset
+    
+    Raises a ValueError if the sizes don't add up to 1.0
+    
+    Returns the data in the form of:
+        (X_train, X_test, X_valid, Y_train, Y_test, Y_valid)
+    '''
+    if not np.isclose(train_size + test_size + valid_size, 1.0):
+        raise ValueError("All train/test/valid sizes must add up to 1.0.")
+
+    train_split = int(len(X) * train_size)
+    test_split = int(len(X) * (train_size + valid_size))
+
+    # indices, [start, end)
+    train_start, train_end = 0, train_split
+    valid_start, valid_end = train_split, test_split
+    test_start, test_end = test_split, len(X)
+    
+    X_train = X[train_start : train_end]
+    X_valid = X[valid_start : valid_end]
+    X_test = X[test_start : test_end]
+
+    Y_train, Y_valid, Y_test = (
+        (None, None, None)
+        if Y is None
+        else (
+            Y[train_start : train_end],
+            Y[valid_start : valid_end],
+            Y[test_start : test_end]
+        )
+    )
+    
+    if verbose:
+        print(
+            f"Temporal split at indices {train_end} and {valid_end}:\n"
+            f"\tTraining: samples {train_start}-{train_end-1} "
+            f"({train_size*100:.0f}% of time)\n"
+            f"\tValidation: samples {valid_start}-{valid_end-1} "
+            f"({valid_size*100:.0f}% of time)\n"
+            f"\tTesting: samples {test_start}-{test_end-1} "
+            f"({test_size*100:.0f}% of time)"
+        )
+    
+    return X_train, X_test, X_valid, Y_train, Y_test, Y_valid
+
+def std_scale(
+    X_train, 
+    X_test=None, 
+    X_valid=None, 
+    save=False, 
+    save_path='data',
+    verbose=True
+):
+    '''
+    Performs standard scaling on the data passed.
+        - User has the option to include test/valid sets.
+        - User has the option to save scaler object in a valid directory.
+    '''
+    if verbose: print("⚖️  Scaling data...", end= " ")
+
+    scaler = StandardScaler()
+
+    # Fancy reshaping because scaler expects a 2D input.
+    # Flatten (2D) -> scale -> Inflate (original shape)
+    scaled_train = (
+        scaler
+        .fit_transform(X_train.reshape(-1, 1))
+        .reshape(X_train.shape)
+    )
+    scaled_test = (
+        scaler.transform(X_test.reshape(-1, 1)).reshape(X_test.shape)
+        if X_test is not None
+        else None
+    )
+    scaled_valid = (
+        scaler.transform(X_valid.reshape(-1, 1)).reshape(X_valid.shape)
+        if X_valid is not None
+        else None
+    )
+
+    if verbose: print("✅ Complete!")
+
+    if save:
+        if verbose: print(f"💾 Saving scaler to {save_path}...", end=" ")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        joblib.dump(scaler, save_path, compress=True)
+        if verbose: print("✅ Complete!")
+
+    return scaled_train, scaled_test, scaled_valid
