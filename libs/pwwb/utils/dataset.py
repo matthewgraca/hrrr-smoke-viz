@@ -82,7 +82,7 @@ class PWWBPyDataset(PyDataset):
 
 # NOTE Utility functions for messing with datasets
 
-def sliding_window(data, frames, compute_targets=False):
+def sliding_window(data, frames, sequence_stride=1, compute_targets=False):
     '''
     Returns a sliding window of the given data as a numpy array, where:
         - Each sample contains (frames) number of frames
@@ -93,13 +93,14 @@ def sliding_window(data, frames, compute_targets=False):
         (samples, frames, dim, dim, channel), then simply call:
         `sliding_window(np.expand_dims(data, -1), ... )`
     '''
-    def create_timeseries_dataset(data):
+    def create_timeseries_dataset(data, frames, sequence_stride):
         return np.array([
             val.numpy() 
             for val in timeseries_dataset_from_array(
                 data=data, 
                 targets=None, 
                 sequence_length=frames, 
+                sequence_stride=sequence_stride,
                 batch_size=None
             )
         ])
@@ -111,8 +112,12 @@ def sliding_window(data, frames, compute_targets=False):
             f"equal to {2 * frames} to create room for target samples."
         )
 
-    X = create_timeseries_dataset(data[:-frames])
-    Y = create_timeseries_dataset(data[frames:]) if compute_targets else None
+    X = create_timeseries_dataset(data[:-frames], frames, sequence_stride)
+    Y = (
+        create_timeseries_dataset(data[frames:], frames, sequence_stride)
+        if compute_targets
+        else None
+    )
 
     return X, Y
 
