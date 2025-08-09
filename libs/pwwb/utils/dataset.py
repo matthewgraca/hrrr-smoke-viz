@@ -121,12 +121,12 @@ def sliding_window(data, frames, sequence_stride=1, compute_targets=False):
 
     return X, Y
 
-def train_test_valid_split(
+def train_valid_test_split(
     X, 
     Y=None, 
     train_size=0.7, 
-    test_size=0.2, 
     valid_size=0.1,
+    test_size=0.2, 
     verbose=True
 ):
     '''
@@ -164,24 +164,27 @@ def train_test_valid_split(
             Y[test_start : test_end]
         )
     )
-    
+
     if verbose:
         print(
-            f"Temporal split at indices {train_end} and {valid_end}:\n"
+            f"🪓  Temporal split at indices {train_end} and {valid_end}:\n"
             f"\tTraining: samples {train_start}-{train_end-1} "
-            f"({train_size*100:.0f}% of time)\n"
+            f"({train_size*100:.0f}% of time), shapes "
+            f"X={X_train.shape}, Y={Y_train.shape if Y is not None else 0}\n"
             f"\tValidation: samples {valid_start}-{valid_end-1} "
-            f"({valid_size*100:.0f}% of time)\n"
+            f"({valid_size*100:.0f}% of time), shapes "
+            f"X={X_valid.shape}, Y={Y_valid.shape if Y is not None else 0}\n"
             f"\tTesting: samples {test_start}-{test_end-1} "
-            f"({test_size*100:.0f}% of time)"
+            f"({test_size*100:.0f}% of time), shapes "
+            f"X={X_test.shape}, Y={Y_test.shape if Y is not None else 0}"
         )
-    
-    return X_train, X_test, X_valid, Y_train, Y_test, Y_valid
+
+    return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
 
 def std_scale(
     X_train, 
-    X_test=None, 
     X_valid=None, 
+    X_test=None, 
     save=False, 
     save_path='data',
     verbose=True
@@ -191,7 +194,11 @@ def std_scale(
         - User has the option to include test/valid sets.
         - User has the option to save scaler object in a valid directory.
     '''
-    if verbose: print("⚖️  Scaling data...", end= " ")
+    if verbose:
+        if save:
+            print("⚖️  Scaling data and saving to {save_path}...", end= " ")
+        else:
+            print("⚖️  Scaling data...", end= " ")
 
     scaler = StandardScaler()
 
@@ -202,23 +209,21 @@ def std_scale(
         .fit_transform(X_train.reshape(-1, 1))
         .reshape(X_train.shape)
     )
-    scaled_test = (
-        scaler.transform(X_test.reshape(-1, 1)).reshape(X_test.shape)
-        if X_test is not None
-        else None
-    )
     scaled_valid = (
         scaler.transform(X_valid.reshape(-1, 1)).reshape(X_valid.shape)
         if X_valid is not None
         else None
     )
+    scaled_test = (
+        scaler.transform(X_test.reshape(-1, 1)).reshape(X_test.shape)
+        if X_test is not None
+        else None
+    )
+
+    if save:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        joblib.dump(scaler, save_path, compress=True)
 
     if verbose: print("✅ Complete!")
 
-    if save:
-        if verbose: print(f"💾 Saving scaler to {save_path}...", end=" ")
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        joblib.dump(scaler, save_path, compress=True)
-        if verbose: print("✅ Complete!")
-
-    return scaled_train, scaled_test, scaled_valid
+    return scaled_train, scaled_valid, scaled_test
