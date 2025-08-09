@@ -165,7 +165,7 @@ def train_valid_test_split(
             f"({test_size*100:.0f}%), data shape = {X_test.shape}"
         )
 
-    return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
+    return X_train, X_valid, X_test
 
 def std_scale(
     X_train, 
