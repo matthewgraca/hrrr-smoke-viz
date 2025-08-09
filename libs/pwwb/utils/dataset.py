@@ -123,7 +123,6 @@ def sliding_window(data, frames, sequence_stride=1, compute_targets=False):
 
 def train_valid_test_split(
     X, 
-    Y=None, 
     train_size=0.7, 
     valid_size=0.1,
     test_size=0.2, 
@@ -133,12 +132,12 @@ def train_valid_test_split(
     Performs a train/test/valid split on a given dataset.
         - No shuffle option
         - Performs this split on the first axis
-        - Contains an option to include/exclude a targets (Y) dataset
     
     Raises a ValueError if the sizes don't add up to 1.0
-    
-    Returns the data in the form of:
-        (X_train, X_test, X_valid, Y_train, Y_test, Y_valid)
+
+    Example usage with X and targets:
+        X_train, X_valid, X_test = train_valid_test_split(X, 0.7, 0.15, 0.15)
+        Y_train, Y_valid, Y_test = train_valid_test_split(Y, 0.7, 0.15, 0.15)
     '''
     if not np.isclose(train_size + test_size + valid_size, 1.0):
         raise ValueError("All train/test/valid sizes must add up to 1.0.")
@@ -155,28 +154,15 @@ def train_valid_test_split(
     X_valid = X[valid_start : valid_end]
     X_test = X[test_start : test_end]
 
-    Y_train, Y_valid, Y_test = (
-        (None, None, None)
-        if Y is None
-        else (
-            Y[train_start : train_end],
-            Y[valid_start : valid_end],
-            Y[test_start : test_end]
-        )
-    )
-
     if verbose:
         print(
             f"🪓  Temporal split at indices {train_end} and {valid_end}:\n"
             f"\tTraining: samples {train_start}-{train_end-1} "
-            f"({train_size*100:.0f}% of time), shapes "
-            f"X={X_train.shape}, Y={Y_train.shape if Y is not None else 0}\n"
+            f"({train_size*100:.0f}%), data shape = {X_train.shape}\n"
             f"\tValidation: samples {valid_start}-{valid_end-1} "
-            f"({valid_size*100:.0f}% of time), shapes "
-            f"X={X_valid.shape}, Y={Y_valid.shape if Y is not None else 0}\n"
+            f"({valid_size*100:.0f}%), data shape = {X_valid.shape}\n"
             f"\tTesting: samples {test_start}-{test_end-1} "
-            f"({test_size*100:.0f}% of time), shapes "
-            f"X={X_test.shape}, Y={Y_test.shape if Y is not None else 0}"
+            f"({test_size*100:.0f}%), data shape = {X_test.shape}"
         )
 
     return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
