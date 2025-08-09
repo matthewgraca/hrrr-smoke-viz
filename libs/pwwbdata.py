@@ -17,6 +17,7 @@ from urllib.parse import urlencode
 from xml.etree import ElementTree
 from pyhdf.SD import SD, SDC
 import netCDF4 as nc
+from libs.pwwb.utils.dataset import sliding_window
 warnings.filterwarnings("ignore")
 
 class PWWBData:
@@ -143,7 +144,10 @@ class PWWBData:
         self.all_channels = np.concatenate(channel_list, axis=-1)
         
         # Create sliding window samples
-        self.data = self._sliding_window_of(self.all_channels, self.frames_per_sample)
+        self.data, _ = sliding_window(
+            data=self.all_channels,
+            frames=self.frames_per_sample
+        )
         
         if self.verbose:
             print(f"Final data shape: {self.data.shape}")
@@ -1925,35 +1929,6 @@ class PWWBData:
             
             # Return empty data instead of creating artificial values
             return {station: [] for station in stations}
-    
-    def _sliding_window_of(self, frames, window_size):
-        """
-        Create sliding window samples from sequential frames.
-        
-        Parameters:
-        -----------
-        frames : numpy.ndarray
-            Sequential frames with shape (n_timestamps, height, width, channels)
-        window_size : int
-            Number of consecutive frames to include in each sample
-        
-        Returns:
-        --------
-        numpy.ndarray
-            Sliding window samples with shape (n_samples, window_size, height, width, channels)
-        """
-        n_frames, row, col, channels = frames.shape
-        n_samples = n_frames - window_size + 1
-        
-        if n_samples <= 0:
-            raise ValueError(f"Not enough frames ({n_frames}) for sliding window of size {window_size}")
-        
-        samples = np.empty((n_samples, window_size, row, col, channels))
-        
-        for i in range(n_samples):
-            samples[i] = frames[i:i+window_size]
-        
-        return samples
     
     def _interpolate_to_grid(self, point_data, rows, cols, extent, method='cubic'):
         """

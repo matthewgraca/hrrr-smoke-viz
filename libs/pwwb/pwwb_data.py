@@ -10,6 +10,7 @@ from libs.pwwb.data_sources.tropomi_data import TropomiDataSource
 from libs.pwwb.data_sources.modis_fire_data import ModisFireDataSource
 from libs.pwwb.data_sources.merra2_data import Merra2DataSource
 from libs.pwwb.data_sources.metar_data import MetarDataSource
+from libs.pwwb.utils.dataset import sliding_window 
 
 class PWWBData:
     def __init__(
@@ -221,7 +222,7 @@ class PWWBData:
                 timestamps=self.timestamps,
                 extent=self.extent,
                 dim=self.dim,
-                elevation_path="../inputs/elevation.npy",
+                elevation_path="../../libs/inputs/elevation.npy",
                 cache_dir=self.cache_dir,
                 cache_prefix=self.cache_prefix,
                 use_cached_data=self.use_cached_data,
@@ -239,7 +240,10 @@ class PWWBData:
             self.all_channels = np.concatenate(channel_list, axis=-1)
             
             # Create sliding window samples
-            self.data = self._sliding_window_of(self.all_channels, self.frames_per_sample)
+            self.data, _ = sliding_window(
+                data=self.all_channels,
+                frames=self.frames_per_sample
+            )
             
             if self.verbose:
                 print(f"Final data shape: {self.data.shape}")
@@ -252,35 +256,6 @@ class PWWBData:
             self.data = np.zeros((self.n_timestamps - self.frames_per_sample + 1, 
                                  self.frames_per_sample, self.dim, self.dim, 0))
 
-    def _sliding_window_of(self, frames, window_size):
-        """
-        Create sliding window samples from sequential frames.
-        
-        Parameters:
-        -----------
-        frames : numpy.ndarray
-            Sequential frames with shape (n_timestamps, height, width, channels)
-        window_size : int
-            Number of consecutive frames to include in each sample
-        
-        Returns:
-        --------
-        numpy.ndarray
-            Sliding window samples with shape (n_samples, window_size, height, width, channels)
-        """
-        n_frames, row, col, channels = frames.shape
-        n_samples = n_frames - window_size + 1
-        
-        if n_samples <= 0:
-            raise ValueError(f"Not enough frames ({n_frames}) for sliding window of size {window_size}")
-        
-        samples = np.empty((n_samples, window_size, row, col, channels))
-        
-        for i in range(n_samples):
-            samples[i] = frames[i:i+window_size]
-        
-        return samples
-    
     def get_channel_info(self):
         """
         Get information about the channels in the dataset.

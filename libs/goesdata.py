@@ -105,8 +105,8 @@ class GOESData:
         if errors > 0: print(f"🤷⁉️  {errors} error(s) imputed.")
 
         self.data, _ = sliding_window(
-            np.expand_dims(np.array(self.data), -1),
-            frames_per_sample
+            data=np.expand_dims(np.array(self.data), -1),
+            frames=frames_per_sample
         )
 
         if cache_path is not None and save_cache:

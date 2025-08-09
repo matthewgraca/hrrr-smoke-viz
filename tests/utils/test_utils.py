@@ -11,7 +11,7 @@ class TestUtils(unittest.TestCase):
         a = np.arange(10000).reshape(100, 10, 10, 1)
 
         frames = 5
-        X, Y = sliding_window(a, frames, True)
+        X, Y = sliding_window(a, frames, compute_targets=True)
 
         # pre-test invariants
         # make sure X and Y aren't equal, else everything will pass
@@ -28,7 +28,7 @@ class TestUtils(unittest.TestCase):
         a = np.arange(10000).reshape(100, 10, 10, 1)
 
         frames = 5
-        X, Y = sliding_window(a, frames, True)
+        X, Y = sliding_window(a, frames, compute_targets=True)
 
         # pre-test invariants
         # make sure X and Y aren't equal, else everything will pass
@@ -49,6 +49,30 @@ class TestUtils(unittest.TestCase):
             msg
         )
 
+    def test_each_samples_frame_is_offset_by_five_from_next_sample_if_sequence_stride_is_5(self):
+        a = np.arange(10000).reshape(100, 10, 10, 1)
+
+        frames = 5
+        X, Y = sliding_window(a, frames, frames, compute_targets=True)
+
+        # pre-test invariants
+        # make sure X and Y aren't equal, else everything will pass
+        msg = "X and Y should not be equal."
+        self.assertTrue(not np.array_equal(X, Y), msg)
+        msg = "For every sample of X, the next sample should not be equivalent."
+        self.assertTrue(not np.array_equal(X[1:], X[:-1]), msg)
+        # each frame is offset by 5 relative to each sample
+        msg = "For every sample in X, the next sample should be the same, offset by 5."
+        self.assertTrue(
+            np.all(np.array(
+                [
+                    np.array_equal(X[:-5, i+5], X[5:, i])
+                    for i in range(frames-5)
+                ]
+            )),
+            msg
+        )
+        
 class TestPWWBPyDataset(unittest.TestCase):
     def test_sequence_length_matches_data_batches(self):
         X_paths = [

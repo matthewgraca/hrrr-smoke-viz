@@ -12,6 +12,7 @@ import subprocess
 from shutil import which
 import os
 import gc
+from libs.pwwb.utils.dataset import sliding_window
 
 class HRRRData:
     def __init__(
@@ -301,8 +302,9 @@ class HRRRData:
                 preprocessed_frames = self._interpolate_and_add_channel_axis(
                     subregion_frames, dim
                 )
-                processed_ds = self._sliding_window_of(
-                    preprocessed_frames, frames_per_sample
+                processed_ds, _ = sliding_window(
+                    data=preprocessed_frames,
+                    frames=frames_per_sample
                 )
 
             elif sample_setting == 2:
@@ -331,10 +333,10 @@ class HRRRData:
                 preprocessed_frames = self._interpolate_and_add_channel_axis(
                     subregion_frames, dim
                 )
-                processed_ds = self._sliding_window_of(
-                    frames=preprocessed_frames, 
-                    window_size=frames_per_sample, 
-                    full_slide=True 
+                processed_ds, _ = sliding_window(
+                    data=preprocessed_frames, 
+                    frames=frames_per_sample, 
+                    sequence_stride=frames_per_sample,
                 )
             else:
                 msg = (
@@ -735,53 +737,3 @@ class HRRRData:
             frames[i] = new_frame
 
         return frames
-
-    def _sliding_window_of(self, frames, window_size, full_slide=False):
-        '''
-        Uses a sliding window to create samples from frames.
-
-        For example, with a step size of 5, with 15 frames and a 5 frames per 
-        sample, frames: 
-            - 1-5
-            - 6-10
-            - 11-15
-        will make up a total of 3 samples.
-
-        For example, with a step size of 1, with 5 frames and a 3 frames per 
-        sample, frames: 
-            - 1-3 
-            - 2-4
-            - 3-5 
-        will make up a total of 3 samples.
-
-        Arguments:
-            frames: A numpy array of the shape (num_frames, row, col, channels)
-            window_size: The desired number of frames per sample
-            full_slide: Whether the window should slide by 1 (false) or by the size
-                of the window (true)
-
-        Returns:
-            A numpy array of the shape (num_samples, num_frames, row, col, channels)
-        '''
-        n_frames, row, col, channels = frames.shape
-        n_samples = (
-            n_frames - window_size + 1
-            if full_slide == False
-            else n_frames // window_size
-        )
-
-        if n_samples <= 0:
-            print(f"Warning: Not enough frames ({n_frames}) for window size ({window_size})")
-            return np.array([])
-
-        samples = np.empty((n_samples, window_size, row, col, channels))
-
-        for i in range(n_samples):
-            start_idx = i if full_slide == False else i * window_size 
-            end_idx = start_idx + window_size
-
-            samples[i] = np.array(
-                [frames[j] for j in range(start_idx, end_idx)]
-            )
-
-        return samples

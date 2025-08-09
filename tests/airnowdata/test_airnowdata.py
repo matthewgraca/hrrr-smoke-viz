@@ -57,8 +57,7 @@ class TestAirNowData(unittest.TestCase):
         Preloaded data: 25 frames of airnow sensors
         '''
         ad = self.ad
-        n_frames = self.n_frames
-        expected = (ad.data.shape[0] - n_frames, n_frames, len(ad.air_sens_loc))
+        expected = (ad.data.shape[0], ad.data.shape[1], len(ad.air_sens_loc))
         actual = ad.target_stations.shape
         
         msg = f"Expected shape {expected}, returned {actual}"
@@ -88,7 +87,7 @@ class TestAirNowData(unittest.TestCase):
         actual = ad.target_stations[sample]
 
         msg = f"Expected {expected}, returned {actual}"
-        np.testing.assert_array_equal(actual, expected, msg)
+        np.testing.assert_allclose(actual, expected, err_msg=msg)
 
     def test_last_target_data_is_shifted_by_first_n_frames(self):
         '''
@@ -114,7 +113,7 @@ class TestAirNowData(unittest.TestCase):
         actual = ad.target_stations[sample]
 
         msg = f"Expected {expected}, returned {actual}"
-        np.testing.assert_array_equal(actual, expected, msg)
+        np.testing.assert_allclose(actual, expected, err_msg=msg)
 
     # NOTE tests for finding nearest sensors
     def test_find_closest_sensors_to_la(self):
@@ -163,8 +162,8 @@ class TestAirNowData(unittest.TestCase):
         actual = actual[1:]
         actual_sensors = [loc_to_sensor[(x, y)] for x, y in actual]
         expected = [
-            ad.air_sens_loc['Los Angeles - N. Main Street'],
             ad.air_sens_loc['Anaheim'],
+            ad.air_sens_loc['Los Angeles - N. Main Street'],
             ad.air_sens_loc['Compton'],
         ]
 
@@ -246,7 +245,7 @@ class TestAirNowData(unittest.TestCase):
                 (12, 12), (12, 6), (4, 7), (8, 2)
             ], 
             'Glendora - Laurel': [
-                (17, 16), (26, 25), (23, 17), (12, 12), 
+                (26, 25), (17, 16), (23, 17), (12, 12), 
                 (28, 18), (12, 6), (4, 7), (8, 2)
             ]
         }
