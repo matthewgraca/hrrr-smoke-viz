@@ -1,11 +1,3 @@
-# NOTE this should be accompanied by changes in the preprocessing pipeline
-# for instance, each channel should be processed, saved, then freed.
-
-# I can also imagine a future in which each channel might become to large to process in RAM...
-# we'll get there when we get there. But similarly, we'd process the data in batches (then 
-# do a second pass since scaling requires statistics from the whole channel.
-# e.g. process + create batches, collecting statistics. Then a second pass over each batch to scale.
-
 '''
 File contents:
     - PyDataset class that allows lazy loading for datasets too large to fit 
@@ -13,11 +5,13 @@ File contents:
     - Sliding window method.
     - Train-valid-test split method.
     - Standard scalers method.
+    - Temporal encoding method.
 '''
 
 from keras.utils import PyDataset
 from keras.utils import timeseries_dataset_from_array
 import numpy as np
+import pandas as pd
 import math
 import joblib
 import os
@@ -94,16 +88,19 @@ def sliding_window(data, frames, sequence_stride=1, compute_targets=False):
         `sliding_window(np.expand_dims(data, -1), ... )`
     '''
     def create_timeseries_dataset(data, frames, sequence_stride):
-        return np.array([
-            val.numpy() 
-            for val in timeseries_dataset_from_array(
-                data=data, 
-                targets=None, 
-                sequence_length=frames, 
-                sequence_stride=sequence_stride,
-                batch_size=None
-            )
-        ])
+        return np.array(
+            [
+                val.numpy() 
+                for val in timeseries_dataset_from_array(
+                    data=data, 
+                    targets=None, 
+                    sequence_length=frames, 
+                    sequence_stride=sequence_stride,
+                    batch_size=None
+                )
+            ],
+            dtype=data.dtype
+        )
 
     if len(data) < (2 * frames):
         raise ValueError(
@@ -213,3 +210,58 @@ def std_scale(
     if verbose: print("✅ Complete!")
 
     return scaled_train, scaled_valid, scaled_test
+
+def temporal_encoding_of(
+    start_date,
+    end_date,
+    frames,
+    month=True,
+    day_of_week=True,
+    day_of_month=True,
+    verbose=True
+):
+    '''
+    Creates one-hot temporal encodings for a given start and end date.
+
+    Will always at least generate hourly temporal encodings; other options
+        can be toggled.
+
+    Sliding window is given as an option.
+
+    Returns the temporal encoding for the X and target dataset.
+    '''
+    dates = pd.date_range(
+        start=start_date,
+        end=end_date,
+        freq='h',
+        inclusive='left'
+    )
+
+    hour = True
+    options = {'%B' : month, '%A' : day_of_week, '%-d' : day_of_month, '%-H' : hour}
+
+    if verbose: print(_temporal_encoding_msg(dates, options))
+
+    temporal_encoded_data = pd.concat(
+        [
+            pd.get_dummies(dates.strftime(option), dtype='float')
+            for option, toggle in options.items()
+            if toggle
+        ],
+        axis=1
+    ).to_numpy()
+
+    X, Y = sliding_window(
+        data=temporal_encoded_data, frames=frames, compute_targets=True
+    )
+
+    return X, Y
+
+def _temporal_encoding_msg(dates, options):
+    msg = [
+        f"{dates.strftime(option).unique().astype('string').to_numpy()}"
+        for option, toggle in options.items()
+        if toggle
+    ]
+
+    return "🕒 Encoding the following options:\n" + "\n".join(msg)
