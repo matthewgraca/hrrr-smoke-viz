@@ -250,6 +250,8 @@ class AirNowData:
     def _get_airnow_data(self, start_date, end_date, extent, save_dir, airnow_api_key):
         """Download or load AirNow data from API with chunking to avoid record limits."""
         lon_bottom, lon_top, lat_bottom, lat_top = extent
+        # we expect the data to be [start_date, end_date), but airnow is right-inclusive, so cut out the last hour
+        end_date_adj = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
         
         if os.path.exists(save_dir):
             if self.verbose < 2:
@@ -273,7 +275,7 @@ class AirNowData:
                     
                     if latest_dates:
                         latest_date = max(latest_dates)
-                        target_end = pd.to_datetime(end_date)
+                        target_end = end_date_adj
                         
                         if self.verbose < 2:
                             print(f"Latest data in file: {latest_date}")
@@ -298,7 +300,7 @@ class AirNowData:
             existing_data = []
         
         # Only proceed with download if we need more data
-        if not os.path.exists(save_dir) or 'latest_date' in locals() and latest_date < pd.to_datetime(end_date):
+        if not os.path.exists(save_dir) or 'latest_date' in locals() and latest_date < end_date_adj:
             print("Downloading AirNow data in chunks to avoid record limits...")
             
             bbox = f'{lon_bottom},{lat_bottom},{lon_top},{lat_top}'
@@ -307,7 +309,7 @@ class AirNowData:
             all_data = existing_data if 'existing_data' in locals() else []
             # Convert to pandas datetime for chunking logic
             start_dt = pd.to_datetime(start_date)
-            end_dt = pd.to_datetime(end_date)
+            end_dt = end_date_adj
             current_start = start_dt
             chunk_days = self.chunk_days
             chunk_num = 0
