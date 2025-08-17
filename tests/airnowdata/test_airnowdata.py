@@ -3,8 +3,7 @@ from libs.airnowdata import AirNowData
 import numpy as np
 import subprocess
 from shutil import which
-from contextlib import redirect_stdout
-import io
+from libs.pwwb.utils.dataset import sliding_window
 
 class TestAirNowData(unittest.TestCase):
     def setUp(self):
@@ -12,25 +11,24 @@ class TestAirNowData(unittest.TestCase):
         dim = 40
         cache_dir = 'tests/airnowdata/data/airnow_processed.npz'
         # silence noisy output
-        with redirect_stdout(io.StringIO()):
-            ad = AirNowData(
-                start_date="2024-01-01",
-                end_date="2024-01-02",
-                extent=(-118.75, -117.5, 33.5, 34.5),
-                airnow_api_key=None,
-                save_dir='tests/airnowdata/data/airnow.json',
-                processed_cache_dir=cache_dir,
-                frames_per_sample=n_frames,
-                dim=dim,
-                idw_power=2,
-                elevation_path="libs/inputs/elevation.npy",
-                mask_path=None,
-                use_mask=False,
-                sensor_whitelist=None,
-                use_whitelist=False,
-                force_reprocess=False,
-                chunk_days=30
-            )
+        ad = AirNowData(
+            start_date="2024-01-01",
+            end_date="2024-01-02",
+            extent=(-118.75, -117.5, 33.5, 34.5),
+            airnow_api_key=None,
+            save_dir='tests/airnowdata/data/airnow.json',
+            processed_cache_dir=cache_dir,
+            dim=dim,
+            idw_power=2,
+            elevation_path="libs/inputs/elevation.npy",
+            mask_path=None,
+            use_mask=False,
+            sensor_whitelist=None,
+            use_whitelist=False,
+            force_reprocess=False,
+            chunk_days=30,
+            verbose=2
+        )
         self.ad = ad
         self.n_frames = n_frames
         self.cache_dir = cache_dir
@@ -57,8 +55,11 @@ class TestAirNowData(unittest.TestCase):
         Preloaded data: 25 frames of airnow sensors
         '''
         ad = self.ad
-        expected = (ad.data.shape[0], ad.data.shape[1], len(ad.air_sens_loc))
-        actual = ad.target_stations.shape
+        frames = self.n_frames
+        X, Y = sliding_window(np.expand_dims(ad.data, -1), frames, compute_targets=True) 
+        expected = (X.shape[0], X.shape[1], len(ad.air_sens_loc))
+        Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
+        actual = Y.shape
         
         msg = f"Expected shape {expected}, returned {actual}"
         self.assertEqual(expected, actual, msg)
@@ -84,7 +85,9 @@ class TestAirNowData(unittest.TestCase):
                 else:
                     expected[frame][i] = gridded_data[-1][x][y]
 
-        actual = ad.target_stations[sample]
+        X, Y = sliding_window(np.expand_dims(ad.data, -1), n_frames, compute_targets=True) 
+        Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
+        actual = Y[sample]
 
         msg = f"Expected {expected}, returned {actual}"
         np.testing.assert_allclose(actual, expected, err_msg=msg)
@@ -97,7 +100,9 @@ class TestAirNowData(unittest.TestCase):
         '''
         ad = self.ad
         n_frames = self.n_frames
-        sample = len(ad.target_stations) - 1 
+        X, Y = sliding_window(np.expand_dims(ad.data, -1), n_frames, compute_targets=True) 
+        Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
+        sample = len(Y) - 1 
         gridded_data = ad.ground_site_grids  
         sensor_locations = ad.air_sens_loc
         expected = np.empty((n_frames, len(sensor_locations)))
@@ -110,7 +115,7 @@ class TestAirNowData(unittest.TestCase):
                 else:
                     expected[frame][i] = gridded_data[-1][x][y]
 
-        actual = ad.target_stations[sample]
+        actual = Y[sample]
 
         msg = f"Expected {expected}, returned {actual}"
         np.testing.assert_allclose(actual, expected, err_msg=msg)

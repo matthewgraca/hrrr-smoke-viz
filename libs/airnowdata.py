@@ -12,7 +12,6 @@ from matplotlib.colors import LinearSegmentedColormap
 import time
 from datetime import datetime
 from tqdm import tqdm 
-from libs.pwwb.utils.dataset import sliding_window
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -26,7 +25,6 @@ class AirNowData:
         - NEW: Optionally filters sensors based on whitelist (includes only specified sensors)
         - Converts ground site data into grids
         - Interpolates using 3D IDW (with elevation)
-        - Creates sliding window samples for time series
     '''
     def __init__(
         self,
@@ -36,7 +34,6 @@ class AirNowData:
         airnow_api_key=None,
         save_dir='data/airnow.json',
         processed_cache_dir='data/airnow_processed.npz',
-        frames_per_sample=1,
         dim=200,
         idw_power=2,
         elevation_path=None,
@@ -48,24 +45,29 @@ class AirNowData:
         use_interpolation=True, # determines if interpolation should be run
         use_imputation=True,    # determines if outliers/dead values are imputed
         use_variable_blur=False,# determines if variable blur is used after interpolation
-        chunk_days=30
+        chunk_days=30,
+        verbose=0,              # 0=allow all, 1=progress bar only, 2=silence all except warning
     ):
         self.air_sens_loc = {}
         self.start_date = start_date
         self.end_date = end_date
         self.extent = extent
         self.dim = dim
-        self.frames_per_sample = frames_per_sample
         self.idw_power = idw_power
         self.use_mask = use_mask
         self.chunk_days = chunk_days
+        self.verbose = verbose
         
         self.use_whitelist = use_whitelist
         self.sensor_whitelist = sensor_whitelist if sensor_whitelist else []
         
         if use_whitelist and sensor_whitelist:
-            print(f"Using sensor whitelist: {len(self.sensor_whitelist)} sensors")
-            print(f"Whitelisted sensors: {self.sensor_whitelist}")
+            if verbose < 2:
+                print(
+                    f"Using sensor whitelist: {len(self.sensor_whitelist)} "
+                    f"sensors\n"
+                    f"Whitelisted sensors: {self.sensor_whitelist}"
+                )
         
         # Set default paths
         self.elevation_path = elevation_path if elevation_path else "inputs/elevation.npy"
@@ -84,7 +86,10 @@ class AirNowData:
                 self.elevation = cv2.resize(self.elevation, (dim, dim))
             self.elevation = self._normalize_elevation(self.elevation)
         else:
-            print(f"Elevation data not found at {self.elevation_path}. Using flat elevation.")
+            print(
+                f"Warning: Elevation data not found at {self.elevation_path}. "
+                f"Using flat elevation."
+            )
             self.elevation = np.zeros((dim, dim), dtype=np.float32)
             
         # Load mask data only if use_mask is True
@@ -94,19 +99,30 @@ class AirNowData:
                 self.mask = np.load(self.mask_path)
                 if self.mask.shape != (dim, dim):
                     self.mask = cv2.resize(self.mask, (dim, dim))
-                print(f"Using mask from {self.mask_path}")
+                if verbose < 2: print(f"Using mask from {self.mask_path}")
             else:
-                print(f"Mask requested but not found at {self.mask_path}. Creating default mask (all valid).")
+                print(
+                    f"Warning: Mask requested but not found at "
+                    f"{self.mask_path}. Creating default mask (all valid)."
+                )
                 self.mask = np.ones((dim, dim), dtype=np.float32)
         else:
-            print("Mask usage disabled. All sensors within extent will be included.")
+            if verbose < 2:
+                print(
+                    "Mask usage disabled. All sensors within extent "
+                    "will be included."
+                )
 
         os.makedirs(os.path.dirname(save_dir), exist_ok=True)
         self.sensor_names = []
         
         # Try to load from cache first
         if not force_reprocess and os.path.exists(processed_cache_dir):
-            print(f"Loading processed AirNow data from cache: {processed_cache_dir}")
+            if verbose < 2:
+                print(
+                    f"Loading processed AirNow data from cache: "
+                    f"{processed_cache_dir}"
+                )
             try:
                 cached_data = np.load(processed_cache_dir, allow_pickle=True)
                 self.data = cached_data['data']
@@ -121,17 +137,15 @@ class AirNowData:
                 else:
                     self.sensor_names = list(self.air_sens_loc.keys())
                 
-                if 'target_stations' in cached_data:
-                    self.target_stations = cached_data['target_stations']
-                else:
-                    self.target_stations = None
-                
-                print(f"✓ Successfully loaded processed data from cache")
-                print(f"  - Data shape: {self.data.shape}")
-                print(f"  - Found {len(self.air_sens_loc)} sensor locations")
+                if verbose < 2:
+                    print(
+                        f"✓ Successfully loaded processed data from cache\n"
+                        f"  - Data shape: {self.data.shape}\n"
+                        f"  - Found {len(self.air_sens_loc)} sensor locations"
+                    )
                 return
             except Exception as e:
-                print(f"Error loading from cache: {e}. Will reprocess data.")
+                print(f"Error: Couldn't load from cache: {e}. Will reprocess data.")
         
         # Process data from scratch
         list_df = self._get_airnow_data(start_date, end_date, extent, save_dir, airnow_api_key)
@@ -139,49 +153,66 @@ class AirNowData:
         if not list_df:
             raise ValueError("No valid AirNow data available.")
         
-        print("Processing ground sites and imputing dead sensors and outliers...")
-        ground_site_grids = [self._preprocess_ground_sites(df, dim, extent) for df in tqdm(list_df)]
+        if verbose < 2:
+            print(
+                "Processing ground sites and "
+                "imputing dead sensors and outliers..."
+            )
+        ground_site_grids = [
+            self._preprocess_ground_sites(df, dim, extent)
+            for df in (tqdm(list_df) if verbose < 2 else list_df)
+        ]
         if not use_imputation:
-            print("Imputation disabled. Dead sensors and outliers will be kept in the data.")
+            if verbose < 2:
+                print(
+                    "Imputation disabled. Dead sensors and outliers will be "
+                    "kept in the data."
+                )
         else:
             # preprocess ground sites initializes air_sens_loc, so it should be usable here.
             # this is why i hate using self, object state can change in any function...
-            ground_site_grids = self._impute_ground_site_grids(ground_site_grids, self.air_sens_loc)
+            ground_site_grids = self._impute_ground_site_grids(
+                ground_site_grids,
+                self.air_sens_loc
+            )
         
-        print(f"Performing IDW interpolation on {len(ground_site_grids)} frames...")
         if not use_interpolation:
-            print("Interpolation disabled. Grids will be returned as-is with sensor data.")
-        interpolated_grids = (
-            ground_site_grids if not use_interpolation
-            else [
+            if verbose < 1:
+                print(
+                    "Interpolation disabled. "
+                    "Grids will be returned as-is with sensor data."
+                )
+            interpolated_grids = ground_site_grids
+        else:
+            if verbose < 1:
+                print(
+                    f"Performing IDW interpolation on "
+                    f"{len(ground_site_grids)} frames..."
+                )
+            interpolated_grids = [
                 self._interpolate_frame(frame, use_variable_blur) 
-                for frame in tqdm(ground_site_grids)
+                for frame in (
+                    tqdm(ground_site_grids) 
+                    if verbose < 2 else ground_site_grids
+                )
             ]
-        )
         
-        self.data, gridded_target_data = sliding_window(
-            data=np.expand_dims(np.array(interpolated_grids), axis=-1),
-            frames=frames_per_sample,
-            compute_targets=True
-        )
-
+        self.data = interpolated_grids
         self.ground_site_grids = ground_site_grids
         
         if self.air_sens_loc:
-            self.target_stations = self._get_sensor_vals_from_gridded_data(
-                gridded_target_data, self.air_sens_loc 
-            )
             self.sensor_names = list(self.air_sens_loc.keys())
         else:
-            self.target_stations = None
             print("Warning: No air sensor locations found in the data.")
         
         # Save processed data to cache
-        print(f"Saving processed AirNow data to cache: {processed_cache_dir}")
+        if verbose < 2:
+            print(
+                f"Saving processed AirNow data to cache: {processed_cache_dir}"
+            )
         try:
             air_sens_loc_array = np.array([self.air_sens_loc])
             sensor_names_array = np.array(self.sensor_names)
-            target_stations_array = self.target_stations if self.target_stations is not None else np.array([])
             
             np.savez_compressed(
                 processed_cache_dir,
@@ -189,9 +220,9 @@ class AirNowData:
                 ground_site_grids=np.array(self.ground_site_grids, dtype=object),
                 air_sens_loc=air_sens_loc_array,
                 sensor_names=sensor_names_array,
-                target_stations=target_stations_array
             )
-            print("✓ Successfully saved processed data to cache")
+            if verbose < 2:
+                print("✓ Successfully saved processed data to cache")
         except Exception as e:
             print(f"Warning: Could not save processed data to cache: {e}")
     
@@ -221,13 +252,15 @@ class AirNowData:
         lon_bottom, lon_top, lat_bottom, lat_top = extent
         
         if os.path.exists(save_dir):
-            print(f"Found existing file '{save_dir}'. Checking if download is complete...")
+            if self.verbose < 2:
+                print(f"Found existing file '{save_dir}'. Checking if download is complete...")
             try:
                 with open(save_dir, 'r') as file:
                     existing_data = json.load(file)
                 
                 if not existing_data:
-                    print("Existing file is empty. Starting fresh download...")
+                    if self.verbose < 2:
+                        print("Existing file is empty. Starting fresh download...")
                 else:
                     # Find the latest date in existing data
                     latest_dates = []
@@ -242,11 +275,13 @@ class AirNowData:
                         latest_date = max(latest_dates)
                         target_end = pd.to_datetime(end_date)
                         
-                        print(f"Latest data in file: {latest_date}")
-                        print(f"Target end date: {target_end}")
+                        if self.verbose < 2:
+                            print(f"Latest data in file: {latest_date}")
+                            print(f"Target end date: {target_end}")
                         
                         if latest_date >= target_end:
-                            print("Download appears complete. Using existing file.")
+                            if self.verbose < 2:
+                                print("Download appears complete. Using existing file.")
                         else:
                             print(f"Download incomplete. Resuming from {latest_date}")
                             # Adjust start_date to resume from where we left off
@@ -449,7 +484,8 @@ class AirNowData:
 
         # Load and process the data
         try:
-            print(f"Loading AirNow data from {save_dir}...")
+            if self.verbose < 2:
+                print(f"Loading AirNow data from {save_dir}...")
             with open(save_dir, 'r') as file:
                 airnow_data = json.load(file)
             
@@ -496,7 +532,8 @@ class AirNowData:
             
             try:
                 list_df = [group for name, group in airnow_df.groupby('UTC')]
-                print(f"Grouped AirNow data into {len(list_df)} time frames")
+                if self.verbose < 2:
+                    print(f"Grouped AirNow data into {len(list_df)} time frames")
                 return list_df
             except Exception as e:
                 print(f"Error grouping by UTC: {e}")
