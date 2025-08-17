@@ -13,7 +13,6 @@ import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from libs.pwwb.utils.interpolation import interpolate_frame
-from libs.pwwb.utils.dataset import sliding_window
 
 class GOESData:
     def __init__(
@@ -22,7 +21,6 @@ class GOESData:
         end_date="2025-01-10 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
-        frames_per_sample=5,
         save_dir=None,      # where nc4 files should be saved to
         cache_path=None,    # location where to save or load cache data
         load_cache=False,   # determines if data should be loaded from cache_dir
@@ -58,6 +56,7 @@ class GOESData:
         """
         # validate parameters
         if save_cache or load_cache:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             self._validate_cache_path(save_cache, load_cache, cache_path)
 
         if load_cache:
@@ -104,10 +103,7 @@ class GOESData:
         if outages > 0: print(f"🛰️ 🪦 {outages} outage(s) imputed.")
         if errors > 0: print(f"🤷⁉️  {errors} error(s) imputed.")
 
-        self.data, _ = sliding_window(
-            data=np.expand_dims(np.array(self.data), -1),
-            frames=frames_per_sample
-        )
+        self.data = np.array(self.data)
 
         if cache_path is not None and save_cache:
             self._save_to_cache(
@@ -157,9 +153,6 @@ class GOESData:
         )
         if cache_path is None:
             raise ValueError(f"Cache path is None. {msg}")
-        # we won't make the save directories for you
-        if save_cache and not os.path.isdir(os.path.dirname(cache_path)):
-            raise ValueError(f"Directory does not exist.")
         # only check if cache exists loading, b/c it will be made when saving
         if load_cache and not os.path.exists(cache_path):
             raise ValueError(f"Cache path does not exist. {msg}")
