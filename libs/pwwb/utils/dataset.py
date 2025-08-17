@@ -99,7 +99,7 @@ def sliding_window(data, frames, sequence_stride=1, compute_targets=False):
                     batch_size=None
                 )
             ],
-            dtype=data.dtype
+            dtype=data.dtype if isinstance(data, np.ndarray) else float 
         )
 
     if len(data) < (2 * frames):
