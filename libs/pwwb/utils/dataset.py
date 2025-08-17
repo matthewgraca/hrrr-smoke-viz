@@ -259,4 +259,7 @@ def _temporal_encoding_msg(dates, options):
         if toggle
     ]
 
-    return "🕒 Encoding the following options:\n" + "\n".join(msg)
+    return (
+        f"🕒 Encoding the following options (will be numerical):\n"
+        f"{"\n".join(msg)}"
+    )
