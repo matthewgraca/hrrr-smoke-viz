@@ -211,7 +211,7 @@ def std_scale(
 
     return scaled_train, scaled_valid, scaled_test
 
-def temporal_encoding_of(
+def ohe_temporal_encoding_of(
     start_date,
     end_date,
     month=True,
@@ -224,10 +224,6 @@ def temporal_encoding_of(
 
     Will always at least generate hourly temporal encodings; other options
         can be toggled.
-
-    Sliding window is given as an option.
-
-    Returns the temporal encoding for the X and target dataset.
     '''
     dates = pd.date_range(
         start=start_date,
@@ -252,6 +248,78 @@ def temporal_encoding_of(
 
     return temporal_encoded_data
 
+def frames_temporal_encoding_of(
+    start_date,
+    end_date,
+    dim=40,
+    month=True,
+    day_of_week=True,
+    day_of_month=True,
+    cyclical=False,
+    verbose=True
+):
+    '''
+    Creates frames of temporal encodings for a given start and end date.
+        Each time option will have its own channel that is scaled.
+        For instance, hour 14 -> a frame with elements of 14/23, according
+        to whatever dimension is passed.
+
+    Cyclical flag determines if cyclical encoding should be used.
+
+    Will always at least generate hourly temporal encodings; other options
+        can be toggled.
+    '''
+    dates = pd.date_range(
+        start=start_date,
+        end=end_date,
+        freq='h',
+        inclusive='left'
+    )
+
+    
+    toggles = [
+        (month, '%-m', 12),
+        (day_of_week ,'%w', 6),
+        (day_of_month, '%-d', 31),
+        (True, '%-H', 23)
+    ]
+
+    options = {
+        pattern : max_val
+        for toggle, pattern, max_val in toggles
+        if toggle
+    }
+
+    if verbose: print(_temporal_encoding_msg(dates, options))
+
+    def expand_val_across_dimensions(data, dim):
+        # expand and repeat values to the x and y dimension 
+        data = np.repeat(data[:, np.newaxis, np.newaxis], dim, axis=1)
+        data = np.repeat(data, dim, axis=2)
+        data = np.expand_dims(data, axis=-1)
+
+        return data 
+
+    temporal_encoded_data = []
+    for pattern, max_val in options.items():
+        a = np.full((len(dates)), dates.strftime(pattern), dtype='float')
+        if cyclical:
+            a = 2 * np.pi * a / max_val
+
+            b = np.sin(a) 
+            b = expand_val_across_dimensions(b, dim)
+            temporal_encoded_data.append(b)
+
+            c = np.cos(a) 
+            c = expand_val_across_dimensions(c, dim)
+            temporal_encoded_data.append(c)
+        else:
+            a = a / max_val
+            a = expand_val_across_dimensions(a, dim)
+            temporal_encoded_data.append(a)
+    
+    return np.concatenate(temporal_encoded_data, axis=-1)
+    
 def _temporal_encoding_msg(dates, options):
     msg = [
         f"{dates.strftime(option).unique().astype('string').to_numpy()}"
