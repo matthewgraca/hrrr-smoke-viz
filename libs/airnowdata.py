@@ -852,9 +852,9 @@ class AirNowData:
         Extracts the sensor values from gridded data.
 
         Assumes the data to be in the shape:
-            (n_samples, n_frames, xdim, ydim, channels)
+            (n_samples, n_frames, xdim, ydim)
         """
-        n_samples, n_frames, xdim, ydim, channel = gridded_data.shape
+        n_samples, n_frames, xdim, ydim = gridded_data.shape
         n_sensors = len(sensor_locations)
 
         if n_sensors == 0:

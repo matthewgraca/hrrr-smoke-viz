@@ -214,7 +214,6 @@ def std_scale(
 def temporal_encoding_of(
     start_date,
     end_date,
-    frames,
     month=True,
     day_of_week=True,
     day_of_month=True,
@@ -251,11 +250,7 @@ def temporal_encoding_of(
         axis=1
     ).to_numpy()
 
-    X, Y = sliding_window(
-        data=temporal_encoded_data, frames=frames, compute_targets=True
-    )
-
-    return X, Y
+    return temporal_encoded_data
 
 def _temporal_encoding_msg(dates, options):
     msg = [

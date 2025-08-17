@@ -10,7 +10,6 @@ from libs.pwwb.data_sources.tropomi_data import TropomiDataSource
 from libs.pwwb.data_sources.modis_fire_data import ModisFireDataSource
 from libs.pwwb.data_sources.merra2_data import Merra2DataSource
 from libs.pwwb.data_sources.metar_data import MetarDataSource
-from libs.pwwb.utils.dataset import sliding_window 
 
 class PWWBData:
     def __init__(
@@ -18,7 +17,6 @@ class PWWBData:
         start_date="2018-01-01",
         end_date="2020-12-31",
         extent=(-118.75, -117.5, 33.5, 34.5),  # Default to LA County bounds
-        frames_per_sample=5,  # One day of hourly data
         dim=200,  # Spatial resolution
         cache_dir='data/pwwb_cache/',
         use_cached_data=True,
@@ -32,7 +30,6 @@ class PWWBData:
         self.orig_end_date = pd.to_datetime(end_date)
         self.end_date = self.orig_end_date - pd.Timedelta(hours=1)  # Adjust to last hour
         self.extent = extent
-        self.frames_per_sample = frames_per_sample
         self.dim = dim
         self.verbose = verbose
         self.cache_dir = cache_dir
@@ -127,7 +124,6 @@ class PWWBData:
         
         # Initialize data containers
         self.data = None
-        self.all_channels = None
         
         # Data source containers
         self.maiac_aod_data = None
@@ -237,13 +233,7 @@ class PWWBData:
         channel_list = list(active_channels.values())
         
         if channel_list:
-            self.all_channels = np.concatenate(channel_list, axis=-1)
-            
-            # Create sliding window samples
-            self.data, _ = sliding_window(
-                data=self.all_channels,
-                frames=self.frames_per_sample
-            )
+            self.data = np.concatenate(channel_list, axis=-1)
             
             if self.verbose:
                 print(f"Final data shape: {self.data.shape}")
@@ -252,9 +242,7 @@ class PWWBData:
             if self.verbose:
                 print("No channels were included. Data arrays are empty.")
             # Create empty arrays with proper dimensions
-            self.all_channels = np.zeros((self.n_timestamps, self.dim, self.dim, 0))
-            self.data = np.zeros((self.n_timestamps - self.frames_per_sample + 1, 
-                                 self.frames_per_sample, self.dim, self.dim, 0))
+            self.data = np.zeros((self.n_timestamps, self.dim, self.dim, 0))
 
     def get_channel_info(self):
         """
@@ -345,7 +333,7 @@ class PWWBData:
         channel_names = channel_info['channel_names']
         
         # Get the total number of channels
-        total_channels = self.all_channels.shape[-1] if self.all_channels.shape[-1] > 0 else 0
+        total_channels = self.data.shape[-1] if self.data.shape[-1] > 0 else 0
         
         if total_channels == 0:
             print("No channels were included in the dataset.")
@@ -354,7 +342,7 @@ class PWWBData:
         # Print stats for each channel
         for i, channel_name in enumerate(channel_names):
             if i < total_channels:
-                channel_data = self.all_channels[0, :, :, i]  # First timestamp
+                channel_data = self.data[0, :, :, i]  # First timestamp
                 
                 print(f"\nChannel {i}: {channel_name}")
                 print(f"  Min: {np.nanmin(channel_data)}")  
@@ -369,9 +357,8 @@ class PWWBData:
         
         print("\nFinal Data Shape:")
         print(f"  {self.data.shape[0]} samples")
-        print(f"  {self.data.shape[1]} frames per sample")
-        print(f"  {self.data.shape[2]}x{self.data.shape[3]} grid size")
-        print(f"  {self.data.shape[4]} channels")
+        print(f"  {self.data.shape[1]}x{self.data.shape[2]} grid size")
+        print(f"  {self.data.shape[3]} channels")
         
         print("\nData Memory Usage:")
         data_size_bytes = self.data.nbytes
