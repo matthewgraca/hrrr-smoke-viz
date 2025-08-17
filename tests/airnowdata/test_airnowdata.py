@@ -161,16 +161,24 @@ class TestAirNowData(unittest.TestCase):
         )
         actual = actual[1:]
         actual_sensors = [loc_to_sensor[(x, y)] for x, y in actual]
-        expected = [
+
+        # turns out glendora has two closest sensors, that was fun to debug :|
+        expected_1 = [
             ad.air_sens_loc['Anaheim'],
             ad.air_sens_loc['Los Angeles - N. Main Street'],
             ad.air_sens_loc['Compton'],
         ]
 
-        expected_sensors = [loc_to_sensor[(x, y)] for x, y in expected]
+        expected_2 = [
+            ad.air_sens_loc['Los Angeles - N. Main Street'],
+            ad.air_sens_loc['Anaheim'],
+            ad.air_sens_loc['Compton'],
+        ]
 
-        msg = f"Expected {expected_sensors}, returned {actual_sensors}"
-        self.assertEqual(actual, expected, msg)
+        expected_sensors_1 = [loc_to_sensor[(x, y)] for x, y in expected_1]
+
+        msg = f"Expected {expected_sensors_1}, returned {actual_sensors}"
+        self.assertTrue(actual == expected_1 or actual == expected_2, msg)
 
     def test_find_closest_sensors_to_simi_valley(self):
         '''
@@ -211,7 +219,7 @@ class TestAirNowData(unittest.TestCase):
             for sensor, locations in actual.items()
         }
         
-        expected = {
+        expected_1 = {
             'Simi Valley - Cochran Street': [
                 (12, 6), (4, 7), (12, 12), (17, 16),
                 (23, 17), (28, 18), (14, 28), (26, 25)
@@ -250,13 +258,64 @@ class TestAirNowData(unittest.TestCase):
             ]
         }
 
-        expected_sensors = {
-            sensor : [loc_to_sensor[loc] for loc in locations]
-            for sensor, locations in expected.items()
+        expected_2 = {
+            'Simi Valley - Cochran Street': [
+                (12, 6), (4, 7), (12, 12), (17, 16),
+                (23, 17), (28, 18), (14, 28), (26, 25)
+            ], 
+            'Reseda': [
+                (8, 2), (12, 12), (4, 7), (17, 16), 
+                (23, 17), (28, 18), (14, 28), (26, 25)
+            ], 
+            'Santa Clarita': [
+                (8, 2), (12, 6), (12, 12), (17, 16), 
+                (23, 17), (14, 28), (28, 18), (26, 25)
+            ], 
+            'North Holywood': [
+                (12, 6), (17, 16), (4, 7), (8, 2), 
+                (23, 17), (14, 28), (28, 18), (26, 25)
+            ], 
+            'Los Angeles - N. Main Street': [
+                (23, 17), (12, 12), (12, 6), (28, 18), 
+                (14, 28), (26, 25), (4, 7), (8, 2)
+            ], 
+            'Compton': [
+                (28, 18), (17, 16), (26, 25), (12, 12), 
+                (14, 28), (12, 6), (8, 2), (4, 7)
+            ], 
+            'Long Beach Signal Hill': [
+                (23, 17), (26, 25), (17, 16), (12, 12), 
+                (14, 28), (12, 6), (8, 2), (4, 7)
+            ], 
+            'Anaheim': [
+                (28, 18), (23, 17), (14, 28), (17, 16), 
+                (12, 12), (12, 6), (4, 7), (8, 2)
+            ], 
+            'Glendora - Laurel': [
+                (17, 16), (26, 25), (23, 17), (12, 12), 
+                (28, 18), (12, 6), (4, 7), (8, 2)
+            ]
         }
 
-        msg = f"Expected {expected_sensors}, returned {actual_sensors}"
-        self.assertEqual(actual, expected, msg)
+        expected_sensors_1 = {
+            sensor : [loc_to_sensor[loc] for loc in locations]
+            for sensor, locations in expected_1.items()
+        }
+
+        expected_sensors_2 = {
+            sensor : [loc_to_sensor[loc] for loc in locations]
+            for sensor, locations in expected_2.items()
+        }
+
+        # glendora has two closest sensors, and its a tossup
+        # so gotta include both
+        msg = f"Expected {expected_sensors_1}, returned {actual_sensors}"
+        if actual_sensors == expected_sensors_1:
+            self.assertTrue(True)
+        elif actual_sensors == expected_sensors_2:
+            self.assertTrue(True)
+        else:
+            self.assertTrue(False, msg)
 
     def test_imputing_ground_sites(self):
         '''
