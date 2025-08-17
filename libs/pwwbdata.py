@@ -17,7 +17,6 @@ from urllib.parse import urlencode
 from xml.etree import ElementTree
 from pyhdf.SD import SD, SDC
 import netCDF4 as nc
-from libs.pwwb.utils.dataset import sliding_window
 warnings.filterwarnings("ignore")
 
 class PWWBData:
@@ -26,7 +25,6 @@ class PWWBData:
         start_date="2018-01-01",
         end_date="2020-12-31",
         extent=(-118.75, -117.5, 33.5, 34.5),  # Default to LA County bounds from doc
-        frames_per_sample=5,  # One day of hourly data
         dim=200,  # Spatial resolution
         cache_dir='data/pwwb_cache/',
         use_cached_data=True,
@@ -38,7 +36,6 @@ class PWWBData:
         self.orig_end_date = pd.to_datetime(end_date)  # Store original for reference
         self.end_date = self.orig_end_date - pd.Timedelta(hours=1)  # Adjust to last hour of previous day
         self.extent = extent
-        self.frames_per_sample = frames_per_sample
         self.dim = dim
         self.verbose = verbose
         self.cache_dir = cache_dir
@@ -141,13 +138,7 @@ class PWWBData:
             channels['metar']         # METAR meteorological data
         ]
         
-        self.all_channels = np.concatenate(channel_list, axis=-1)
-        
-        # Create sliding window samples
-        self.data, _ = sliding_window(
-            data=self.all_channels,
-            frames=self.frames_per_sample
-        )
+        self.data = np.concatenate(channel_list, axis=-1)
         
         if self.verbose:
             print(f"Final data shape: {self.data.shape}")
@@ -2091,7 +2082,7 @@ class PWWBData:
         print("===================")
         
         # Get the total number of channels
-        total_channels = self.all_channels.shape[-1]
+        total_channels = self.data.shape[-1]
         
         # Define channel names based on the documentation
         channel_info = self.get_channel_info()
@@ -2099,7 +2090,7 @@ class PWWBData:
         # Print stats for each channel
         for i, channel_name in enumerate(channel_info['channel_names']):
             if i < total_channels:
-                channel_data = self.all_channels[0, :, :, i]  # First timestamp
+                channel_data = self.data[0, :, :, i]  # First timestamp
                 
                 print(f"\nChannel {i}: {channel_name}")
                 print(f"  Min: {np.min(channel_data)}")
@@ -2114,9 +2105,8 @@ class PWWBData:
         
         print("\nFinal Data Shape:")
         print(f"  {self.data.shape[0]} samples")
-        print(f"  {self.data.shape[1]} frames per sample")
-        print(f"  {self.data.shape[2]}x{self.data.shape[3]} grid size")
-        print(f"  {self.data.shape[4]} channels")
+        print(f"  {self.data.shape[1]}x{self.data.shape[2]} grid size")
+        print(f"  {self.data.shape[3]} channels")
         
         print("\nData Memory Usage:")
         data_size_bytes = self.data.nbytes

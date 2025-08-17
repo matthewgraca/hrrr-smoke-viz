@@ -4,4 +4,14 @@
 #   You are in the project root directory.
 #   You are running an environment containing the libs to actually run tests. 
 
-python -m unittest discover -v tests -p "test*.py"
+export TF_CPP_MIN_LOG_LEVEL=1
+
+if [ $# -gt 0 ]; then
+  echo "Running tests in files: $@..."
+  for arg in "$@"; do
+    python -m unittest discover -vf "tests/$arg" -p "test*.py"
+  done
+else
+  echo "Running all tests..."
+  python -m unittest discover -vf tests -p "test*.py"
+fi

@@ -3,8 +3,7 @@ from libs.airnowdata import AirNowData
 import numpy as np
 import subprocess
 from shutil import which
-from contextlib import redirect_stdout
-import io
+from libs.pwwb.utils.dataset import sliding_window
 
 class TestAirNowData(unittest.TestCase):
     def setUp(self):
@@ -12,25 +11,24 @@ class TestAirNowData(unittest.TestCase):
         dim = 40
         cache_dir = 'tests/airnowdata/data/airnow_processed.npz'
         # silence noisy output
-        with redirect_stdout(io.StringIO()):
-            ad = AirNowData(
-                start_date="2024-01-01",
-                end_date="2024-01-02",
-                extent=(-118.75, -117.5, 33.5, 34.5),
-                airnow_api_key=None,
-                save_dir='tests/airnowdata/data/airnow.json',
-                processed_cache_dir=cache_dir,
-                frames_per_sample=n_frames,
-                dim=dim,
-                idw_power=2,
-                elevation_path="libs/inputs/elevation.npy",
-                mask_path=None,
-                use_mask=False,
-                sensor_whitelist=None,
-                use_whitelist=False,
-                force_reprocess=False,
-                chunk_days=30
-            )
+        ad = AirNowData(
+            start_date="2024-01-01",
+            end_date="2024-01-02",
+            extent=(-118.75, -117.5, 33.5, 34.5),
+            airnow_api_key=None,
+            save_dir='tests/airnowdata/data/airnow.json',
+            processed_cache_dir=cache_dir,
+            dim=dim,
+            idw_power=2,
+            elevation_path="libs/inputs/elevation.npy",
+            mask_path=None,
+            use_mask=False,
+            sensor_whitelist=None,
+            use_whitelist=False,
+            force_reprocess=False,
+            chunk_days=30,
+            verbose=2
+        )
         self.ad = ad
         self.n_frames = n_frames
         self.cache_dir = cache_dir
@@ -57,8 +55,11 @@ class TestAirNowData(unittest.TestCase):
         Preloaded data: 25 frames of airnow sensors
         '''
         ad = self.ad
-        expected = (ad.data.shape[0], ad.data.shape[1], len(ad.air_sens_loc))
-        actual = ad.target_stations.shape
+        frames = self.n_frames
+        X, Y = sliding_window(ad.data, frames, compute_targets=True) 
+        expected = (X.shape[0], X.shape[1], len(ad.air_sens_loc))
+        Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
+        actual = Y.shape
         
         msg = f"Expected shape {expected}, returned {actual}"
         self.assertEqual(expected, actual, msg)
@@ -84,7 +85,9 @@ class TestAirNowData(unittest.TestCase):
                 else:
                     expected[frame][i] = gridded_data[-1][x][y]
 
-        actual = ad.target_stations[sample]
+        X, Y = sliding_window(ad.data, n_frames, compute_targets=True) 
+        Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
+        actual = Y[sample]
 
         msg = f"Expected {expected}, returned {actual}"
         np.testing.assert_allclose(actual, expected, err_msg=msg)
@@ -97,7 +100,9 @@ class TestAirNowData(unittest.TestCase):
         '''
         ad = self.ad
         n_frames = self.n_frames
-        sample = len(ad.target_stations) - 1 
+        X, Y = sliding_window(ad.data, n_frames, compute_targets=True) 
+        Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
+        sample = len(Y) - 1 
         gridded_data = ad.ground_site_grids  
         sensor_locations = ad.air_sens_loc
         expected = np.empty((n_frames, len(sensor_locations)))
@@ -110,7 +115,7 @@ class TestAirNowData(unittest.TestCase):
                 else:
                     expected[frame][i] = gridded_data[-1][x][y]
 
-        actual = ad.target_stations[sample]
+        actual = Y[sample]
 
         msg = f"Expected {expected}, returned {actual}"
         np.testing.assert_allclose(actual, expected, err_msg=msg)
@@ -161,16 +166,24 @@ class TestAirNowData(unittest.TestCase):
         )
         actual = actual[1:]
         actual_sensors = [loc_to_sensor[(x, y)] for x, y in actual]
-        expected = [
+
+        # turns out glendora has two closest sensors, that was fun to debug :|
+        expected_1 = [
             ad.air_sens_loc['Anaheim'],
             ad.air_sens_loc['Los Angeles - N. Main Street'],
             ad.air_sens_loc['Compton'],
         ]
 
-        expected_sensors = [loc_to_sensor[(x, y)] for x, y in expected]
+        expected_2 = [
+            ad.air_sens_loc['Los Angeles - N. Main Street'],
+            ad.air_sens_loc['Anaheim'],
+            ad.air_sens_loc['Compton'],
+        ]
 
-        msg = f"Expected {expected_sensors}, returned {actual_sensors}"
-        self.assertEqual(actual, expected, msg)
+        expected_sensors_1 = [loc_to_sensor[(x, y)] for x, y in expected_1]
+
+        msg = f"Expected {expected_sensors_1}, returned {actual_sensors}"
+        self.assertTrue(actual == expected_1 or actual == expected_2, msg)
 
     def test_find_closest_sensors_to_simi_valley(self):
         '''
@@ -211,7 +224,7 @@ class TestAirNowData(unittest.TestCase):
             for sensor, locations in actual.items()
         }
         
-        expected = {
+        expected_1 = {
             'Simi Valley - Cochran Street': [
                 (12, 6), (4, 7), (12, 12), (17, 16),
                 (23, 17), (28, 18), (14, 28), (26, 25)
@@ -250,13 +263,64 @@ class TestAirNowData(unittest.TestCase):
             ]
         }
 
-        expected_sensors = {
-            sensor : [loc_to_sensor[loc] for loc in locations]
-            for sensor, locations in expected.items()
+        expected_2 = {
+            'Simi Valley - Cochran Street': [
+                (12, 6), (4, 7), (12, 12), (17, 16),
+                (23, 17), (28, 18), (14, 28), (26, 25)
+            ], 
+            'Reseda': [
+                (8, 2), (12, 12), (4, 7), (17, 16), 
+                (23, 17), (28, 18), (14, 28), (26, 25)
+            ], 
+            'Santa Clarita': [
+                (8, 2), (12, 6), (12, 12), (17, 16), 
+                (23, 17), (14, 28), (28, 18), (26, 25)
+            ], 
+            'North Holywood': [
+                (12, 6), (17, 16), (4, 7), (8, 2), 
+                (23, 17), (14, 28), (28, 18), (26, 25)
+            ], 
+            'Los Angeles - N. Main Street': [
+                (23, 17), (12, 12), (12, 6), (28, 18), 
+                (14, 28), (26, 25), (4, 7), (8, 2)
+            ], 
+            'Compton': [
+                (28, 18), (17, 16), (26, 25), (12, 12), 
+                (14, 28), (12, 6), (8, 2), (4, 7)
+            ], 
+            'Long Beach Signal Hill': [
+                (23, 17), (26, 25), (17, 16), (12, 12), 
+                (14, 28), (12, 6), (8, 2), (4, 7)
+            ], 
+            'Anaheim': [
+                (28, 18), (23, 17), (14, 28), (17, 16), 
+                (12, 12), (12, 6), (4, 7), (8, 2)
+            ], 
+            'Glendora - Laurel': [
+                (17, 16), (26, 25), (23, 17), (12, 12), 
+                (28, 18), (12, 6), (4, 7), (8, 2)
+            ]
         }
 
-        msg = f"Expected {expected_sensors}, returned {actual_sensors}"
-        self.assertEqual(actual, expected, msg)
+        expected_sensors_1 = {
+            sensor : [loc_to_sensor[loc] for loc in locations]
+            for sensor, locations in expected_1.items()
+        }
+
+        expected_sensors_2 = {
+            sensor : [loc_to_sensor[loc] for loc in locations]
+            for sensor, locations in expected_2.items()
+        }
+
+        # glendora has two closest sensors, and its a tossup
+        # so gotta include both
+        msg = f"Expected {expected_sensors_1}, returned {actual_sensors}"
+        if actual_sensors == expected_sensors_1:
+            self.assertTrue(True)
+        elif actual_sensors == expected_sensors_2:
+            self.assertTrue(True)
+        else:
+            self.assertTrue(False, msg)
 
     def test_imputing_ground_sites(self):
         '''
