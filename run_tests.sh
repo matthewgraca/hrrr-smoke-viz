@@ -7,7 +7,7 @@
 export TF_CPP_MIN_LOG_LEVEL=1
 
 if [ $# -gt 0 ]; then
-  echo "Running tests in $@..."
+  echo "Running tests in files: $@..."
   for arg in "$@"; do
     python -m unittest discover -vf "tests/$arg" -p "test*.py"
   done

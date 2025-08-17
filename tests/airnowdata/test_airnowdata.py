@@ -56,7 +56,7 @@ class TestAirNowData(unittest.TestCase):
         '''
         ad = self.ad
         frames = self.n_frames
-        X, Y = sliding_window(np.expand_dims(ad.data, -1), frames, compute_targets=True) 
+        X, Y = sliding_window(ad.data, frames, compute_targets=True) 
         expected = (X.shape[0], X.shape[1], len(ad.air_sens_loc))
         Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
         actual = Y.shape
@@ -85,7 +85,7 @@ class TestAirNowData(unittest.TestCase):
                 else:
                     expected[frame][i] = gridded_data[-1][x][y]
 
-        X, Y = sliding_window(np.expand_dims(ad.data, -1), n_frames, compute_targets=True) 
+        X, Y = sliding_window(ad.data, n_frames, compute_targets=True) 
         Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
         actual = Y[sample]
 
@@ -100,7 +100,7 @@ class TestAirNowData(unittest.TestCase):
         '''
         ad = self.ad
         n_frames = self.n_frames
-        X, Y = sliding_window(np.expand_dims(ad.data, -1), n_frames, compute_targets=True) 
+        X, Y = sliding_window(ad.data, n_frames, compute_targets=True) 
         Y = ad._get_sensor_vals_from_gridded_data(Y, ad.air_sens_loc)
         sample = len(Y) - 1 
         gridded_data = ad.ground_site_grids  
