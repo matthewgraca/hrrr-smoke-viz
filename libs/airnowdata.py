@@ -58,6 +58,37 @@ class AirNowData:
         self.chunk_days = chunk_days
         self.verbose = verbose
         
+        # Try to load from cache first
+        if not force_reprocess and os.path.exists(processed_cache_dir):
+            if verbose < 2:
+                print(
+                    f"Loading processed AirNow data from cache: "
+                    f"{processed_cache_dir}"
+                )
+            try:
+                cached_data = np.load(processed_cache_dir, allow_pickle=True)
+                self.data = cached_data['data']
+                self.ground_site_grids = cached_data['ground_site_grids']
+                
+                air_sens_loc_array = cached_data['air_sens_loc']
+                if isinstance(air_sens_loc_array, np.ndarray):
+                    self.air_sens_loc = air_sens_loc_array.item() if air_sens_loc_array.size == 1 else {}
+                
+                if 'sensor_names' in cached_data:
+                    self.sensor_names = cached_data['sensor_names'].tolist() if len(cached_data['sensor_names']) > 0 else list(self.air_sens_loc.keys())
+                else:
+                    self.sensor_names = list(self.air_sens_loc.keys())
+                
+                if verbose < 2:
+                    print(
+                        f"✓ Successfully loaded processed data from cache\n"
+                        f"  - Data shape: {self.data.shape}\n"
+                        f"  - Found {len(self.air_sens_loc)} sensor locations"
+                    )
+                return
+            except Exception as e:
+                print(f"Error: Couldn't load from cache: {e}. Will reprocess data.")
+
         self.use_whitelist = use_whitelist
         self.sensor_whitelist = sensor_whitelist if sensor_whitelist else []
         
@@ -115,37 +146,6 @@ class AirNowData:
 
         os.makedirs(os.path.dirname(save_dir), exist_ok=True)
         self.sensor_names = []
-        
-        # Try to load from cache first
-        if not force_reprocess and os.path.exists(processed_cache_dir):
-            if verbose < 2:
-                print(
-                    f"Loading processed AirNow data from cache: "
-                    f"{processed_cache_dir}"
-                )
-            try:
-                cached_data = np.load(processed_cache_dir, allow_pickle=True)
-                self.data = cached_data['data']
-                self.ground_site_grids = cached_data['ground_site_grids']
-                
-                air_sens_loc_array = cached_data['air_sens_loc']
-                if isinstance(air_sens_loc_array, np.ndarray):
-                    self.air_sens_loc = air_sens_loc_array.item() if air_sens_loc_array.size == 1 else {}
-                
-                if 'sensor_names' in cached_data:
-                    self.sensor_names = cached_data['sensor_names'].tolist() if len(cached_data['sensor_names']) > 0 else list(self.air_sens_loc.keys())
-                else:
-                    self.sensor_names = list(self.air_sens_loc.keys())
-                
-                if verbose < 2:
-                    print(
-                        f"✓ Successfully loaded processed data from cache\n"
-                        f"  - Data shape: {self.data.shape}\n"
-                        f"  - Found {len(self.air_sens_loc)} sensor locations"
-                    )
-                return
-            except Exception as e:
-                print(f"Error: Couldn't load from cache: {e}. Will reprocess data.")
         
         # Process data from scratch
         list_df = self._get_airnow_data(start_date, end_date, extent, save_dir, airnow_api_key)
@@ -849,7 +849,7 @@ class AirNowData:
         
         return out
 
-    def _get_sensor_vals_from_gridded_data(self, gridded_data, sensor_locations):
+    def get_sensor_vals_from_gridded_data(self, gridded_data, sensor_locations):
         """
         Extracts the sensor values from gridded data.
 
@@ -863,7 +863,7 @@ class AirNowData:
             raise ValueError("No sensor locations available to generate target stations")
 
         s = []
-        for sample in np.squeeze(gridded_data):
+        for sample in gridded_data:
             f = []
             for frame in sample:
                 t = []
