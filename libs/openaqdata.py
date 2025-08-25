@@ -25,6 +25,7 @@ pipeline:
 
 class OpenAQData:
     def __init__(self):
+        return
         response = self._location_query()
         # Save headers response.headers
         print(response.headers)
@@ -152,19 +153,19 @@ class OpenAQData:
         for sensor_id in tqdm(sensor_ids):
             response = measurement_query(sensor_id)
             self._manage_rate_limit(response)
-            tqdm.write(self._get_response_msg(response))
+            tqdm.write(self._get_response_msg(response.status_code))
             responses.append(response)
 
         return responses
 
-    def _get_response_msg(self, response):
+    def _get_response_msg(self, status_code):
         '''
-        Various response messages
+        Various response messages given the status code.
         '''
         server_err_msg = (
             "Server error: Something has failed on the side of OpenAQ services."
         )
-        unknown_err_msg = f"{response.status_code} Unknown Status Code."
+        unknown_err_msg = f"{status_code} Unknown Status Code."
         support_msg = (
             "Go to https://docs.openaq.org/errors/about for help resolving "
             "errors."
@@ -203,10 +204,10 @@ class OpenAQData:
         }
 
         return (
-            response_txt.get(response.status_code, unknown_err_msg)
-            if response.status_code == 200
+            response_txt.get(status_code, unknown_err_msg)
+            if status_code == 200
             else ( 
-                f"{response_txt.get(response.status_code, unknown_err_msg)}\n"
+                f"{response_txt.get(status_code, unknown_err_msg)}\n"
                 "{support_msg}"
             )
         )
