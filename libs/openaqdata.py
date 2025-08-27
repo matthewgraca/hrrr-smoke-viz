@@ -17,6 +17,7 @@ pipeline:
 '''
 - read from cache
 - write to cache
+    - these will be different from goesdata because you sometimes want to read the json but ignore the numpy
 - properly read data into something useful
 - move current init to a "print statistics" or "location info" function
 - create tests for reading response codes and validating output from a known json like airnowdata
@@ -24,90 +25,66 @@ pipeline:
 '''
 
 class OpenAQData:
-    def __init__(self):
-        return
-        response = self._location_query()
+    def __init__(
+        self,
+        start_date="2025-01-10 00:00",
+        end_date="2025-01-10 00:59",
+        extent=(-118.75, -117.0, 33.5, 34.5),
+        dim=40,
+        product=2,          # sensor data to ingest (2 is pm2.5)
+        save_dir=None,      # where json files should be saved to
+        load_json=False,
+        verbose=0,          # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
+    ):
+        """
+        Pipeline:
+            1. Query for list of sensors within start/end date and extent
+            2. Query for data of those sensors
+            3. Read json, plot data on grids of a given dimension
+            4. Interpolate
+
+        On save_dir, save_cache, load_cache, save_cache:
+            - save_dir is just where the json files will be saved, NOT the cache 
+            - cache_path is where the numpy data file lives
+            - save_cache/load_cache tells us if we should save/read the data
+                from cache_path
+        """
+        if load_json:
+            # TODO load da json, but idk which one, maybe the "final" one?
+            save_path = f"{save_dir}/openaq_sensors.json"
+            with open(save_path, 'r') as f:
+                response_text = json.load(f)
+        else:
+            # query for list of sensors
+            response = self._location_query(extent, product, verbose)
+            response_text = response.text
+            if save_dir is not None:
+                self._save_query_response(
+                    save_path=f"{save_dir}/openaq_sensors.json",
+                    verbose=verbose
+                )
+
+        start_datetime = pd.to_datetime(start_date).tz_localize('UTC')
+        end_datetime = pd.to_datetime(end_date).tz_localize('UTC')
+
+        df = self._prune_sensor_list_by_date(
+            response_text, 
+            start_datetime, 
+            end_datetime,
+            verbose
+        )
+        '''
         # Save headers response.headers
         print(response.headers)
+        '''
+        return
 
-        # Save response body to file
-        with open("response.json", "w") as f:
-            f.write(response.text)
+    ### NOTE: Methods for handling the query
 
-        # assumes you run the query and stored it in current directory as 'reponse.json'
-        response_path = 'response.json'
-        with open(response_path, 'r') as rfile:
-            data = json.load(rfile)
-            # pretty up the json if we want to manually inspect it
-            with open(f'pretty_{response_path}', 'w') as wfile:
-                wfile.write(json.dumps(data, indent=4))
-
-            # goal: get sensor IDs, because we use ids to get actual data
-            # query for sensors in the extent collecting PM2.5 data
-            print(f"Query made: {response.url}")
-            print(f"Number of sensors in extent: {len(data['results'])}\n")
-
-            # to build the dataframe
-            ids = list()
-            providers = list()
-            locations = list()
-            lats, lons = list(), list()
-
-            # further prune list of sensors based on time reporting
-            # start = pd.to_datetime(start_date).tz_localize('UTC')
-            # end = pd.to_datetime(end_date).tz_localize('UTC')
-            START_DATE = pd.to_datetime("2023-08-02T00:00:00Z")
-            END_DATE =  pd.to_datetime("2025-08-02T00:00:00Z")
-            provider_ct = dict()
-            for res in data['results']:
-                name = res['provider']['name']
-                start = pd.to_datetime(
-                    res['datetimeFirst']['utc']  
-                    if res['datetimeFirst'] is not None
-                    else END_DATE
-                )
-                end = pd.to_datetime(
-                    res['datetimeLast']['utc']
-                    if res['datetimeLast'] is not None
-                    else START_DATE
-                )
-                if start <= START_DATE and end >= END_DATE:
-                    provider_ct.setdefault(name, 0)
-                    provider_ct[name] = provider_ct[name] + 1
-                    ids.append(res['id'])
-                    providers.append(name)
-                    locations.append(res['name'])
-                    lats.append(res['coordinates']['latitude'])
-                    lons.append(res['coordinates']['longitude'])
-
-            pd.set_option("display.max_rows", None)
-            df = pd.DataFrame({
-                'id' : ids,
-                'provider' : providers,
-                'locations' : locations,
-                'latitude' : lats,
-                'longitude' : lons
-            })
-
-            print(
-                "Providers that meet the criteria:\n"
-                "\t1. Within extent\n"
-                "\t2. Within date range\n"
-                "\t3. Tracks PM2.5\n"
-                f"Number of sensors that meet criteria: {len(ids)}\n"
-                f"Count: {provider_ct}\n"
-                f"Ids: {ids[:5]} ... {ids[-5:]}"
-            )
-
-            print(df)
-
-            # once you have the sensor ids, you can query? Seems like it'd hit the api limit fast, with 200+ sensors.
-            return
-
-    def _location_query(self, extent=(-118.75, 33.5, -117.0, 34.5), product=2):
+    def _location_query(self, extent, product, verbose):
         '''
         Extent: bounds of your region, in the form of:
-            min lon, min lat, max lon, max lat
+            min lon, max lon, min lat, max lat
         Product: The data that is reported by the sensor, e.g.:
             2 = PM2.5
 
@@ -118,7 +95,13 @@ class OpenAQData:
         The response also gives you dates for the sensor's uptime, so this can be
             further used to prune sensors outside your date range.
         '''
-        min_lon, min_lat, max_lon, max_lat = extent
+        if verbose == 0:
+            print(
+                f"🔎  Performing query for sensors in extent={extent}"
+                "and product={product}..."
+            )
+
+        min_lon, max_lon, min_lat, max_lat = extent
         api_key = os.getenv("OPENAQ_API_KEY")
         url = "https://api.openaq.org/v3/locations"
         params = {
@@ -127,12 +110,20 @@ class OpenAQData:
             "limit"         : 1000
         }
         headers = {"X-API-Key": api_key}
+
         response = requests.get(url, params=params, headers=headers)
+
+        if verbose == 0:
+            print(
+                f"Query made: {response.url}\n"
+                f"Number of sensors in extent: "
+                f"{len(response.text['results'])}\n"
+            )
 
         return response
 
-    def _measurement_queries(self, sensor_ids, start_date, end_date):
-        def measurement_query(sensor_id, start_date, end_date):
+    def _measurement_queries(self, sensor_ids, start_datetime, end_datetime):
+        def measurement_query(sensor_id, start_datetime, end_datetime):
             '''
             Query for a specific sensor
             '''
@@ -140,8 +131,8 @@ class OpenAQData:
             url = f"https://api.openaq.org/v3/sensors/{sensor_id}/hours"
             params = {
                 "sensors_id"    : sensor_id,
-                "datetime_from" : start_date,
-                "datetime_to"   : end_date,
+                "datetime_from" : start_datetime,
+                "datetime_to"   : end_datetime,
                 "limit"         : 1000
             }
             headers = {"X-API-Key": api_key}
@@ -236,4 +227,121 @@ class OpenAQData:
             sleep(reset + 5)
 
         return
+
+    def _prune_sensor_list_by_date(
+        self,
+        data,
+        start_datetime,
+        end_datetime,
+        verbose
+    ):
+        if verbose == 0:
+            print(
+                f"🗓️  Pruning sensors by date operational between "
+                f"{start_datetime} and {end_datetime}..."
+            )
+
+        # to build the dataframe
+        ids = list()
+        providers = list()
+        locations = list()
+        lats, lons = list(), list()
+
+        # further prune list of sensors based on time reporting
+        provider_ct = dict()
+        for res in data['results']:
+            name = res['provider']['name']
+            start = pd.to_datetime(
+                res['datetimeFirst']['utc']  
+                if res['datetimeFirst'] is not None
+                else end_datetime 
+            )
+            end = pd.to_datetime(
+                res['datetimeLast']['utc']
+                if res['datetimeLast'] is not None
+                else start_datetime 
+            )
+            if start <= start_datetime and end >= end_datetime:
+                provider_ct.setdefault(name, 0)
+                provider_ct[name] = provider_ct[name] + 1
+                ids.append(res['id'])
+                providers.append(name)
+                locations.append(res['name'])
+                lats.append(res['coordinates']['latitude'])
+                lons.append(res['coordinates']['longitude'])
+
+        df = pd.DataFrame({
+            'id' : ids,
+            'provider' : providers,
+            'locations' : locations,
+            'latitude' : lats,
+            'longitude' : lons
+        })
+
+        if verbose == 0:
+            print(
+                f"Number of sensors that meet criteria: {len(ids)}\n"
+                f"Count: {provider_ct}\n"
+            )
+            pd.set_option("display.max_rows", None)
+            print(df, '\n')
+
+        return df
+
+    def _save_query_response(save_path, verbose):
+        '''
+        Assumes the save path is valid
+        '''
+        if verbose == 0:
+            print(f"Writing query response to {save_path}...")
+        with open(save_path, "w") as f:
+            f.write(json.dumps(response.text, indent=4))
+
+    ### NOTE: Methods for handling the cache
+
+    def _load_cache(self, cache_path):
+        """
+        Loads cache data.
+        """
+        print(f"📂 Loading data from {cache_path}...", end=" ")
+        cached_data = np.load(cache_path)
+
+        # ensure data can be loaded
+        data = cached_data['data']
+        start_date = cached_data['start_date']
+        end_date = cached_data['end_date']
+        extent = cached_data['extent']
+        print(f"✅ Completed!")
+
+        return cached_data
+    
+    def _save_to_cache(self, cache_path, data, start_date, end_date, extent):
+        print(f"💾 Saving data to {cache_path}...", end=" ")
+        np.savez_compressed(
+            cache_path,
+            data=self.data,
+            start_date=start_date,
+            end_date=end_date,
+            extent=extent
+        )
+        print("✅ Complete!")
+
+        return
+
+    def _validate_cache_path(self, save_cache, load_cache, cache_path):
+        """
+        Raises ValueErrors if the params don't agree
+        """
+        msg = (
+            "In order to load from or save to cache, a cache path must be "
+            "provided. "
+            "Either set `load_cache` and `save_cache` to False to "
+            "prevent cache loading/saving, or provide a valid `cache_path`."
+        )
+        if cache_path is None:
+            raise ValueError(f"Cache path is None. {msg}")
+        # only check if cache exists loading, b/c it will be made when saving
+        if load_cache and not os.path.exists(cache_path):
+            raise ValueError(f"Cache path does not exist. {msg}")
+        return True
 
