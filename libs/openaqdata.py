@@ -97,8 +97,8 @@ class OpenAQData:
         '''
         if verbose == 0:
             print(
-                f"🔎  Performing query for sensors in extent={extent}"
-                "and product={product}..."
+                f"🔎  Performing query for sensors in extent={extent} "
+                f"and product={product}..."
             )
 
         min_lon, max_lon, min_lat, max_lat = extent
@@ -113,8 +113,13 @@ class OpenAQData:
 
         response = requests.get(url, params=params, headers=headers)
 
+        if response.status_code != 200:
+            print(f"{self._get_response_msg(response.status_code)}")
+            raise ValueError("Unsuccessful query.")
+
         if verbose == 0:
             print(
+                f"{self._get_response_msg(response.status_code)}\n"
                 f"Query made: {response.url}\n"
                 f"Number of sensors in extent: "
                 f"{len(response.text['results'])}\n"
@@ -199,7 +204,7 @@ class OpenAQData:
             if status_code == 200
             else ( 
                 f"{response_txt.get(status_code, unknown_err_msg)}\n"
-                "{support_msg}"
+                f"{support_msg}"
             )
         )
 
