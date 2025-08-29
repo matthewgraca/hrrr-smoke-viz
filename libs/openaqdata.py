@@ -4,6 +4,7 @@ import re
 import time
 import requests
 import os
+import math
 from tqdm import tqdm
 
 '''
@@ -27,6 +28,7 @@ pipeline:
 class OpenAQData:
     def __init__(
         self,
+        api_key=os.getenv('OPENAQ_API_KEY'),
         start_date="2025-01-10 00:00",
         end_date="2025-01-10 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
@@ -35,6 +37,7 @@ class OpenAQData:
         save_dir=None,      # where json files should be saved to
         load_json=False,
         verbose=0,          # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
+        test_mode=False,    # TODO currently being used to test class methods. will be removed once caching is implemented, and can use this class without querying
     ):
         """
         Pipeline:
@@ -49,39 +52,62 @@ class OpenAQData:
             - save_cache/load_cache tells us if we should save/read the data
                 from cache_path
         """
+        if test_mode:
+            return
         if load_json:
-            # TODO load da json, but idk which one, maybe the "final" one?
+            # TODO currently loads the sensor jsons, should eventually load the final ones
             save_path = f"{save_dir}/openaq_sensors.json"
             with open(save_path, 'r') as f:
-                response_text = json.load(f)
+                response_data = json.load(f)
         else:
             # query for list of sensors
-            response = self._location_query(extent, product, verbose)
-            response_text = response.text
+            response = self._location_query(api_key, extent, product, verbose)
+            response_data = response.json()
             if save_dir is not None:
                 self._save_query_response(
                     save_path=f"{save_dir}/openaq_sensors.json",
                     verbose=verbose
                 )
 
-        start_datetime = pd.to_datetime(start_date).tz_localize('UTC')
-        end_datetime = pd.to_datetime(end_date).tz_localize('UTC')
+        # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
+        # we also are right-exclusive, so we shave another hour off
+        start_datetime = pd.to_datetime(start_date, utc=True) - pd.Timedelta(hours=1)
+        end_datetime = pd.to_datetime(end_date, utc=True) - pd.Timedelta(hours=2)
 
         df = self._prune_sensor_list_by_date(
-            response_text, 
+            response_data, 
             start_datetime, 
             end_datetime,
             verbose
         )
-        '''
-        # Save headers response.headers
-        print(response.headers)
-        '''
+
+        dates = pd.date_range(start_datetime, end_datetime, freq='h', inclusive='left')
+
+        # query by sensor
+        vals_for_all_sensors = []
+        for i, sensor_id in enumerate(tqdm(list(df['pm2.5 sensor id']))):
+            sensor_values = []
+            if verbose == 0:
+                tqdm.write(
+                    f"Ingesting data from {df.iloc[i]['provider']} "
+                    f"sensor at {df.iloc[i]['location']}."
+                )
+            # TODO will need to test ingest and stitching all data of a sensor
+            # TODO need two tests: one file for transformations, the other for queries so we 
+            # don't slam into the rate limit every time we run the test suite.
+            # TODO should probably save all the jsons; by sensor id and page #. save_dir/{sensor_id}/1_{datetimeFrom}_{datetimeTo}.json
+            #### using pagination instead
+            vals_for_all_sensors.append(
+                self._measurement_queries_for_a_sensor(
+                    api_key, sensor_id, start_datetime, end_datetime, verbose
+                )
+            )
+
         return
 
     ### NOTE: Methods for handling the query
 
-    def _location_query(self, extent, product, verbose):
+    def _location_query(self, api_key, extent, product, verbose):
         '''
         Extent: bounds of your region, in the form of:
             min lon, max lon, min lat, max lat
@@ -102,7 +128,6 @@ class OpenAQData:
             )
 
         min_lon, max_lon, min_lat, max_lat = extent
-        api_key = os.getenv("OPENAQ_API_KEY")
         url = "https://api.openaq.org/v3/locations"
         params = {
             "bbox"          : f"{min_lon},{min_lat},{max_lon},{max_lat}",
@@ -112,47 +137,95 @@ class OpenAQData:
         headers = {"X-API-Key": api_key}
 
         response = requests.get(url, params=params, headers=headers)
-
-        if response.status_code != 200:
-            print(f"{self._get_response_msg(response.status_code)}")
-            raise ValueError("Unsuccessful query.")
+        response.raise_for_status()
 
         if verbose == 0:
             print(
                 f"{self._get_response_msg(response.status_code)}\n"
                 f"Query made: {response.url}\n"
                 f"Number of sensors in extent: "
-                f"{len(response.text['results'])}\n"
+                f"{len(response.json()['results'])}\n"
             )
 
         return response
 
-    def _measurement_queries(self, sensor_ids, start_datetime, end_datetime):
-        def measurement_query(sensor_id, start_datetime, end_datetime):
-            '''
-            Query for a specific sensor
-            '''
-            api_key = os.getenv("OPENAQ_API_KEY")
-            url = f"https://api.openaq.org/v3/sensors/{sensor_id}/hours"
-            params = {
-                "sensors_id"    : sensor_id,
-                "datetime_from" : start_datetime,
-                "datetime_to"   : end_datetime,
-                "limit"         : 1000
-            }
-            headers = {"X-API-Key": api_key}
-            response = requests.get(url, params=params, headers=headers)
+    def _measurement_query(
+        self,
+        api_key,
+        sensor_id,  # make sure this is the sensor for the specific product!
+        start_datetime,
+        end_datetime,
+        page=1,
+        verbose=2
+    ):
+        '''
+        Query for a specific sensor
+        '''
+        if verbose == 0:
+            print(
+                f"🔎  Performing query for sensor id = {sensor_id} "
+                f"from {start_datetime} to {end_datetime}..."
+            )
 
-            return response
+        url = f"https://api.openaq.org/v3/sensors/{sensor_id}/hours"
+        params = {
+            "datetime_from" : start_datetime.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+            "datetime_to"   : end_datetime.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+            "page"          : page,
+            "limit"         : 1000
+        }
+        headers = {"X-API-Key": api_key}
+        response = requests.get(url, params=params, headers=headers)
+        response.raise_for_status()
 
-        responses = []
-        for sensor_id in tqdm(sensor_ids):
-            response = measurement_query(sensor_id)
-            self._manage_rate_limit(response)
-            tqdm.write(self._get_response_msg(response.status_code))
-            responses.append(response)
+        if verbose == 0:
+            print(
+                f"{self._get_response_msg(response.status_code)}\n"
+                f"Query made: {response.url}\n"
+            )
 
-        return responses
+        return response
+
+    def _measurement_queries_for_a_sensor(self, api_key, sensor_id, start, end, verbose):
+        '''
+        Uses pagination to get all the sensor values from a single sensor,
+            given the start and end date
+
+        For two years worth of data, it's estimated to be around ~17 calls
+        '''
+        page = 1
+        dates = pd.date_range(start, end, freq='h', inclusive='left', tz='UTC')
+        date_to_sensorval = {k : -1 for k in dates}
+        while page != -1:
+            # query
+            response = self._measurement_query(
+                api_key=api_key, 
+                sensor_id=sensor_id, 
+                start_datetime=start, 
+                end_datetime=end,
+                page=page,
+                verbose=verbose
+            )
+            self._manage_rate_limit(response, verbose)
+
+            # read response
+            response_data = response.json()
+
+            for res in response_data['results']:
+                date_to_sensorval[
+                    pd.to_datetime(res['period']['datetimeTo']['utc'])
+                ] = res['value'] 
+
+            # TODO the call needs to offset the starting datetime by 1 hour(datetimeTo should be the metric for that hour)
+            # read 'found' to determine if we should keep querying
+            cont = False
+            try:
+                remaining_count = int(response_data['meta']['found'])
+            except ValueError: # will be ">1000" usually; just continue
+                cont = True
+            page = page + 1 if cont else -1
+
+        return [v for k, v in sorted(date_to_sensorval.items())]
 
     def _get_response_msg(self, status_code):
         '''
@@ -208,7 +281,7 @@ class OpenAQData:
             )
         )
 
-    def _manage_rate_limit(self, response, verbose=True): 
+    def _manage_rate_limit(self, response, verbose): 
         '''
         Checks rate limit, and throttles if queries get close to surpassing 
             the limit.
@@ -217,15 +290,15 @@ class OpenAQData:
             Throttles when 90% of ratelimit is reached
             Backs off until reset + 5 seconds
         '''
-        used = response.headers['X-Ratelimit-Used']
-        remains = response.headers['X-Ratelimit-Remaining']
-        reset = response.headers['X-Ratelimit-Reset']
-        limit = response.headers['X-Ratelimit-Limit']
+        used = int(response.headers['X-Ratelimit-Used'])
+        remains = int(response.headers['X-Ratelimit-Remaining'])
+        reset = int(response.headers['X-Ratelimit-Reset'])
+        limit = int(response.headers['X-Ratelimit-Limit'])
 
-        max_used = int(limit * 0.9)
+        max_used = math.ceil(limit * 0.9)
         if used > max_used:
-            if verbose:
-                print(
+            if verbose == 0:
+                tqdm.write(
                     f"90% of ratelimit reached; backing off until reset period "
                     "in {reset + 5} seconds..."
                 )
@@ -247,15 +320,17 @@ class OpenAQData:
             )
 
         # to build the dataframe
-        ids = list()
-        providers = list()
-        locations = list()
-        lats, lons = list(), list()
+        d = {
+            'sensor id'         : [],
+            'pm2.5 sensor id'   : [],
+            'provider'          : [],
+            'locations'         : [],
+            'latitude'          : [],
+            'longitude'         : [] 
+        }
 
         # further prune list of sensors based on time reporting
-        provider_ct = dict()
         for res in data['results']:
-            name = res['provider']['name']
             start = pd.to_datetime(
                 res['datetimeFirst']['utc']  
                 if res['datetimeFirst'] is not None
@@ -267,26 +342,21 @@ class OpenAQData:
                 else start_datetime 
             )
             if start <= start_datetime and end >= end_datetime:
-                provider_ct.setdefault(name, 0)
-                provider_ct[name] = provider_ct[name] + 1
-                ids.append(res['id'])
-                providers.append(name)
-                locations.append(res['name'])
-                lats.append(res['coordinates']['latitude'])
-                lons.append(res['coordinates']['longitude'])
+                d['sensor id'].append(res['id'])
+                d['provider'].append(res['provider']['name'])
+                d['locations'].append(res['name'])
+                d['latitude'].append(res['coordinates']['latitude'])
+                d['longitude'].append(res['coordinates']['longitude'])
+                for sensor in res['sensors']:
+                    if sensor['parameter']['id'] == 2:
+                        d['pm2.5 sensor id'].append(sensor['id'])
 
-        df = pd.DataFrame({
-            'id' : ids,
-            'provider' : providers,
-            'locations' : locations,
-            'latitude' : lats,
-            'longitude' : lons
-        })
+        df = pd.DataFrame(d)
 
         if verbose == 0:
             print(
-                f"Number of sensors that meet criteria: {len(ids)}\n"
-                f"Count: {provider_ct}\n"
+                f"Number of sensors that meet criteria: {len(df)}\n"
+                f"Count: {df['provider'].value_counts()}\n"
             )
             pd.set_option("display.max_rows", None)
             print(df, '\n')
