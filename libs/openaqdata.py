@@ -92,14 +92,9 @@ class OpenAQData:
                     f"Ingesting data from {df.iloc[i]['provider']} "
                     f"sensor at {df.iloc[i]['location']}."
                 )
-            # TODO will need to test ingest and stitching all data of a sensor
-            # TODO need two tests: one file for transformations, the other for queries so we 
-            # don't slam into the rate limit every time we run the test suite.
-            # TODO should probably save all the jsons; by sensor id and page #. save_dir/{sensor_id}/1_{datetimeFrom}_{datetimeTo}.json
-            #### using pagination instead
             vals_for_all_sensors.append(
                 self._measurement_queries_for_a_sensor(
-                    api_key, sensor_id, start_datetime, end_datetime, verbose
+                    api_key, sensor_id, start_datetime, end_datetime, save_dir, verbose
                 )
             )
 
@@ -186,7 +181,7 @@ class OpenAQData:
 
         return response
 
-    def _measurement_queries_for_a_sensor(self, api_key, sensor_id, start, end, verbose):
+    def _measurement_queries_for_a_sensor(self, api_key, sensor_id, start, end, save_dir, verbose):
         '''
         Uses pagination to get all the sensor values from a single sensor,
             given the start and end date
@@ -210,13 +205,21 @@ class OpenAQData:
 
             # read response
             response_data = response.json()
-
             for res in response_data['results']:
                 date_to_sensorval[
                     pd.to_datetime(res['period']['datetimeTo']['utc'])
                 ] = res['value'] 
 
-            # TODO the call needs to offset the starting datetime by 1 hour(datetimeTo should be the metric for that hour)
+            # save response in json
+            if save_dir is not None:
+                json_save_dir = f"{save_dir}/{sensor_id}"
+                os.makedirs(json_save_dir, exist_ok=True)
+                first_date = response_data['results'][0]['period']['datetimeTo']['utc']
+                last_date = response_data['results'][-1]['period']['datetimeTo']['utc']
+                json_save_path= f"{json_save_dir}/{first_date}-{last_date}.json"
+                with open(json_save_path, 'w') as f:
+                    json.dump(response.json(), f, indent=4)
+
             # read 'found' to determine if we should keep querying
             cont = False
             try:
