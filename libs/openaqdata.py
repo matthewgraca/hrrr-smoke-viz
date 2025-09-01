@@ -89,6 +89,7 @@ class OpenAQData:
                 )
             with open(locations_path, 'r') as f:
                 loc_data = json.load(f)
+
             # then for each sensor, check if the first date matches the last date
             df = self._prune_sensor_list_by_date(
                 loc_data, start_dt, end_dt, verbose
@@ -493,32 +494,43 @@ class OpenAQData:
 
     def _check_datetimes_in_sensor_dir(self, sensor_dir, start_dt, end_dt, verbose):
         '''
-        Checks if the files in a sensor directory contain the given start and end datetimes
+        Checks if the files in a sensor directory contain the given start 
+            and end datetimes.
         '''
-        # pattern: day_day
-        pattern = re.compile(
-            r"""
-            (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
-            _
-            (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
-            """, 
-            re.VERBOSE
-        )
+        def find_dates_in_dir(sensor_dir):
+            '''
+            bro i wish
+            '''
+            # pattern: day_day
+            pattern = re.compile(
+                r"""
+                (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
+                _
+                (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
+                """, 
+                re.VERBOSE
+            )
+            dates = []
+            for filename in os.listdir(sensor_dir):
+                match = pattern.search(filename)
+                if match:
+                    dates.append(pd.to_datetime(match.group(1)))
+                    dates.append(pd.to_datetime(match.group(2)))
+
+            return sorted(dates)
+
         if verbose == 0:
-            print(f"Examining files in {sensor_dir} for start and end date...")
-        dates = []
-        for filename in os.listdir(sensor_dir):
-            match = pattern.search(filename)
-            if match:
-                start = pd.to_datetime(match.group(1))
-                end = pd.to_datetime(match.group(2))
-                dates.append(start)
-                dates.append(end)
-        dates = sorted(dates)
+            print(
+                f"👀 Examining files in {sensor_dir} "
+                "that match start and end date..."
+            )
+
+        dates = find_dates_in_dir(sensor_dir)
+
         if dates[0] != start_dt or dates[-1] != end_dt:
             raise ValueError(
-                f"Date range misaligned on sensor {sensor}; "
-                f"start date = {dates[0]}, expected {start_dt} and "
+                f"📅 Date range misaligned on sensor {sensor}\n"
+                f"\tstart date = {dates[0]}, expected {start_dt} and "
                 f"end date = {dates[-1]}, expected {end_dt}"
             )
 
