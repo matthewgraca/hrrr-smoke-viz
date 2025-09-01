@@ -10,6 +10,7 @@ load_dotenv()
 class TestOpenAQData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # TODO load from cache in future
         cls.aq = OpenAQData(
             test_mode=True
         )
@@ -31,12 +32,3 @@ class TestOpenAQData(unittest.TestCase):
         strings = [aq._get_response_msg(code) for code in expected]
         actual = [int(re.match(r"^(\d+)", text).group(1)) for text in strings]
         self.assertEqual(expected, actual)
-
-    '''
-    def test_loading_json_from_cache(self):
-        aq = OpenAQData(
-            save_dir='tests/openaqdata/data',
-            load_json=True,
-            verbose=0
-        ) 
-    '''

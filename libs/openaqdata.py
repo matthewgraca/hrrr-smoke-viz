@@ -20,9 +20,7 @@ pipeline:
 - write to cache
     - these will be different from goesdata because you sometimes want to read the json but ignore the numpy
 - properly read data into something useful
-- move current init to a "print statistics" or "location info" function
 - create tests for reading response codes and validating output from a known json like airnowdata
-- figure out what to do with percent coverage. impute or remove? leaning on remove depending on how many it kills.
 '''
 
 class OpenAQData:
@@ -35,7 +33,8 @@ class OpenAQData:
         dim=40,
         product=2,          # sensor data to ingest (2 is pm2.5)
         save_dir=None,      # where json files should be saved to
-        load_json=False,
+        load_json=False,    # specifies that jsons should be loaded from cache
+        load_numpy=False,      # specifies the numpy file should be loaded from cache
         verbose=0,          # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
         test_mode=False,    # TODO currently being used to test class methods. will be removed once caching is implemented, and can use this class without querying
     ):
@@ -46,57 +45,105 @@ class OpenAQData:
             3. Read json, plot data on grids of a given dimension
             4. Interpolate
 
-        On save_dir, save_cache, load_cache, save_cache:
-            - save_dir is just where the json files will be saved, NOT the cache 
-            - cache_path is where the numpy data file lives
-            - save_cache/load_cache tells us if we should save/read the data
-                from cache_path
+        To run from scratch, just keep load_json and load_np off.
+
+        On save_dir, load_json, load_np:
+            - If a save_dir is provided, that's where we'll read/write from as 
+                our cache
+                Note: for LOADING, the save_dir must be valid. for SAVING, it 
+                    need not be valid because it will be created.
+            - load_json is intended for when you have the measurements or
+                sensor jsons, but not the processed numpy file.
+                1. It will attempt to read from 'measurements', then 
+                    from 'locations' if that fails.
+                2. It will pick up processing from there on. So this can be used
+                    as a 'force reprocessing' of a numpy you don't like.
+            - load_np is intended for when you have the completely processed 
+                numpy file. We load it and run it as self.data.
         """
         if test_mode:
             return
+        if load_numpy:
+            cache_data = self._load_cache(cache_path)
+            self.data = cache_data['data'] 
+            return
+
+        # datetimes to use for queries
+        # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
+        # we also are right-exclusive, so we shave an hour off for end time
+        start_dt = pd.to_datetime(start_date, utc=True) - pd.Timedelta(hours=1)
+        end_dt = pd.to_datetime(end_date, utc=True) - pd.Timedelta(hours=1)
+        dates = pd.date_range(
+            start_date, end_date, freq='h', inclusive='left', tz='UTC'
+        )
+        sensor_values = []
+
+        # TODO implement reading from cache and remove test mode
         if load_json:
-            # TODO currently loads the sensor jsons, should eventually load the final ones
-            save_path = f"{save_dir}/openaq_sensors.json"
-            with open(save_path, 'r') as f:
-                response_data = json.load(f)
+            # use locations to check if the sensors in measurements are valid
+            locations_path = f"{save_dir}/locations/sensors_metadata.json"
+            if not os.path.exists(locations_path):
+                raise ValueError(
+                    f"🤷 Cannot load locations data; "
+                    f"expected path is {locations_path}"
+                )
+            with open(locations_path, 'r') as f:
+                loc_data = json.load(f)
+            # then for each sensor, check if the first date matches the last date
+            df = self._prune_sensor_list_by_date(
+                loc_data, start_dt, end_dt, verbose
+            )
+            sensor_ids = list(df['pm2.5 sensor id'])
+            for sensor in sensor_ids:
+                sensor_dir = f"{save_dir}/measurements/{sensor}"
+                self._check_datetimes_in_sensor_dir(
+                    sensor_dir,
+                    pd.to_datetime(start_date, utc=True),
+                    pd.to_datetime(end_dt, utc=True) - pd.Timedelta(hours=1),
+                    verbose
+                ) 
+
+            if verbose == 0 :
+                print("Date range aligned on all sensors, continuing...")
+        # load all the sensor values
         else:
             # query for list of sensors
             response = self._location_query(api_key, extent, product, verbose)
             response_data = response.json()
             if save_dir is not None:
-                self._save_query_response(
-                    save_path=f"{save_dir}/openaq_sensors.json",
-                    verbose=verbose
-                )
+                self._save_locations_json(save_dir, verbose)
 
-        # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
-        # we also are right-exclusive, so we shave another hour off
-        start_datetime = pd.to_datetime(start_date, utc=True) - pd.Timedelta(hours=1)
-        end_datetime = pd.to_datetime(end_date, utc=True) - pd.Timedelta(hours=2)
-
-        df = self._prune_sensor_list_by_date(
-            response_data, 
-            start_datetime, 
-            end_datetime,
-            verbose
-        )
-
-        dates = pd.date_range(start_datetime, end_datetime, freq='h', inclusive='left')
-
-        # query by sensor
-        vals_for_all_sensors = []
-        for i, sensor_id in enumerate(tqdm(list(df['pm2.5 sensor id']))):
-            sensor_values = []
-            if verbose == 0:
-                tqdm.write(
-                    f"Ingesting data from {df.iloc[i]['provider']} "
-                    f"sensor at {df.iloc[i]['location']}."
-                )
-            vals_for_all_sensors.append(
-                self._measurement_queries_for_a_sensor(
-                    api_key, sensor_id, start_datetime, end_datetime, save_dir, verbose
-                )
+            df = self._prune_sensor_list_by_date(
+                response_data, start_dt, end_dt, verbose
             )
+
+            # query by sensor
+            sensor_ids = (
+                tqdm(list(df['pm2.5 sensor id'])) 
+                if verbose < 2 
+                else list(df['pm2.5 sensor id'])
+            )
+            for i, sensor_id in enumerate(sensor_ids):
+                if verbose == 0:
+                    tqdm.write(
+                        f"Ingesting data from {df.iloc[i]['provider']} "
+                        f"sensor at {df.iloc[i]['location']}."
+                    )
+                sensor_values.append(
+                    self._measurement_queries_for_a_sensor(
+                        api_key, sensor_id, start_dt, end_dt, dates, save_dir, verbose
+                    )
+                )
+
+        # TODO process np 
+        # by now, we have 200 sensors, each with around 17k values (for 2 yrs)
+        # imputatations for gaps are -1
+
+        # then we plot them on a grid, impute, and interpolate.
+
+        # TODO afterwards, we can implement reading from cache (locations, or just from measurements folder? if yes locations and no measurements, rerun measuremnetns else read measurements)
+        # then we can remove the test mode and just read from cache.
+        # or maybe get test data and implement cache first?
 
         return
 
@@ -181,7 +228,7 @@ class OpenAQData:
 
         return response
 
-    def _measurement_queries_for_a_sensor(self, api_key, sensor_id, start, end, save_dir, verbose):
+    def _measurement_queries_for_a_sensor(self, api_key, sensor_id, start, end, dates, save_dir, verbose):
         '''
         Uses pagination to get all the sensor values from a single sensor,
             given the start and end date
@@ -189,7 +236,6 @@ class OpenAQData:
         For two years worth of data, it's estimated to be around ~17 calls
         '''
         page = 1
-        dates = pd.date_range(start, end, freq='h', inclusive='left', tz='UTC')
         date_to_sensorval = {k : -1 for k in dates}
         while page != -1:
             # query
@@ -212,13 +258,7 @@ class OpenAQData:
 
             # save response in json
             if save_dir is not None:
-                json_save_dir = f"{save_dir}/{sensor_id}"
-                os.makedirs(json_save_dir, exist_ok=True)
-                first_date = response_data['results'][0]['period']['datetimeTo']['utc']
-                last_date = response_data['results'][-1]['period']['datetimeTo']['utc']
-                json_save_path= f"{json_save_dir}/{first_date}-{last_date}.json"
-                with open(json_save_path, 'w') as f:
-                    json.dump(response.json(), f, indent=4)
+                self._save_measurements_json(save_dir, sensor_id, response_data, verbose)
 
             # read 'found' to determine if we should keep querying
             cont = False
@@ -366,14 +406,42 @@ class OpenAQData:
 
         return df
 
-    def _save_query_response(save_path, verbose):
+    def _save_locations_json(save_dir, verbose):
         '''
-        Assumes the save path is valid
+        Assumes the save dir is valid
         '''
+        save_path = f"{save_dir}/locations/sensors_metadata.json"
         if verbose == 0:
             print(f"Writing query response to {save_path}...")
         with open(save_path, "w") as f:
             f.write(json.dumps(response.text, indent=4))
+
+        return
+
+    def _save_measurements_json(self, save_dir, sensor_id, response_data, verbose):
+        '''
+        Saves the json file of a specific sensor's measurements. Assumes
+            a valid save directory.
+
+        Saves to: 
+            {save_dir}/measurements/{sensor_id}/{start_date}-{end_date}.json
+        '''
+        json_save_dir = f"{save_dir}/measurements/{sensor_id}"
+        os.makedirs(json_save_dir, exist_ok=True)
+        first_date = response_data['results'][0]['period']['datetimeTo']['utc']
+        last_date = response_data['results'][-1]['period']['datetimeTo']['utc']
+        json_save_path= f"{json_save_dir}/{first_date}_{last_date}.json"
+
+        if verbose == 0:
+            print(
+                f"Writing measurements from sensor {sensor_id} from "
+                f"{first_date} to {last_date} to {json_save_path}"
+            )
+
+        with open(json_save_path, 'w') as f:
+            json.dump(response_data, f, indent=4)
+
+        return
 
     ### NOTE: Methods for handling the cache
 
@@ -423,3 +491,35 @@ class OpenAQData:
             raise ValueError(f"Cache path does not exist. {msg}")
         return True
 
+    def _check_datetimes_in_sensor_dir(self, sensor_dir, start_dt, end_dt, verbose):
+        '''
+        Checks if the files in a sensor directory contain the given start and end datetimes
+        '''
+        # pattern: day_day
+        pattern = re.compile(
+            r"""
+            (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
+            _
+            (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
+            """, 
+            re.VERBOSE
+        )
+        if verbose == 0:
+            print(f"Examining files in {sensor_dir} for start and end date...")
+        dates = []
+        for filename in os.listdir(sensor_dir):
+            match = pattern.search(filename)
+            if match:
+                start = pd.to_datetime(match.group(1))
+                end = pd.to_datetime(match.group(2))
+                dates.append(start)
+                dates.append(end)
+        dates = sorted(dates)
+        if dates[0] != start_dt or dates[-1] != end_dt:
+            raise ValueError(
+                f"Date range misaligned on sensor {sensor}; "
+                f"start date = {dates[0]}, expected {start_dt} and "
+                f"end date = {dates[-1]}, expected {end_dt}"
+            )
+
+        return

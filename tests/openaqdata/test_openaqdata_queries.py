@@ -7,10 +7,22 @@ import requests
 class TestOpenAQDataQueries(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # TODO load from cache in future
         cls.aq = OpenAQData(
+#            self,
+#            api_key=os.getenv('OPENAQ_API_KEY'),
+#            start_date="2023-08-02",
+#            end_date="2023-10-02",
+#            extent=(-118.75, -117.0, 33.5, 34.5),
+#            dim=40,
+#            product=2,          
+#            save_dir='tests/openaqdata/data', 
+#            load_json=True,    
+#            load_numpy=False,      
+#            verbose=0,          
             test_mode=True
         )
-    
+
     @classmethod
     def tearDownClass(cls):
         del cls.aq
@@ -18,17 +30,30 @@ class TestOpenAQDataQueries(unittest.TestCase):
     def test_multiple_queries_for_single_sensor(self):
         start = pd.to_datetime("2023-08-02")
         end = pd.to_datetime("2023-10-02")
+        dates = pd.date_range(start, end, freq='h', inclusive='left', tz='UTC')
 
         actual = len(self.aq._measurement_queries_for_a_sensor(
             api_key=os.getenv('OPENAQ_API_KEY'),
             sensor_id=2150,
             start=start-pd.Timedelta(hours=1),
-            end=end-pd.Timedelta(hours=2),
-            save_dir='tests/data',
+            end=end-pd.Timedelta(hours=1),
+            dates=dates,
+            save_dir='tests/openaqdata/data',
             verbose=0
         ))
-        expected = len(pd.date_range(start, end, freq='h', inclusive='left', tz='UTC'))
+
+        expected = len(dates)
         self.assertEqual(expected, actual)
+
+        # we bundle the test to check json loading here since we can't 
+        # guarantee that other test will run after this one here.
+        # should not throw an error
+        self.aq._check_datetimes_in_sensor_dir(
+            'tests/openaqdata/data/measurements/2150',
+            pd.to_datetime(start, utc=True),
+            pd.to_datetime(end, utc=True) - pd.Timedelta(hours=1),
+            verbose=0
+        )
 
     def test_bad_locations_query_throws_value_error(self):
         with self.assertRaises(requests.exceptions.HTTPError):
