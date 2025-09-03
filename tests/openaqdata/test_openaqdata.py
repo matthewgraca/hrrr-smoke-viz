@@ -10,9 +10,17 @@ load_dotenv()
 class TestOpenAQData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # TODO load from cache in future
         cls.aq = OpenAQData(
-            test_mode=True
+            api_key=os.getenv('OPENAQ_API_KEY'),
+            start_date="2023-08-02",
+            end_date="2023-08-09",
+            extent=(-118.2, -118.0, 34.0, 34.15),
+            dim=40,
+            product=2,          
+            save_dir='tests/openaqdata/data', 
+            load_json=True,    
+            load_numpy=False,      
+            verbose=2,          
         )
     
     @classmethod

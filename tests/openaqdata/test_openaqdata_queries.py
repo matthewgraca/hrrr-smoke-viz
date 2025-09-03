@@ -7,20 +7,17 @@ import requests
 class TestOpenAQDataQueries(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # TODO load from cache in future
         cls.aq = OpenAQData(
-#            self,
-#            api_key=os.getenv('OPENAQ_API_KEY'),
-#            start_date="2023-08-02",
-#            end_date="2023-10-02",
-#            extent=(-118.75, -117.0, 33.5, 34.5),
-#            dim=40,
-#            product=2,          
-#            save_dir='tests/openaqdata/data', 
-#            load_json=True,    
-#            load_numpy=False,      
-#            verbose=0,          
-            test_mode=True
+            api_key=os.getenv('OPENAQ_API_KEY'),
+            start_date="2023-08-02",
+            end_date="2023-08-09",
+            extent=(-118.2, -118.0, 34.0, 34.15),
+            dim=40,
+            product=2,          
+            save_dir='tests/openaqdata/data', 
+            load_json=True,    
+            load_numpy=False,      
+            verbose=2,          
         )
 
     @classmethod
