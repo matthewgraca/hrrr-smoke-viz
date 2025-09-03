@@ -49,7 +49,14 @@ def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist, allow
     return grid
 
 
-def interpolate_frame(f, dim, apply_filter=False, interp_flag=0):
+def interpolate_frame(
+    f,                  
+    dim,                
+    apply_filter=False, 
+    interp_flag=0,      
+    power=2.0,           
+    epsilon=1e-6
+):
     """
     Interpolates sparse data across a grid using Inverse Distance Weighting (IDW).
     
@@ -63,6 +70,11 @@ def interpolate_frame(f, dim, apply_filter=False, interp_flag=0):
         Determines if IDW should apply Gaussian filter
     interp_flag : any
         Value that IDW should interpolate over. Usually 0 or np.nan 
+        Use case: if 0 is a valid value, then you would use np.nan as the
+        sentinel value that determines what cell gets interpolated
+    power : double
+        Controls the significance of the known points. More = nearby points 
+        have more influence
     
     Returns:
     --------
@@ -72,16 +84,19 @@ def interpolate_frame(f, dim, apply_filter=False, interp_flag=0):
     x_list, y_list, values = [], [], []
     for x in range(f.shape[0]):
         for y in range(f.shape[1]):
+            add_xy_to_list = False
+
             if np.isnan(interp_flag):
                 if not np.isnan(f[x, y]):
-                    x_list.append(x)
-                    y_list.append(y)
-                    values.append(f[x, y])
+                    add_xy_to_list = True
             else:
                 if f[x, y] != interp_flag:
-                    x_list.append(x)
-                    y_list.append(y)
-                    values.append(f[x, y])
+                    add_xy_to_list = True
+
+            if add_xy_to_list:
+                x_list.append(x)
+                y_list.append(y)
+                values.append(f[x, y])
     
     coords = list(zip(x_list, y_list))
     
@@ -105,7 +120,6 @@ def interpolate_frame(f, dim, apply_filter=False, interp_flag=0):
     
     try:
         interpolated = np.zeros((dim, dim))
-        power = 1.5
         epsilon = 1e-6
         
         for i in range(dim):
