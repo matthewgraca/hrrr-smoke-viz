@@ -15,7 +15,8 @@ class TestOpenAQDataQueries(unittest.TestCase):
             dim=40,
             product=2,          
             save_dir='tests/openaqdata/data', 
-            load_json=True,    
+            load_json=False,    
+            load_csv=True,
             load_numpy=False,      
             verbose=2,          
         )

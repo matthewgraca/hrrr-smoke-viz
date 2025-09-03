@@ -5,6 +5,7 @@ import time
 import requests
 import os
 import math
+import numpy as np
 from tqdm import tqdm
 
 class OpenAQData:
@@ -18,6 +19,7 @@ class OpenAQData:
         product=2,          # sensor data to ingest (2 is pm2.5)
         save_dir=None,      # where json files should be saved to
         load_json=False,    # specifies that jsons should be loaded from cache
+        load_csv=False,     # speficifies that the csvs should be loaded from cache
         load_numpy=False,   # specifies the numpy file should be loaded from cache
         verbose=0,          # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ):
@@ -30,7 +32,7 @@ class OpenAQData:
 
         To run from scratch, just keep load_json and load_np off.
 
-        On save_dir, load_json, load_np:
+        On save_dir, load_json, load_numpy, and load_csv:
             - If a save_dir is provided, that's where we'll read/write from as 
                 our cache
                 Note: for LOADING, the save_dir must be valid. for SAVING, it 
@@ -41,16 +43,17 @@ class OpenAQData:
                     from 'locations' if that fails.
                 2. It will pick up processing from there on. So this can be used
                     as a 'force reprocessing' of a numpy you don't like.
-            - load_np is intended for when you have the completely processed 
+            - load_csv is when you have processed the json files already.
+            - load_numpy is intended for when you have the completely processed 
                 numpy file. We load it and run it as self.data.
-        '''
-        if test_mode:
-            return
-        if load_numpy:
-            cache_data = self._load_cache(cache_path)
-            self.data = cache_data['data'] 
-            return
 
+            Think of it as:
+                json = raw api reponses
+                csv = processed jsons
+                numpy = gridded and interpolated
+        '''
+        # TODO I'm starting to come around abit on private members being ok as long as they are strictly constants, e.g. dates
+        # TODO esp because not having them makes the function signatures massive. I am at the very least down to make verbose private
         # datetimes to use for queries
         # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
         # we also are right-exclusive, so we shave an hour off for end time
@@ -59,37 +62,70 @@ class OpenAQData:
         dates = pd.date_range(
             start_date, end_date, freq='h', inclusive='left', tz='UTC'
         )
-        sensor_values = []
-
-        if load_json:
-            sensor_values = self._load_sensor_vals_from_json_cache(
-                save_dir, start_date, end_date, start_dt, end_dt, dates, verbose
+        if load_numpy:
+            cache_data = self._load_numpy_cache(cache_path)
+            self.data = cache_data['data'] 
+            return
+        elif load_csv:
+            df_locations = pd.read_csv(
+                f'{save_dir}/locations_summary.csv',
+                index_col='Unnamed: 0'
             )
-            # NOTE sensor_values and df are parallel arrays
-            # so you can grab sensor_values, and metadata by index (or iloc)
-            if verbose == 0:
-                print('Date range aligned on all sensors, values loaded.')
+            df_measurements = pd.read_csv(
+                f'{save_dir}/measurements_summary.csv',
+                index_col='Unnamed: 0'
+            )
+            sensor_values = [list(df_measurements[col]) for col in df_measurements]
+        elif load_json:
+            # use locations to check if the sensors in measurements are valid
+            response_data = self._open_locations_json(save_dir)
 
+            # then for each sensor, check if the first date matches the last date
+            df_locations = self._prune_sensor_list_by_date(
+                response_data, start_dt, end_dt, save_dir, verbose
+            )
+
+            sensor_values = self._load_sensor_vals_from_json_cache(
+                df_locations,
+                save_dir,
+                start_date,
+                end_date,
+                start_dt,
+                end_dt,
+                dates,
+                verbose
+            )
         else:
             # query for list of sensors
             response = self._location_query(
                 api_key, extent, product, save_dir, verbose
             )
 
-            df = self._prune_sensor_list_by_date(
+            df_locations = self._prune_sensor_list_by_date(
                 response.json(), start_dt, end_dt, save_dir, verbose
             )
 
             # query by sensor
             sensor_values = self._measurement_query_for_all_sensors(
-                df, api_key, start_dt, end_dt, dates, save_dir, verbose
+                df_locations, api_key, start_dt, end_dt, dates, save_dir, verbose
             )
 
         # TODO process np 
         # by now, we have 200 sensors, each with around 17k values (for 2 yrs)
-        # imputatations for gaps are -1
-
-        # then we plot them on a grid, impute, and interpolate.
+        # imputatations for gaps are np.nan 
+        # then we plot them on a 1. grid, 2. impute, and 3. interpolate.
+        ground_site_grids = [
+            self._preprocess_ground_sites(
+                df=pd.DataFrame({
+                    'lat' : df_locations['latitude'],
+                    'lon' : df_locations['longitude'],
+                    'val' : values
+                }),
+                dim=dim,
+                extent=extent
+            )
+            for values in np.transpose(sensor_values)
+        ]
 
         return
 
@@ -183,9 +219,11 @@ class OpenAQData:
             given the start and end date
 
         For two years worth of data, it's estimated to be around ~17 calls
+
+        Gaps are imputed with 0.
         '''
         page = 1
-        date_to_sensorval = {k : -1 for k in dates}
+        date_to_sensorval = {k : np.nan for k in dates}
         while page != -1:
             # query
             response = self._measurement_query(
@@ -252,6 +290,8 @@ class OpenAQData:
                     verbose
                 )
             )
+
+        self._save_measurements_csv(save_dir, df, sensor_values, verbose)
 
         return sensor_values
 
@@ -390,7 +430,7 @@ class OpenAQData:
         if verbose == 0:
             print(
                 f'Number of sensors that meet criteria: {len(df)}\n'
-                f'Count: {df['provider'].value_counts()}\n'
+                f"Count: {df['provider'].value_counts()}\n"
             )
             pd.set_option('display.max_rows', None)
             print(df, '\n')
@@ -450,11 +490,11 @@ class OpenAQData:
 
     ### NOTE: Methods for handling the cache
 
-    def _load_cache(self, cache_path):
+    def _load_numpy_cache(self, cache_path):
         '''
         Loads numpy cache data.
         '''
-        print(f'📂 Loading data from {cache_path}...', end=' ')
+        print(f'📂 Loading numpy data from {cache_path}...', end=' ')
         cached_data = np.load(cache_path)
 
         # ensure data can be loaded
@@ -466,7 +506,7 @@ class OpenAQData:
 
         return cached_data
     
-    def _save_to_cache(self, cache_path, data, start_date, end_date, extent):
+    def _save_numpy_to_cache(self, cache_path, data, start_date, end_date, extent):
         print(f'💾 Saving data to {cache_path}...', end=' ')
         np.savez_compressed(
             cache_path,
@@ -578,6 +618,7 @@ class OpenAQData:
 
     def _load_sensor_vals_from_json_cache(
         self,
+        df,         # dataframe containing locations data 
         save_dir,
         start_date, # start date used for searching files
         end_date,   # end date used for searching files
@@ -587,14 +628,6 @@ class OpenAQData:
         verbose
     ):
         sensor_values = []
-
-        # use locations to check if the sensors in measurements are valid
-        loc_data = self._open_locations_json(save_dir)
-
-        # then for each sensor, check if the first date matches the last date
-        df = self._prune_sensor_list_by_date(
-            loc_data, start_dt, end_dt, None, verbose
-        )
         for sensor_id in list(df['pm2.5 sensor id']):
             sensor_dir = f'{save_dir}/measurements/{sensor_id}'
             self._check_datetimes_in_sensor_dir(
@@ -608,4 +641,66 @@ class OpenAQData:
                 self._load_measurements_jsons_of_sensor(sensor_dir, dates)
             )
 
+        self._save_measurements_csv(save_dir, df, sensor_values, verbose)
+
+        if verbose == 0:
+            print('Date range aligned on all sensors, values loaded.')
+
         return sensor_values
+    
+    def _save_measurements_csv(self, save_dir, df, sensor_values, verbose):
+        if verbose == 0:
+            print(f'💾 Saving measurements summary... ', end=' ')
+
+        df_measurements = pd.DataFrame({
+            location : vals
+            for location, vals in zip(df['locations'], sensor_values)
+        })
+        df_measurements.to_csv(f'{save_dir}/measurements_summary.csv')
+        
+        if verbose == 0: print('✅ Complete!')
+
+    # NOTE Numpy processing methods
+    def _preprocess_ground_sites(self, df, dim, extent):
+        """
+        Places ground station data onto a regular grid with bounds checking and missing value handling.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame with lat (0), lon (1), and value (2) columns
+        dim : int
+            Output grid dimension (dim x dim)
+        extent : int 4-tuple
+            Bounding box in the form: (lon min, lon max, lat min, lat max)
+        
+        Returns:
+        --------
+        numpy.ndarray
+            Grid (dim x dim) with station values at their geographic positions
+        """
+        # TODO this is definitely inefficient, we recompute locations for EVERY frame
+        # better to do a one-time compute of indicies (preprocess() + place ground sites())
+        # or preprocess = find_locations() + loop : place_ground_sites()
+        lon_min, lon_max, lat_min, lat_max = extent
+        lat_dist, lon_dist = abs(lat_max - lat_min), abs(lon_max - lon_min)
+
+        grid = np.full((dim, dim), np.nan)
+        data = np.array(df)
+        
+        for i in range(data.shape[0]):
+            try:
+                x = int(((lat_max - data[i, 0]) / lat_dist) * dim)
+                y = dim - int(((lon_max + abs(data[i, 1])) / lon_dist) * dim)
+                
+                x = max(0, min(x, dim - 1))
+                y = max(0, min(y, dim - 1))
+                
+                #grid[x, y] = value if (value >= 0 and not np.isnan(value)) else 0
+                # for openaq pm2.5, it's either valid or our own imputation, np.nan
+                grid[x, y] = data[i, 2]
+                        
+            except Exception as e:
+                print(f"Error placing point on grid: {e}")
+        
+        return grid
