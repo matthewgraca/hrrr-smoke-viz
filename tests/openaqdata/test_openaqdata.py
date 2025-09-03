@@ -49,6 +49,39 @@ class TestOpenAQData(unittest.TestCase):
         actual = [int(re.match(r"^(\d+)", text).group(1)) for text in strings]
         self.assertEqual(expected, actual)
 
+    def test_sensor_locations_are_pulled(self):
+        expected = {
+            'Rowan ES (6425)': (32, 3),
+            'Garfield HS/Monterey CHS (8677)': (32, 9),
+            'Harrison ES (4438)': (25, 3),
+            'Sierra Park ES (6753)': (18, 7),
+            'Annandale ES (2151)': (5, 3),
+            'Multnomah St ES (5425)': (21, 2),
+            'Sierra Vista ES (6767)': (14, 9),
+            'El Sereno ES (3562)': (15, 5),
+            'San Pascual ES (6493)': (8, 6),
+            'UltimateReality': (3, 20)
+        }
+
+        df_locations = pd.read_csv(
+            f'{self.save_dir}/locations_summary.csv',
+            index_col='Unnamed: 0'
+        )
+
+        actual = dict(zip(
+            df_locations['locations'],
+            self.aq._get_sensor_locations_on_grid(
+                df=pd.DataFrame({
+                    'lat' : df_locations['latitude'],
+                    'lon' : df_locations['longitude']
+                }),
+                dim=self.dim,
+                extent=self.extent
+            )
+        ))
+
+        self.assertEqual(expected, actual)
+
     def test_preprocess_ground_sites_on_cache(self):
         '''
         Given locations and dummy sensor data, they should be plotted on a dim x dim grid
@@ -60,13 +93,16 @@ class TestOpenAQData(unittest.TestCase):
         )
         values = [0] * len(df_locations)
         grid = self.aq._preprocess_ground_sites(
-            df=pd.DataFrame({
-                'lat' : df_locations['latitude'],
-                'lon' : df_locations['longitude'],
-                'val' : values
-            }),
+            data=values,
             dim=self.dim,
-            extent=self.extent,
+            locations_on_grid=self.aq._get_sensor_locations_on_grid(
+                df=pd.DataFrame({
+                    'lat' : df_locations['latitude'],
+                    'lon' : df_locations['longitude']
+                }),
+                dim=self.dim,
+                extent=self.extent
+            )
         )
         actual = len(np.where(~np.isnan(grid))[0])
 

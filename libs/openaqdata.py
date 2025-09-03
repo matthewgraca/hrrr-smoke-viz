@@ -54,6 +54,8 @@ class OpenAQData:
         '''
         # TODO I'm starting to come around abit on private members being ok as long as they are strictly constants, e.g. dates
         # TODO esp because not having them makes the function signatures massive. I am at the very least down to make verbose private
+        self.data = None
+        self.sensor_locations = None
         # datetimes to use for queries
         # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
         # we also are right-exclusive, so we shave an hour off for end time
@@ -114,19 +116,18 @@ class OpenAQData:
         # by now, we have 200 sensors, each with around 17k values (for 2 yrs)
         # imputatations for gaps are np.nan 
         # then we plot them on a 1. grid, 2. impute, and 3. interpolate.
+        df = pd.DataFrame({
+            'lat' : df_locations['latitude'],
+            'lon' : df_locations['longitude']
+        })
+        locations_on_grid = self._get_sensor_locations_on_grid(df, dim, extent)
+        self.sensor_locations = dict(
+            zip(df_locations['locations'], locations_on_grid)
+        )
         ground_site_grids = [
-            self._preprocess_ground_sites(
-                df=pd.DataFrame({
-                    'lat' : df_locations['latitude'],
-                    'lon' : df_locations['longitude'],
-                    'val' : values
-                }),
-                dim=dim,
-                extent=extent
-            )
+            self._preprocess_ground_sites(values, dim, locations_on_grid)
             for values in np.transpose(sensor_values)
         ]
-
         return
 
     ### NOTE: Methods for handling the query
@@ -661,18 +662,36 @@ class OpenAQData:
         if verbose == 0: print('✅ Complete!')
 
     # NOTE Numpy processing methods
-    def _preprocess_ground_sites(self, df, dim, extent):
+    def _get_sensor_locations_on_grid(self, df, dim, extent):
+        lon_min, lon_max, lat_min, lat_max = extent
+        lat_dist, lon_dist = abs(lat_max - lat_min), abs(lon_max - lon_min)
+        data = np.array(df)
+        locations_on_grid = []
+        for i in range(data.shape[0]):
+            lat, lon = data[i, 0], data[i, 1] 
+
+            x = int(((lat_max - lat) / lat_dist) * dim)
+            y = dim - int(((lon_max + abs(lon)) / lon_dist) * dim)
+            
+            x = max(0, min(x, dim - 1))
+            y = max(0, min(y, dim - 1))
+
+            locations_on_grid.append((x, y)) 
+
+        return locations_on_grid
+
+    def _preprocess_ground_sites(self, data, dim, locations_on_grid):
         """
         Places ground station data onto a regular grid with bounds checking and missing value handling.
         
         Parameters:
         -----------
-        df : pandas.DataFrame
-            DataFrame with lat (0), lon (1), and value (2) columns
+        data: list of floats
+            The sensor values on this one frame
         dim : int
-            Output grid dimension (dim x dim)
-        extent : int 4-tuple
-            Bounding box in the form: (lon min, lon max, lat min, lat max)
+            The dimensions of the grid
+        locations_on_grid : list of int pairs
+            The x, y locations of each sensor on a grid
         
         Returns:
         --------
@@ -682,25 +701,13 @@ class OpenAQData:
         # TODO this is definitely inefficient, we recompute locations for EVERY frame
         # better to do a one-time compute of indicies (preprocess() + place ground sites())
         # or preprocess = find_locations() + loop : place_ground_sites()
-        lon_min, lon_max, lat_min, lat_max = extent
-        lat_dist, lon_dist = abs(lat_max - lat_min), abs(lon_max - lon_min)
+        # this actually makes sense, since we need to get the sensor locs ANYWAYS!!!
 
         grid = np.full((dim, dim), np.nan)
-        data = np.array(df)
         
-        for i in range(data.shape[0]):
-            try:
-                x = int(((lat_max - data[i, 0]) / lat_dist) * dim)
-                y = dim - int(((lon_max + abs(data[i, 1])) / lon_dist) * dim)
-                
-                x = max(0, min(x, dim - 1))
-                y = max(0, min(y, dim - 1))
-                
-                #grid[x, y] = value if (value >= 0 and not np.isnan(value)) else 0
-                # for openaq pm2.5, it's either valid or our own imputation, np.nan
-                grid[x, y] = data[i, 2]
-                        
-            except Exception as e:
-                print(f"Error placing point on grid: {e}")
+        for i, xy in enumerate(locations_on_grid):
+            x, y = xy
+            grid[x, y] = data[i]
         
         return grid
+
