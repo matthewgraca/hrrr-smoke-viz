@@ -178,7 +178,7 @@ def std_scale(
     '''
     if verbose:
         if save:
-            print("⚖️  Scaling data and saving to {save_path}...", end= " ")
+            print(f"⚖️  Scaling data and saving to {save_path}...", end= " ")
         else:
             print("⚖️  Scaling data...", end= " ")
 
