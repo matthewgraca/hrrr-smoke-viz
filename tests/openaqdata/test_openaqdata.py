@@ -25,7 +25,7 @@ class TestOpenAQData(unittest.TestCase):
             load_json=False,    
             load_csv=True,
             load_numpy=False,      
-            verbose=2,          
+            verbose=0,          
         )
         cls.extent = extent
         cls.dim = dim

@@ -7,6 +7,7 @@ import os
 import math
 import numpy as np
 from tqdm import tqdm
+from libs.pwwb.utils.interpolation import interpolate_frame
 
 class OpenAQData:
     def __init__(
@@ -110,10 +111,9 @@ class OpenAQData:
                 df_locations, api_key, start_dt, end_dt, dates, save_dir 
             )
 
-        # TODO process np 
-        # by now, we have 200 sensors, each with around 17k values (for 2 yrs)
-        # imputatations for gaps are np.nan 
-        # then we plot them on a 1. grid, 2. impute, and 3. interpolate.
+        # process to numpy
+        # TODO: flags for enabling/disabling interpolation, and imputation, saving ground site grids
+        # TODO: test cases for interpolation
         df = pd.DataFrame({
             'lat' : df_locations['latitude'],
             'lon' : df_locations['longitude']
@@ -122,10 +122,30 @@ class OpenAQData:
         self.sensor_locations = dict(
             zip(df_locations['locations'], locations_on_grid)
         )
-        ground_site_grids = [
-            self._preprocess_ground_sites(values, dim, locations_on_grid)
-            for values in np.transpose(sensor_values)
-        ]
+
+        # TODO mean of empty slice and scalar divide issue. either debug it or silence it
+        ground_site_grids = self._df_to_gridded_data(
+            sensor_values, dim, self.sensor_locations
+        )
+
+        interpolated_grids = self._interpolate_all_frames(
+            ground_site_grids=ground_site_grids,
+            dim=dim,
+            apply_filter=False,
+            interp_flag=np.nan,
+            power=2.0
+        )
+
+        self.data = interpolated_grids
+
+        self._save_numpy_to_cache(
+            cache_path=f'{save_dir}/openaq_processed.npz',
+            data=self.data,
+            start_date=start_date,
+            end_date=end_date,
+            extent=extent
+        )
+
         return
 
     ### NOTE: Methods for handling the query
@@ -719,3 +739,122 @@ class OpenAQData:
         
         return grid
 
+    def _impute_ground_site_grids(self, ground_sites, sensor_locations):
+        """
+        Replaces dead sensors and outliers with the mean value of the 
+            closest three non-nan sensors
+        """
+        # replace outliers with nan
+        imputed_ground_sites = np.array(ground_sites)
+        for x, y in sensor_locations.values():
+            sensor_vals = imputed_ground_sites[:, x, y]
+            sensor_vals = self._replace_outliers_with_nan(sensor_vals)
+            imputed_ground_sites[:, x, y] = sensor_vals
+
+        # get closest sensors to each station
+        sensor_to_closest_stations = self._get_closest_stations_to_each_sensor(
+            sensor_locations
+        )
+
+        # pick from closest 3 non-nans 
+        loc_to_sensor = {v : k for k, v in sensor_locations.items()}
+        for frame in imputed_ground_sites:
+            for x, y in sensor_locations.values():
+                if np.isnan(frame[x, y]):
+                    closest_loc_to_xy = sensor_to_closest_stations[loc_to_sensor[(x, y)]]
+                    sensor_data = np.array([frame[a, b] for a, b in closest_loc_to_xy])
+                    frame[x, y] = np.mean(sensor_data[~np.isnan(sensor_data)][:3])
+
+        return imputed_ground_sites
+
+    def _replace_outliers_with_nan(self, data, max_z_score=3):
+        """
+        If all data is just nan, then the mean will also be nan and 
+        a runtime warning will pop up.
+        """
+        return np.where(
+            abs(data - np.nanmean(data)) <= max_z_score * np.nanstd(data),
+            data,
+            np.nan,
+        )
+
+    def _get_closest_stations_to_each_sensor(self, sensor_locations):
+        return {
+            station : self._find_closest_values(
+                x=location[0], 
+                y=location[1], 
+                coordinates=list(sensor_locations.values()),
+                n=len(sensor_locations)
+            )[0][1:] 
+            for station, location in sensor_locations.items()
+        }
+
+    def _find_closest_values(self, x, y, coordinates, n=10):
+        """
+        Find n closest sensor locations for interpolation.
+
+        Returns a pair (closest values, distances)
+        """
+        if not coordinates:
+            return [], np.array([])
+            
+        coords_array = np.array(coordinates)
+        diffs = coords_array - np.array([x, y])
+        distances = np.sqrt(np.sum(diffs**2, axis=1))
+        
+        closest_indices = np.argsort(distances)[:n]
+        sorted_distances = distances[closest_indices]
+        
+        magnitude = np.linalg.norm(sorted_distances)
+
+        normalized_distances = (
+            sorted_distances / magnitude 
+            if magnitude > 0 
+            else sorted_distances
+        )
+            
+        closest_values = [coordinates[i] for i in closest_indices]
+        return closest_values, normalized_distances
+
+    def _df_to_gridded_data(self, sensor_values, dim, sensor_locations):
+        if self.VERBOSE == 0:
+            print(
+                "📍 Processing ground sites and imputing "
+                "dead sensors and outliers..."
+            )
+
+        ground_site_grids = [
+            self._preprocess_ground_sites(vals, dim, sensor_locations.values())
+            for vals in (
+                tqdm(np.transpose(sensor_values))
+                if self.VERBOSE < 2
+                else np.transpose(sensor_values)
+            )
+        ]
+        ground_site_grids = self._impute_ground_site_grids(
+            ground_site_grids, 
+            sensor_locations
+        )
+
+        return np.array(ground_site_grids)
+
+    def _interpolate_all_frames(
+        self,
+        ground_site_grids,
+        dim,
+        apply_filter,
+        interp_flag,
+        power
+    ):
+        if self.VERBOSE == 0:
+            print(
+                f"🐻 Performing IDW interpolation on "
+                f"{len(ground_site_grids)} frames..."
+            )
+        return np.array([
+            interpolate_frame(frame, dim, apply_filter, np.nan, power)
+            for frame in (
+                tqdm(ground_site_grids) 
+                if self.VERBOSE < 2 else ground_site_grids
+            )
+        ])
