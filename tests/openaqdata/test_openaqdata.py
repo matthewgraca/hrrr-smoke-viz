@@ -108,3 +108,10 @@ class TestOpenAQData(unittest.TestCase):
 
         self.assertEqual(expected, actual)
         self.assertEqual((self.dim , self.dim), grid.shape)
+
+    def test_verbose_flags(self):
+        with self.assertRaises(ValueError):
+            OpenAQData(verbose="asdf")
+    
+        with self.assertRaises(ValueError):
+            OpenAQData(verbose=-1)

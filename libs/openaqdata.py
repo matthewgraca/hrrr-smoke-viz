@@ -53,9 +53,10 @@ class OpenAQData:
                 numpy = gridded and interpolated
         '''
         # TODO I'm starting to come around abit on private members being ok as long as they are strictly constants, e.g. dates
-        # TODO esp because not having them makes the function signatures massive. I am at the very least down to make verbose private
         self.data = None
         self.sensor_locations = None
+        self.VERBOSE = self._validate_verbose_flag(verbose)
+
         # datetimes to use for queries
         # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
         # we also are right-exclusive, so we shave an hour off for end time
@@ -84,7 +85,7 @@ class OpenAQData:
 
             # then for each sensor, check if the first date matches the last date
             df_locations = self._prune_sensor_list_by_date(
-                response_data, start_dt, end_dt, save_dir, verbose
+                response_data, start_dt, end_dt, save_dir 
             )
 
             sensor_values = self._load_sensor_vals_from_json_cache(
@@ -94,22 +95,19 @@ class OpenAQData:
                 end_date,
                 start_dt,
                 end_dt,
-                dates,
-                verbose
+                dates
             )
         else:
             # query for list of sensors
-            response = self._location_query(
-                api_key, extent, product, save_dir, verbose
-            )
+            response = self._location_query(api_key, extent, product, save_dir)
 
             df_locations = self._prune_sensor_list_by_date(
-                response.json(), start_dt, end_dt, save_dir, verbose
+                response.json(), start_dt, end_dt, save_dir 
             )
 
             # query by sensor
             sensor_values = self._measurement_query_for_all_sensors(
-                df_locations, api_key, start_dt, end_dt, dates, save_dir, verbose
+                df_locations, api_key, start_dt, end_dt, dates, save_dir 
             )
 
         # TODO process np 
@@ -132,7 +130,7 @@ class OpenAQData:
 
     ### NOTE: Methods for handling the query
 
-    def _location_query(self, api_key, extent, product, save_dir, verbose):
+    def _location_query(self, api_key, extent, product, save_dir):
         '''
         Extent: bounds of your region, in the form of:
             min lon, max lon, min lat, max lat
@@ -146,7 +144,7 @@ class OpenAQData:
         The response also gives you dates for the sensor's uptime, so this can be
             further used to prune sensors outside your date range.
         '''
-        if verbose == 0:
+        if self.VERBOSE == 0:
             tqdm.write(
                 f'🔎  Performing query for sensors in extent={extent} '
                 f'and product={product}...'
@@ -165,9 +163,9 @@ class OpenAQData:
         response.raise_for_status()
 
         if save_dir is not None:
-            self._save_locations_json(response.json(), save_dir, verbose)
+            self._save_locations_json(response.json(), save_dir)
 
-        if verbose == 0:
+        if self.VERBOSE == 0:
             tqdm.write(
                 f'{self._get_response_msg(response.status_code)}\n'
                 f'Query made: {response.url}\n'
@@ -183,13 +181,12 @@ class OpenAQData:
         sensor_id,  # make sure this is the sensor for the specific product!
         start_datetime,
         end_datetime,
-        page=1,
-        verbose=2
+        page=1
     ):
         '''
         Query for a specific sensor
         '''
-        if verbose == 0:
+        if self.VERBOSE == 0:
             tqdm.write(
                 f'🔎  Performing query for sensor id = {sensor_id} '
                 f'from {start_datetime} to {end_datetime}...'
@@ -206,7 +203,7 @@ class OpenAQData:
         response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
 
-        if verbose == 0:
+        if self.VERBOSE == 0:
             tqdm.write(
                 f'{self._get_response_msg(response.status_code)}\n'
                 f'Query made: {response.url}\n'
@@ -214,7 +211,15 @@ class OpenAQData:
 
         return response
 
-    def _measurement_queries_for_a_sensor(self, api_key, sensor_id, start, end, dates, save_dir, verbose):
+    def _measurement_queries_for_a_sensor(
+        self,
+        api_key,
+        sensor_id,
+        start,
+        end,
+        dates,
+        save_dir
+    ):
         '''
         Uses pagination to get all the sensor values from a single sensor,
             given the start and end date
@@ -232,10 +237,9 @@ class OpenAQData:
                 sensor_id=sensor_id, 
                 start_datetime=start, 
                 end_datetime=end,
-                page=page,
-                verbose=verbose
+                page=page
             )
-            self._manage_rate_limit(response, verbose)
+            self._manage_rate_limit(response)
 
             # read response
             response_data = response.json()
@@ -246,7 +250,7 @@ class OpenAQData:
 
             # save response in json
             if save_dir is not None:
-                self._save_measurements_json(save_dir, sensor_id, response_data, verbose)
+                self._save_measurements_json(save_dir, sensor_id, response_data)
 
             # read 'found' to determine if we should keep querying
             cont = False
@@ -265,17 +269,16 @@ class OpenAQData:
         start_dt,
         end_dt,
         dates,
-        save_dir,
-        verbose
+        save_dir
     ):
         sensor_values = []
         sensor_ids = (
             tqdm(list(df['pm2.5 sensor id'])) 
-            if verbose < 2 
+            if self.VERBOSE < 2 
             else list(df['pm2.5 sensor id'])
         )
         for i, sensor_id in enumerate(sensor_ids):
-            if verbose == 0:
+            if self.VERBOSE == 0:
                 tqdm.write(
                     f"Ingesting data from {df.iloc[i]['provider']} "
                     f"sensor at {df.iloc[i]['locations']}."
@@ -287,12 +290,11 @@ class OpenAQData:
                     start_dt,
                     end_dt,
                     dates,
-                    save_dir,
-                    verbose
+                    save_dir
                 )
             )
 
-        self._save_measurements_csv(save_dir, df, sensor_values, verbose)
+        self._save_measurements_csv(save_dir, df, sensor_values)
 
         return sensor_values
 
@@ -350,7 +352,7 @@ class OpenAQData:
             )
         )
 
-    def _manage_rate_limit(self, response, verbose): 
+    def _manage_rate_limit(self, response): 
         '''
         Checks rate limit, and throttles if queries get close to surpassing 
             the limit.
@@ -366,7 +368,7 @@ class OpenAQData:
 
         max_used = math.ceil(limit * 0.9)
         if used > max_used:
-            if verbose == 0:
+            if self.VERBOSE == 0:
                 tqdm.write(
                     f'90% of ratelimit reached; backing off until reset period '
                     'in {reset + 5} seconds...'
@@ -375,20 +377,13 @@ class OpenAQData:
 
         return
 
-    def _prune_sensor_list_by_date(
-        self,
-        data,
-        start_dt,
-        end_dt,
-        save_dir,
-        verbose
-    ):
+    def _prune_sensor_list_by_date(self, data, start_dt, end_dt, save_dir):
         '''
         Given the json of locations data, return a dataframe that prunes
             this data containing only sensors that report data in between the
             given date range
         '''
-        if verbose == 0:
+        if self.VERBOSE == 0:
             print(
                 f'🗓️  Pruning sensors by date operational between '
                 f'{start_dt} and {end_dt}...'
@@ -428,7 +423,7 @@ class OpenAQData:
 
         df = pd.DataFrame(d)
 
-        if verbose == 0:
+        if self.VERBOSE == 0:
             print(
                 f'Number of sensors that meet criteria: {len(df)}\n'
                 f"Count: {df['provider'].value_counts()}\n"
@@ -438,17 +433,17 @@ class OpenAQData:
 
         if save_dir is not None:
             save_path = f'{save_dir}/locations_summary.csv' 
-            if verbose == 0:
+            if self.VERBOSE == 0:
                 print(
                     f'💾 Saving summary of locations data to {save_path}...',
                     end=' '
                 )
             df.to_csv(save_path)
-            if verbose == 0: print("✅ Saved!")
+            if self.VERBOSE == 0: print("✅ Saved!")
 
         return df
 
-    def _save_locations_json(self, response_data, save_dir, verbose):
+    def _save_locations_json(self, response_data, save_dir):
         '''
         Saves the locations query repsonse as a json in the given save dir
         '''
@@ -456,7 +451,7 @@ class OpenAQData:
         os.makedirs(json_save_dir, exist_ok=True)
         json_save_path = f'{json_save_dir}/sensors_metadata.json'
 
-        if verbose == 0:
+        if self.VERBOSE == 0:
             print(f'Writing query response to {json_save_path}...')
 
         with open(json_save_path, 'w') as f:
@@ -464,7 +459,7 @@ class OpenAQData:
 
         return
 
-    def _save_measurements_json(self, save_dir, sensor_id, response_data, verbose):
+    def _save_measurements_json(self, save_dir, sensor_id, response_data):
         '''
         Saves the json file of a specific sensor's measurements. Assumes
             a valid save directory.
@@ -478,7 +473,7 @@ class OpenAQData:
         last_date = response_data['results'][-1]['period']['datetimeTo']['utc']
         json_save_path= f'{json_save_dir}/{first_date}_{last_date}.json'
 
-        if verbose == 0:
+        if self.VERBOSE == 0:
             tqdm.write(
                 f'Writing measurements from sensor {sensor_id} from '
                 f'{first_date} to {last_date} to {json_save_path}'
@@ -537,7 +532,7 @@ class OpenAQData:
             raise ValueError(f'Cache path does not exist. {msg}')
         return True
 
-    def _check_datetimes_in_sensor_dir(self, sensor_dir, start_dt, end_dt, verbose):
+    def _check_datetimes_in_sensor_dir(self, sensor_dir, start_dt, end_dt):
         '''
         Checks if the files in a sensor directory contain the given start 
             and end datetimes.
@@ -567,7 +562,7 @@ class OpenAQData:
             return sorted(dates)
 
         dates = find_dates_in_dir(sensor_dir)
-        if verbose == 0:
+        if self.VERBOSE == 0:
             print(
                 f'👀 Examining files in {sensor_dir} '
                 'that match start and end date...'
@@ -625,8 +620,7 @@ class OpenAQData:
         end_date,   # end date used for searching files
         start_dt,   # start date used for queries
         end_dt,     # end date used for queries
-        dates,
-        verbose
+        dates
     ):
         sensor_values = []
         for sensor_id in list(df['pm2.5 sensor id']):
@@ -635,22 +629,21 @@ class OpenAQData:
                 sensor_dir=sensor_dir,
                 start_dt=pd.to_datetime(start_date, utc=True),
                 end_dt=pd.to_datetime(end_date, utc=True) - pd.Timedelta(hours=1),
-                verbose=verbose
             ) 
             # if all that is good, we load the sensor measurements
             sensor_values.append(
                 self._load_measurements_jsons_of_sensor(sensor_dir, dates)
             )
 
-        self._save_measurements_csv(save_dir, df, sensor_values, verbose)
+        self._save_measurements_csv(save_dir, df, sensor_values)
 
-        if verbose == 0:
+        if self.VERBOSE == 0:
             print('Date range aligned on all sensors, values loaded.')
 
         return sensor_values
     
-    def _save_measurements_csv(self, save_dir, df, sensor_values, verbose):
-        if verbose == 0:
+    def _save_measurements_csv(self, save_dir, df, sensor_values):
+        if self.VERBOSE == 0:
             print(f'💾 Saving measurements summary... ', end=' ')
 
         df_measurements = pd.DataFrame({
@@ -659,9 +652,24 @@ class OpenAQData:
         })
         df_measurements.to_csv(f'{save_dir}/measurements_summary.csv')
         
-        if verbose == 0: print('✅ Complete!')
+        if self.VERBOSE == 0: print('✅ Complete!')
+    
+    # NOTE Argument validation methods
+
+    def _validate_verbose_flag(self, verbose):
+        valid_options = {0, 1, 2} 
+        if verbose in valid_options:
+            return verbose
+        else:
+            raise ValueError(
+                "Verbose flag must be either 0 (all messages), "
+                "1 (progress bar and errors), or 2 (errors only)"
+            )
+
+        return 0 
 
     # NOTE Numpy processing methods
+
     def _get_sensor_locations_on_grid(self, df, dim, extent):
         lon_min, lon_max, lat_min, lat_max = extent
         lat_dist, lon_dist = abs(lat_max - lat_min), abs(lon_max - lon_min)
