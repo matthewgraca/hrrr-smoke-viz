@@ -36,29 +36,24 @@ class OpenAQData:
         On save_dir, load_json, load_numpy, and load_csv:
             - If a save_dir is provided, that's where we'll read/write from as 
                 our cache
-                Note: for LOADING, the save_dir must be valid. for SAVING, it 
-                    need not be valid because it will be created.
             - load_json is intended for when you have the measurements or
                 sensor jsons, but not the processed numpy file.
-                1. It will attempt to read from 'measurements', then 
-                    from 'locations' if that fails.
-                2. It will pick up processing from there on. So this can be used
-                    as a 'force reprocessing' of a numpy you don't like.
             - load_csv is when you have processed the json files already.
             - load_numpy is intended for when you have the completely processed 
-                numpy file. We load it and run it as self.data.
+                numpy file. 
 
             Think of it as:
                 json = raw api reponses
                 csv = processed jsons
                 numpy = gridded and interpolated
+                all false = ingest from scratch
         '''
-        # TODO I'm starting to come around abit on private members being ok as long as they are strictly constants, e.g. dates
+        # members
         self.data = None
         self.sensor_locations = None
         self.VERBOSE = self._validate_verbose_flag(verbose)
         self.start_date, self.end_date = (
-            None, None
+            (None, None)
             if load_numpy
             else self._validate_dates(start_date, end_date)
         ) 
@@ -72,8 +67,7 @@ class OpenAQData:
         dates = pd.date_range(
             start_date, end_date, freq='h', inclusive='left', tz='UTC'
         )
-        '''
-        '''
+
         if load_numpy:
             cache_data = self._load_numpy_cache(cache_path)
             self.data = cache_data['data'] 
@@ -81,42 +75,11 @@ class OpenAQData:
             self.end_date = cache_data['end_date']
             self.extent = cache_data['extent']
             return
-        elif load_csv:
-            # TODO sensor_values = self._load_sensor_values_from_csv(save_dir)
-            df_locations = pd.read_csv(
-                f'{save_dir}/locations_summary.csv',
-                index_col='Unnamed: 0'
-            )
-            df_measurements = pd.read_csv(
-                f'{save_dir}/measurements_summary.csv',
-                index_col='Unnamed: 0'
-            )
-            sensor_values = [list(df_measurements[col]) for col in df_measurements]
-        elif load_json:
-            # TODO sensor_values = self._load_sensor_values_from_json(save_dir, start_dt, end_dt, start_date, end_date, dates)
-            # use locations to check if the sensors in measurements are valid
-            response_data = self._open_locations_json(save_dir)
-
-            # then for each sensor, check if the first date matches the last date
-            df_locations = self._prune_sensor_list_by_date(
-                response_data, start_dt, end_dt, save_dir 
-            )
-
-            sensor_values = self._load_sensor_vals_from_json_cache(
-                df_locations, save_dir, self.start_date, self.end_date, start_dt, end_dt, dates
-            )
         else:
-            # TODO sensor_values = self._ingest_sensor_values_from_api(api_key, extent, product, save_dir, start_dt, end_dt, dates)
-            # query for list of sensors
-            response = self._location_query(api_key, product, self.extent, save_dir)
-
-            df_locations = self._prune_sensor_list_by_date(
-                response.json(), start_dt, end_dt, save_dir 
-            )
-
-            # query by sensor
-            sensor_values = self._measurement_query_for_all_sensors(
-                df_locations, api_key, start_dt, end_dt, dates, save_dir 
+            sensor_values, df_locations = self._load_sensor_values_and_locations_df(
+                api_key, self.extent, product,
+                load_csv, load_json, save_dir, 
+                self.start_date, self.end_date, start_dt, end_dt, dates
             )
 
         # process to numpy
@@ -141,7 +104,7 @@ class OpenAQData:
             dim=dim,
             apply_filter=False,
             interp_flag=np.nan,
-            power=2.0
+            power=1.5
         )
 
         self.data = interpolated_grids
@@ -155,6 +118,36 @@ class OpenAQData:
         )
 
         return
+
+    ### NOTE Simplifying methods that make init cleaner
+    def _load_sensor_values_and_locations_df(
+        self,
+        api_key,
+        extent,
+        product,
+        load_csv,
+        load_json,
+        save_dir,
+        start_date,
+        end_date,
+        start_dt,
+        end_dt,
+        dates
+    ):
+        '''
+        Gets the sensor values and the locations dataframe of those sensors,
+            given the user's choice in cache loading.
+        '''
+        if load_csv:
+            return self._load_sensor_values_and_locations_from_csv_cache(save_dir)
+        elif load_json:
+            return self._load_sensor_values_and_locations_from_json_cache(
+                save_dir, start_date, end_date, start_dt, end_dt, dates
+            )
+        else:
+            return self._ingest_sensor_values_from_api(
+                api_key, extent, product, save_dir, start_dt, end_dt, dates
+            )
 
     ### NOTE: Methods for handling the query
 
@@ -327,7 +320,10 @@ class OpenAQData:
                 )
             )
 
-        self._save_measurements_csv(save_dir, df, sensor_values)
+        df_measurements = self._save_measurements_csv(save_dir, df, sensor_values)
+
+        if self.VERBOSE == 0:
+            print(f'Measurements loaded:\n{df_measurements}')
 
         return sensor_values
 
@@ -460,9 +456,8 @@ class OpenAQData:
             print(
                 f'Number of sensors that meet criteria: {len(df)}\n'
                 f"Count: {df['provider'].value_counts()}\n"
+                f'{df}\n'
             )
-            pd.set_option('display.max_rows', None)
-            print(df, '\n')
 
         if save_dir is not None:
             save_path = f'{save_dir}/locations_summary.csv' 
@@ -516,6 +511,33 @@ class OpenAQData:
             json.dump(response_data, f, indent=4)
 
         return
+
+    def _ingest_sensor_values_from_api(
+        self,
+        api_key,
+        extent,
+        product,
+        save_dir,
+        start_dt,
+        end_dt,
+        dates
+    ):
+        # query for list of sensors
+        response = self._location_query(api_key, product, extent, save_dir)
+
+        df_locations = self._prune_sensor_list_by_date(
+            response.json(), start_dt, end_dt, save_dir 
+        )
+
+        if self.VERBOSE == 0:
+            print(f'Locations loaded:\n{df_locations}')
+
+        # query by sensor
+        sensor_values = self._measurement_query_for_all_sensors(
+            df_locations, api_key, start_dt, end_dt, dates, save_dir 
+        )
+
+        return sensor_values, df_locations
 
     ### NOTE: Methods for handling the cache
 
@@ -651,9 +673,8 @@ class OpenAQData:
 
         return vals 
 
-    def _load_sensor_vals_from_json_cache(
+    def _load_sensor_values_and_locations_from_json_cache(
         self,
-        df,         # dataframe containing locations data 
         save_dir,
         start_date, # start date used for checking files
         end_date,   # end date used for checking files
@@ -661,8 +682,22 @@ class OpenAQData:
         end_dt,     # end date used for queries
         dates
     ):
+        if self.VERBOSE == 0:
+            print('Attempting to load sensor values from json files...')
+
+        # use locations to check if the sensors in measurements are valid
+        response_data = self._open_locations_json(save_dir)
+
+        # then for each sensor, check if the first date matches the last date
+        df_locations = self._prune_sensor_list_by_date(
+            response_data, start_dt, end_dt, save_dir 
+        )
+
+        if self.VERBOSE == 0:
+            print(f'Locations data loaded:\n{df_locations}')
+
         sensor_values = []
-        for sensor_id in list(df['pm2.5 sensor id']):
+        for sensor_id in list(df_locations['pm2.5 sensor id']):
             sensor_dir = f'{save_dir}/measurements/{sensor_id}'
             self._check_datetimes_in_sensor_dir(
                 sensor_dir=sensor_dir,
@@ -674,12 +709,14 @@ class OpenAQData:
                 self._load_measurements_jsons_of_sensor(sensor_dir, dates)
             )
 
-        self._save_measurements_csv(save_dir, df, sensor_values)
+        df_measurements = self._save_measurements_csv(
+            save_dir, df_locations, sensor_values
+        )
 
         if self.VERBOSE == 0:
-            print('Date range aligned on all sensors, values loaded.')
+            print(f'Measurements loaded:\n{df_measurements}')
 
-        return sensor_values
+        return sensor_values, df_locations
     
     def _save_measurements_csv(self, save_dir, df, sensor_values):
         if self.VERBOSE == 0:
@@ -692,6 +729,31 @@ class OpenAQData:
         df_measurements.to_csv(f'{save_dir}/measurements_summary.csv')
         
         if self.VERBOSE == 0: print('✅ Complete!')
+
+        return df_measurements
+
+    def _load_sensor_values_and_locations_from_csv_cache(self, save_dir):
+        if self.VERBOSE == 0:
+            print('Attempting to load sensor values from csv...')
+
+        df_locations = pd.read_csv(
+            f'{save_dir}/locations_summary.csv',
+            index_col='Unnamed: 0'
+        )
+
+        if self.VERBOSE == 0:
+            print(f'Locations loaded:\n{df_locations}')
+
+        df_measurements = pd.read_csv(
+            f'{save_dir}/measurements_summary.csv',
+            index_col='Unnamed: 0'
+        )
+
+        if self.VERBOSE == 0:
+            print(f'Measurements loaded:\n{df_measurements}')
+
+        sensor_values = [list(df_measurements[col]) for col in df_measurements]
+        return sensor_values, df_locations
     
     # NOTE Argument validation methods
 
