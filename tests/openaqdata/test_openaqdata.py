@@ -27,7 +27,6 @@ class TestOpenAQData(unittest.TestCase):
             load_numpy=False,      
             verbose=0,          
         )
-        cls.extent = extent
         cls.dim = dim
         cls.save_dir = save_dir
     
@@ -76,7 +75,6 @@ class TestOpenAQData(unittest.TestCase):
                     'lon' : df_locations['longitude']
                 }),
                 dim=self.dim,
-                extent=self.extent
             )
         ))
 
@@ -101,7 +99,6 @@ class TestOpenAQData(unittest.TestCase):
                     'lon' : df_locations['longitude']
                 }),
                 dim=self.dim,
-                extent=self.extent
             )
         )
         actual = len(np.where(~np.isnan(grid))[0])

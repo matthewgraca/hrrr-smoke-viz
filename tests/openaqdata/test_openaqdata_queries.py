@@ -2,7 +2,8 @@ import unittest
 from libs.openaqdata import OpenAQData
 import os
 import pandas as pd
-import requests
+from dotenv import load_dotenv
+load_dotenv()
 
 class TestOpenAQDataQueries(unittest.TestCase):
     @classmethod
@@ -33,11 +34,10 @@ class TestOpenAQDataQueries(unittest.TestCase):
         actual = len(self.aq._measurement_queries_for_a_sensor(
             api_key=os.getenv('OPENAQ_API_KEY'),
             sensor_id=2150,
-            start=start-pd.Timedelta(hours=1),
-            end=end-pd.Timedelta(hours=1),
+            start_dt=start-pd.Timedelta(hours=1),
+            end_dt=end-pd.Timedelta(hours=1),
             dates=dates,
             save_dir='tests/openaqdata/data',
-            verbose=0
         ))
 
         expected = len(dates)
@@ -50,9 +50,8 @@ class TestOpenAQDataQueries(unittest.TestCase):
             'tests/openaqdata/data/measurements/2150',
             pd.to_datetime(start, utc=True),
             pd.to_datetime(end, utc=True) - pd.Timedelta(hours=1),
-            verbose=0
         )
 
     def test_bad_locations_query_throws_value_error(self):
-        with self.assertRaises(requests.exceptions.HTTPError):
+        with self.assertRaises(ValueError):
             aq = OpenAQData(extent=(-1000, -1000, -1000, -1000), verbose=2) 
