@@ -57,12 +57,12 @@ class OpenAQData:
         self.data = None
         self.sensor_locations = None
         self.VERBOSE = self._validate_verbose_flag(verbose)
-        self.START_DATE, self.END_DATE = (
+        self.start_date, self.end_date = (
             None, None
             if load_numpy
             else self._validate_dates(start_date, end_date)
         ) 
-        self.EXTENT = None if load_numpy else self._validate_extent(extent)
+        self.extent = None if load_numpy else self._validate_extent(extent)
 
         # datetimes to use for queries
         # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
@@ -77,9 +77,9 @@ class OpenAQData:
         if load_numpy:
             cache_data = self._load_numpy_cache(cache_path)
             self.data = cache_data['data'] 
-            self.START_DATE = cache_data['start_date']
-            self.END_DATE = cache_data['end_date']
-            self.EXTENT = cache_data['extent']
+            self.start_date = cache_data['start_date']
+            self.end_date = cache_data['end_date']
+            self.extent = cache_data['extent']
             return
         elif load_csv:
             # TODO sensor_values = self._load_sensor_values_from_csv(save_dir)
@@ -103,12 +103,12 @@ class OpenAQData:
             )
 
             sensor_values = self._load_sensor_vals_from_json_cache(
-                df_locations, save_dir, start_dt, end_dt, dates
+                df_locations, save_dir, self.start_date, self.end_date, start_dt, end_dt, dates
             )
         else:
             # TODO sensor_values = self._ingest_sensor_values_from_api(api_key, extent, product, save_dir, start_dt, end_dt, dates)
             # query for list of sensors
-            response = self._location_query(api_key, product, save_dir)
+            response = self._location_query(api_key, product, self.extent, save_dir)
 
             df_locations = self._prune_sensor_list_by_date(
                 response.json(), start_dt, end_dt, save_dir 
@@ -126,7 +126,7 @@ class OpenAQData:
             'lat' : df_locations['latitude'],
             'lon' : df_locations['longitude']
         })
-        locations_on_grid = self._get_sensor_locations_on_grid(df, dim)
+        locations_on_grid = self._get_sensor_locations_on_grid(df, dim, self.extent)
         self.sensor_locations = dict(
             zip(df_locations['locations'], locations_on_grid)
         )
@@ -149,16 +149,16 @@ class OpenAQData:
         self._save_numpy_to_cache(
             cache_path=f'{save_dir}/openaq_processed.npz',
             data=self.data,
-            start_date=self.START_DATE,
-            end_date=self.END_DATE,
-            extent=self.EXTENT
+            start_date=self.start_date,
+            end_date=self.end_date,
+            extent=self.extent
         )
 
         return
 
     ### NOTE: Methods for handling the query
 
-    def _location_query(self, api_key, product, save_dir):
+    def _location_query(self, api_key, product, extent, save_dir):
         '''
         Extent: bounds of your region, in the form of:
             min lon, max lon, min lat, max lat
@@ -174,11 +174,11 @@ class OpenAQData:
         '''
         if self.VERBOSE == 0:
             tqdm.write(
-                f'🔎  Performing query for sensors in extent={self.EXTENT} '
+                f'🔎  Performing query for sensors in extent={extent} '
                 f'and product={product}...'
             )
 
-        min_lon, max_lon, min_lat, max_lat = self.EXTENT 
+        min_lon, max_lon, min_lat, max_lat = extent
         url = 'https://api.openaq.org/v3/locations'
         params = {
             'bbox'          : f'{min_lon},{min_lat},{max_lon},{max_lat}',
@@ -655,6 +655,8 @@ class OpenAQData:
         self,
         df,         # dataframe containing locations data 
         save_dir,
+        start_date, # start date used for checking files
+        end_date,   # end date used for checking files
         start_dt,   # start date used for queries
         end_dt,     # end date used for queries
         dates
@@ -664,8 +666,8 @@ class OpenAQData:
             sensor_dir = f'{save_dir}/measurements/{sensor_id}'
             self._check_datetimes_in_sensor_dir(
                 sensor_dir=sensor_dir,
-                start_dt=pd.to_datetime(self.START_DATE, utc=True),
-                end_dt=pd.to_datetime(self.END_DATE, utc=True) - pd.Timedelta(hours=1),
+                start_dt=pd.to_datetime(start_date, utc=True),
+                end_dt=pd.to_datetime(end_date, utc=True) - pd.Timedelta(hours=1),
             ) 
             # if all that is good, we load the sensor measurements
             sensor_values.append(
@@ -741,8 +743,8 @@ class OpenAQData:
 
     # NOTE Numpy processing methods
 
-    def _get_sensor_locations_on_grid(self, df, dim):
-        lon_min, lon_max, lat_min, lat_max = self.EXTENT
+    def _get_sensor_locations_on_grid(self, df, dim, extent):
+        lon_min, lon_max, lat_min, lat_max = extent 
         lat_dist, lon_dist = abs(lat_max - lat_min), abs(lon_max - lon_min)
         data = np.array(df)
         locations_on_grid = []
