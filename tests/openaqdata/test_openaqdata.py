@@ -67,17 +67,11 @@ class TestOpenAQData(unittest.TestCase):
             index_col='Unnamed: 0'
         )
 
-        actual = dict(zip(
-            df_locations['locations'],
-            self.aq._get_sensor_locations_on_grid(
-                df=pd.DataFrame({
-                    'lat' : df_locations['latitude'],
-                    'lon' : df_locations['longitude']
-                }),
+        actual = self.aq._get_sensor_locations_on_grid(
+                df_locations=df_locations,
                 dim=self.dim,
                 extent=self.aq.extent
-            )
-        ))
+        )
 
         self.assertEqual(expected, actual)
 
@@ -95,13 +89,10 @@ class TestOpenAQData(unittest.TestCase):
             data=values,
             dim=self.dim,
             locations_on_grid=self.aq._get_sensor_locations_on_grid(
-                df=pd.DataFrame({
-                    'lat' : df_locations['latitude'],
-                    'lon' : df_locations['longitude']
-                }),
+                df_locations=df_locations,
                 dim=self.dim,
                 extent=self.aq.extent
-            )
+            ).values()
         )
         actual = len(np.where(~np.isnan(grid))[0])
 

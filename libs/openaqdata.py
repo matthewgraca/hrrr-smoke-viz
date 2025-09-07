@@ -17,12 +17,14 @@ class OpenAQData:
         end_date='2025-01-10 00:59',
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
-        product=2,          # sensor data to ingest (2 is pm2.5)
-        save_dir=None,      # where json files should be saved to
-        load_json=False,    # specifies that jsons should be loaded from cache
-        load_csv=False,     # speficifies that the csvs should be loaded from cache
-        load_numpy=False,   # specifies the numpy file should be loaded from cache
-        verbose=0,          # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
+        product=2,              # sensor data to ingest (2 is pm2.5)
+        save_dir=None,          # where json files should be saved to
+        load_json=False,        # specifies that jsons should be loaded from cache
+        load_csv=False,         # speficifies that the csvs should be loaded from cache
+        load_numpy=False,       # specifies the numpy file should be loaded from cache
+        use_interpolation=True,
+        use_imputation=True,
+        verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ):
         '''
         Pipeline:
@@ -83,30 +85,24 @@ class OpenAQData:
             )
 
         # process to numpy
-        # TODO: flags for enabling/disabling interpolation, and imputation, saving ground site grids
-        # TODO: test cases for interpolation
         # TODO currently, if sensors occupy the same location, only the last one in the list is used
         # idea: merge_sensor_locations(): {(x, y) : list of values}, then reduce each list to scalar
-        df = pd.DataFrame({
-            'lat' : df_locations['latitude'],
-            'lon' : df_locations['longitude']
-        })
-        locations_on_grid = self._get_sensor_locations_on_grid(df, dim, self.extent)
-        self.sensor_locations = dict(
-            zip(df_locations['locations'], locations_on_grid)
-        )
+        self.sensor_locations = self._get_sensor_locations_on_grid(df_locations, dim, self.extent)
 
-        # TODO mean of empty slice and scalar divide issue. either debug it or silence it
         ground_site_grids = self._df_to_gridded_data(
-            sensor_values, dim, self.sensor_locations
+            sensor_values, dim, self.sensor_locations, use_imputation
         )
 
-        interpolated_grids = self._interpolate_all_frames(
-            ground_site_grids=ground_site_grids,
-            dim=dim,
-            apply_filter=False,
-            interp_flag=np.nan,
-            power=1.5
+        interpolated_grids = (
+            self._interpolate_all_frames(
+                ground_site_grids=ground_site_grids,
+                dim=dim,
+                apply_filter=False,
+                interp_flag=np.nan,
+                power=1.5
+            )
+            if use_interpolation
+            else ground_site_grids
         )
 
         self.data = interpolated_grids
@@ -807,7 +803,11 @@ class OpenAQData:
 
     # NOTE Numpy processing methods
 
-    def _get_sensor_locations_on_grid(self, df, dim, extent):
+    def _get_sensor_locations_on_grid(self, df_locations, dim, extent):
+        df = pd.DataFrame({
+            'lat' : df_locations['latitude'],
+            'lon' : df_locations['longitude']
+        })
         lon_min, lon_max, lat_min, lat_max = extent 
         lat_dist, lon_dist = abs(lat_max - lat_min), abs(lon_max - lon_min)
         data = np.array(df)
@@ -823,7 +823,7 @@ class OpenAQData:
 
             locations_on_grid.append((x, y)) 
 
-        return locations_on_grid
+        return dict(zip(df_locations['locations'], locations_on_grid))
 
     def _preprocess_ground_sites(self, data, dim, locations_on_grid):
         """
@@ -931,12 +931,14 @@ class OpenAQData:
         closest_values = [coordinates[i] for i in closest_indices]
         return closest_values, normalized_distances
 
-    def _df_to_gridded_data(self, sensor_values, dim, sensor_locations):
+    def _df_to_gridded_data(self, sensor_values, dim, sensor_locations, use_imputation):
         if self.VERBOSE == 0:
-            print(
-                "📍 Processing ground sites and imputing "
-                "dead sensors and outliers..."
+            msg = (
+                '📍 Processing ground sites and imputing dead sensors and outliers...'
+                if use_imputation
+                else 'Imputation is disabled; sensor values will be used as-is'
             )
+            print(msg)
 
         ground_site_grids = [
             self._preprocess_ground_sites(vals, dim, sensor_locations.values())
@@ -946,9 +948,10 @@ class OpenAQData:
                 else np.transpose(sensor_values)
             )
         ]
-        ground_site_grids = self._impute_ground_site_grids(
-            ground_site_grids, 
-            sensor_locations
+        ground_site_grids = (
+            self._impute_ground_site_grids(ground_site_grids, sensor_locations)
+            if use_imputation
+            else ground_site_grids
         )
 
         return np.array(ground_site_grids)
