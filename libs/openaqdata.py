@@ -118,6 +118,7 @@ class OpenAQData:
         return
 
     ### NOTE Simplifying methods that make init cleaner
+
     def _load_sensor_values_and_locations_df(
         self,
         api_key,
@@ -137,15 +138,24 @@ class OpenAQData:
             given the user's choice in cache loading.
         '''
         if load_csv:
-            return self._load_sensor_values_and_locations_from_csv_cache(save_dir)
+            df_locations = self._load_locations_from_csv_cache(save_dir)
+            sensor_values = self._load_sensor_values_from_csv_cache(save_dir)
         elif load_json:
-            return self._load_sensor_values_and_locations_from_json_cache(
-                save_dir, start_date, end_date, start_dt, end_dt, dates
+            df_locations = self._load_locations_from_json_cache(
+                save_dir, start_dt, end_dt
+            )
+            sensor_values = self._load_sensor_values_from_json_cache(
+                save_dir, df_locations, start_date, end_date, dates
             )
         else:
-            return self._ingest_sensor_values_from_api(
-                api_key, extent, product, save_dir, start_dt, end_dt, dates
+            df_locations = self._ingest_locations_from_api(
+                api_key, extent, product, save_dir, start_dt, end_dt 
             )
+            sensor_values = self._ingest_sensor_values_from_api(
+                api_key, extent, df_locations, save_dir, start_dt, end_dt, dates
+            )
+
+        return sensor_values, df_locations
 
     ### NOTE: Methods for handling the query
 
@@ -263,7 +273,7 @@ class OpenAQData:
                 end_dt=end_dt,
                 page=page
             )
-            self._manage_rate_limit(response)
+            self._manage_rate_limit(response.headers)
 
             # read response
             response_data = response.json()
@@ -321,7 +331,7 @@ class OpenAQData:
         df_measurements = self._save_measurements_csv(save_dir, df, sensor_values)
 
         if self.VERBOSE == 0:
-            print(f'Measurements loaded:\n{df_measurements}')
+            print(f'Measurements loaded:\n{df_measurements}\n')
 
         return sensor_values
 
@@ -379,7 +389,7 @@ class OpenAQData:
             )
         )
 
-    def _manage_rate_limit(self, response): 
+    def _manage_rate_limit(self, headers): 
         '''
         Checks rate limit, and throttles if queries get close to surpassing 
             the limit.
@@ -388,10 +398,10 @@ class OpenAQData:
             Throttles when 90% of ratelimit is reached
             Backs off until reset + 5 seconds
         '''
-        used = int(response.headers['X-Ratelimit-Used'])
-        remains = int(response.headers['X-Ratelimit-Remaining'])
-        reset = int(response.headers['X-Ratelimit-Reset'])
-        limit = int(response.headers['X-Ratelimit-Limit'])
+        used = int(headers['X-Ratelimit-Used'])
+        remains = int(headers['X-Ratelimit-Remaining'])
+        reset = int(headers['X-Ratelimit-Reset'])
+        limit = int(headers['X-Ratelimit-Limit'])
 
         max_used = math.ceil(limit * 0.9)
         if used > max_used:
@@ -465,7 +475,7 @@ class OpenAQData:
                     end=' '
                 )
             df.to_csv(save_path)
-            if self.VERBOSE == 0: print("✅ Saved!")
+            if self.VERBOSE == 0: print('✅ Saved!\n')
 
         return df
 
@@ -510,7 +520,7 @@ class OpenAQData:
 
         return
 
-    def _ingest_sensor_values_from_api(
+    def _ingest_locations_from_api(
         self,
         api_key,
         extent,
@@ -518,7 +528,6 @@ class OpenAQData:
         save_dir,
         start_dt,
         end_dt,
-        dates
     ):
         # query for list of sensors
         response = self._location_query(api_key, product, extent, save_dir)
@@ -527,15 +536,24 @@ class OpenAQData:
             response.json(), start_dt, end_dt, save_dir 
         )
 
-        if self.VERBOSE == 0:
-            print(f'Locations loaded:\n{df_locations}')
+        return df_locations
 
+    def _ingest_sensor_values_from_api(
+        self,
+        api_key,
+        extent,
+        df_locations,
+        save_dir,
+        start_dt,
+        end_dt,
+        dates
+    ):
         # query by sensor
         sensor_values = self._measurement_query_for_all_sensors(
             df_locations, api_key, start_dt, end_dt, dates, save_dir 
         )
 
-        return sensor_values, df_locations
+        return sensor_values
 
     ### NOTE: Methods for handling the cache
 
@@ -557,7 +575,7 @@ class OpenAQData:
                 'Cache data is missing keys '
                 '(date, start_date, end_date, extent)'
             )
-        print(f'✅ Completed!')
+        print(f'✅ Completed!\n')
 
         return cached_data
     
@@ -570,26 +588,9 @@ class OpenAQData:
             end_date=end_date,
             extent=extent
         )
-        print('✅ Complete!')
+        print('✅ Complete!\n')
 
         return
-
-    def _validate_cache_path(self, save_cache, load_cache, cache_path):
-        '''
-        Raises ValueErrors if the params don't agree
-        '''
-        msg = (
-            'In order to load from or save to cache, a cache path must be '
-            'provided. '
-            'Either set `load_cache` and `save_cache` to False to '
-            'prevent cache loading/saving, or provide a valid `cache_path`.'
-        )
-        if cache_path is None:
-            raise ValueError(f'Cache path is None. {msg}')
-        # only check if cache exists loading, b/c it will be made when saving
-        if load_cache and not os.path.exists(cache_path):
-            raise ValueError(f'Cache path does not exist. {msg}')
-        return True
 
     def _check_datetimes_in_sensor_dir(self, sensor_dir, start_dt, end_dt):
         '''
@@ -620,12 +621,14 @@ class OpenAQData:
 
             return sorted(dates)
 
-        dates = find_dates_in_dir(sensor_dir)
         if self.VERBOSE == 0:
             print(
                 f'👀 Examining files in {sensor_dir} '
-                'that match start and end date...'
+                'that match start and end date...',
+                end=' '
             )
+
+        dates = find_dates_in_dir(sensor_dir)
 
         if dates[0] != start_dt or dates[-1] != end_dt:
             raise ValueError(
@@ -633,6 +636,9 @@ class OpenAQData:
                 f'start date = {dates[0]}, expected {start_dt} and '
                 f'end date = {dates[-1]}, expected {end_dt}'
             )
+
+        if self.VERBOSE == 0:
+            print('✅ Complete!')
 
         return
 
@@ -671,28 +677,33 @@ class OpenAQData:
 
         return vals 
 
-    def _load_sensor_values_and_locations_from_json_cache(
-        self,
-        save_dir,
-        start_date, # start date used for checking files
-        end_date,   # end date used for checking files
-        start_dt,   # start date used for queries
-        end_dt,     # end date used for queries
-        dates
-    ):
+    def _load_locations_from_json_cache(self, save_dir, start_dt, end_dt):
         if self.VERBOSE == 0:
-            print('Attempting to load sensor values from json files...')
+            print(f'📂 Attempting to load locations data from json...')
 
         # use locations to check if the sensors in measurements are valid
-        response_data = self._open_locations_json(save_dir)
-
-        # then for each sensor, check if the first date matches the last date
         df_locations = self._prune_sensor_list_by_date(
-            response_data, start_dt, end_dt, save_dir 
+            data=self._open_locations_json(save_dir),
+            start_dt=start_dt,
+            end_dt=end_dt,
+            save_dir=save_dir 
         )
 
         if self.VERBOSE == 0:
-            print(f'Locations data loaded:\n{df_locations}')
+            print(f'Locations data loaded:\n{df_locations}\n')
+
+        return df_locations
+
+    def _load_sensor_values_from_json_cache(
+        self,
+        save_dir,
+        df_locations,
+        start_date, # start date used for checking files
+        end_date,   # end date used for checking files
+        dates
+    ):
+        if self.VERBOSE == 0:
+            print('📂 Attempting to load sensor values from json files...')
 
         sensor_values = []
         for sensor_id in list(df_locations['pm2.5 sensor id']):
@@ -712,9 +723,41 @@ class OpenAQData:
         )
 
         if self.VERBOSE == 0:
-            print(f'Measurements loaded:\n{df_measurements}')
+            print(f'Measurements loaded:\n{df_measurements}\n')
 
-        return sensor_values, df_locations
+        return sensor_values
+    
+    def _load_locations_from_csv_cache(self, save_dir):
+        if self.VERBOSE == 0:
+            print(f'📂 Attempting to load locations data from csv...', end=' ')
+
+        df_locations = pd.read_csv(
+            f'{save_dir}/locations_summary.csv',
+            index_col='Unnamed: 0'
+        )
+
+        if self.VERBOSE == 0:
+            print('✅ Complete!')
+            print(f'Locations loaded:\n{df_locations}\n')
+
+        return df_locations
+    
+    def _load_sensor_values_from_csv_cache(self, save_dir):
+        if self.VERBOSE == 0:
+            print('📂 Attempting to load sensor values from csv...', end=' ')
+
+        df_measurements = pd.read_csv(
+            f'{save_dir}/measurements_summary.csv',
+            index_col='Unnamed: 0'
+        )
+
+        if self.VERBOSE == 0:
+            print('✅ Complete!')
+            print(f'Measurements loaded:\n{df_measurements}\n')
+
+        sensor_values = [list(df_measurements[col]) for col in df_measurements]
+
+        return sensor_values
     
     def _save_measurements_csv(self, save_dir, df, sensor_values):
         if self.VERBOSE == 0:
@@ -726,34 +769,11 @@ class OpenAQData:
         })
         df_measurements.to_csv(f'{save_dir}/measurements_summary.csv')
         
-        if self.VERBOSE == 0: print('✅ Complete!')
+        if self.VERBOSE == 0: print('✅ Complete!\n')
 
         return df_measurements
 
-    def _load_sensor_values_and_locations_from_csv_cache(self, save_dir):
-        if self.VERBOSE == 0:
-            print('Attempting to load sensor values from csv...')
-
-        df_locations = pd.read_csv(
-            f'{save_dir}/locations_summary.csv',
-            index_col='Unnamed: 0'
-        )
-
-        if self.VERBOSE == 0:
-            print(f'Locations loaded:\n{df_locations}')
-
-        df_measurements = pd.read_csv(
-            f'{save_dir}/measurements_summary.csv',
-            index_col='Unnamed: 0'
-        )
-
-        if self.VERBOSE == 0:
-            print(f'Measurements loaded:\n{df_measurements}')
-
-        sensor_values = [list(df_measurements[col]) for col in df_measurements]
-        return sensor_values, df_locations
-    
-    # NOTE Argument validation methods
+    ### NOTE: Argument validation methods
 
     def _validate_verbose_flag(self, verbose):
         valid_options = {0, 1, 2} 
@@ -801,7 +821,7 @@ class OpenAQData:
 
         return extent
 
-    # NOTE Numpy processing methods
+    ### NOTE: Numpy processing methods
 
     def _get_sensor_locations_on_grid(self, df_locations, dim, extent):
         df = pd.DataFrame({

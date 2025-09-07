@@ -107,22 +107,26 @@ class TestOpenAQData(unittest.TestCase):
             OpenAQData(verbose=-1)
 
     def test_sensor_values_loaded_from_csv_and_json_match(self):
-        actual_1, _ = self.aq._load_sensor_values_and_locations_from_csv_cache(
-            self.save_dir
+        df_locations = self.aq._load_locations_from_json_cache(
+            self.save_dir,
+            pd.to_datetime(self.aq.start_date, utc=True) - pd.Timedelta(hours=1),
+            pd.to_datetime(self.aq.end_date, utc=True) - pd.Timedelta(hours=1), 
         )
-        actual_2, _ = self.aq._load_sensor_values_and_locations_from_json_cache(
+        dates = pd.date_range(
+            start=self.aq.start_date, 
+            end=self.aq.end_date,
+            freq='h',
+            inclusive='left',
+            tz='UTC'
+        )
+
+        actual_1 = self.aq._load_sensor_values_from_csv_cache(self.save_dir)
+        actual_2 = self.aq._load_sensor_values_from_json_cache(
             self.save_dir, 
+            df_locations,
             self.aq.start_date,
             self.aq.end_date, 
-            pd.to_datetime(self.aq.start_date, utc=True) - pd.Timedelta(hours=1), 
-            pd.to_datetime(self.aq.end_date, utc=True) - pd.Timedelta(hours=1), 
-            pd.date_range(
-                start=self.aq.start_date, 
-                end=self.aq.end_date,
-                freq='h',
-                inclusive='left',
-                tz='UTC'
-            )
+            dates
         )
 
         np.testing.assert_allclose(np.array(actual_1), np.array(actual_2))
