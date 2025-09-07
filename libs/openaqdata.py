@@ -275,7 +275,9 @@ class OpenAQData:
         if os.path.isdir(sensor_dir):
             try:
                 if self.VERBOSE == 0:
-                    print('Sensor directory found, will attempt to read from json')
+                    tqdm.write(
+                        'Sensor directory found, will attempt to read from json'
+                    )
                 sensor_values = self._load_sensor_values_from_json_cache(
                     save_dir=save_dir,
                     df_locations=pd.DataFrame({'pm2.5 sensor id' : [sensor_id]}),
@@ -285,7 +287,7 @@ class OpenAQData:
                     save=False
                 )
                 if self.VERBOSE == 0:
-                    print('Successfully loaded sensor values from json.')
+                    tqdm.write('Successfully loaded sensor values from json.\n')
 
                 return sensor_values[0]
             except Exception as e:
@@ -689,7 +691,7 @@ class OpenAQData:
             return sorted(dates)
 
         if self.VERBOSE == 0:
-            print(
+            tqdm.write(
                 f'👀 Examining files in {sensor_dir} '
                 'that match start and end date...',
                 end=' '
@@ -705,7 +707,7 @@ class OpenAQData:
             )
 
         if self.VERBOSE == 0:
-            print('✅ Complete!')
+            tqdm.write('✅ Complete!')
 
         return
 
@@ -778,7 +780,9 @@ class OpenAQData:
         Also saves the csv summary.
         '''
         if self.VERBOSE == 0:
-            print('📂 Attempting to load sensor values from json files...')
+            tqdm.write(
+                '📂 Attempting to load sensor values from json files...'
+            )
 
         sensor_values = []
         for sensor_id in list(df_locations['pm2.5 sensor id']):

@@ -19,7 +19,7 @@ class TestOpenAQDataQueries(unittest.TestCase):
             load_json=False,    
             load_csv=True,
             load_numpy=False,      
-            verbose=0,          
+            verbose=2,          
         )
 
     @classmethod
