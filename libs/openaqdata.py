@@ -8,6 +8,8 @@ import math
 import numpy as np
 from tqdm import tqdm
 from libs.pwwb.utils.interpolation import interpolate_frame
+import warnings
+from collections import deque
 
 class OpenAQData:
     def __init__(
@@ -60,6 +62,7 @@ class OpenAQData:
             else self._validate_dates(start_date, end_date)
         ) 
         self.extent = None if load_numpy else self._validate_extent(extent)
+        self._validate_save_dir(save_dir)
 
         # datetimes to use for queries
         # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
@@ -260,41 +263,58 @@ class OpenAQData:
 
         For two years worth of data, it's estimated to be around ~17 calls
 
+        We split the calls to a year, since openaq throws a fit and
+            gives you a 408 error for doing anything
+
         Gaps are imputed with 0.
         '''
-        page = 1
-        date_to_sensorval = {k : np.nan for k in dates}
-        while page != -1:
-            # query
-            response = self._measurement_query(
-                api_key=api_key, 
-                sensor_id=sensor_id, 
-                start_dt=start_dt, 
-                end_dt=end_dt,
-                page=page
-            )
-            self._manage_rate_limit(response.headers)
+        start_dates, end_dates = self._annually_split_dates(start_dt, end_dt)
+        for start, end in zip(start_dates, end_dates):
+            page = 1
+            date_to_sensorval = {k : np.nan for k in dates}
+            while page != -1:
+                # query
+                response = self._measurement_query(
+                    api_key=api_key, 
+                    sensor_id=sensor_id, 
+                    start_dt=start, 
+                    end_dt=end,
+                    page=page
+                )
+                self._manage_rate_limit(response.headers)
 
-            # read response
-            response_data = response.json()
-            for res in response_data['results']:
-                date_to_sensorval[
-                    pd.to_datetime(res['period']['datetimeTo']['utc'])
-                ] = res['value'] 
+                # read response
+                response_data = response.json()
+                for res in response_data['results']:
+                    date_to_sensorval[
+                        pd.to_datetime(res['period']['datetimeTo']['utc'])
+                    ] = res['value'] 
 
-            # save response in json
-            if save_dir is not None:
+                # save response in json
                 self._save_measurements_json(save_dir, sensor_id, response_data)
 
-            # read 'found' to determine if we should keep querying
-            cont = False
-            try:
-                remaining_count = int(response_data['meta']['found'])
-            except ValueError: # will be '>1000' usually; just continue
-                cont = True
-            page = page + 1 if cont else -1
+                # read 'found' to determine if we should keep querying
+                cont = False
+                try:
+                    remaining_count = int(response_data['meta']['found'])
+                except ValueError: # will be '>1000' usually; just continue
+                    cont = True
+                page = page + 1 if cont else -1
 
         return [v for k, v in sorted(date_to_sensorval.items())]
+    
+    def _annually_split_dates(self, start_dt, end_dt):
+        start_dates, end_dates = [], [] 
+        current, end = start_dt, end_dt
+        while current < end:
+            start_dates.append(current)
+            current += pd.DateOffset(years=1)
+            end_dates.append(current)
+
+        # enforce the last date to be the end datetime
+        end_dates[-1] = end_dt
+
+        return start_dates, end_dates
 
     def _measurement_query_for_all_sensors(
         self,
@@ -590,7 +610,8 @@ class OpenAQData:
         return cached_data
     
     def _save_numpy_to_cache(self, cache_path, data, start_date, end_date, extent):
-        print(f'💾 Saving data to {cache_path}...', end=' ')
+        if self.VERBOSE == 0:
+            print(f'💾 Saving data to {cache_path}...', end=' ')
         np.savez_compressed(
             cache_path,
             data=self.data,
@@ -598,7 +619,9 @@ class OpenAQData:
             end_date=end_date,
             extent=extent
         )
-        print('✅ Complete!\n')
+
+        if self.VERBOSE == 0:
+            print('✅ Complete!\n')
 
         return
 
@@ -839,6 +862,15 @@ class OpenAQData:
             raise ValueError('Longitude and/or latitude values are invalid.')
 
         return extent
+    
+    def _validate_save_dir(self, save_dir):
+        if not os.path.isdir(save_dir):
+            raise ValueError(
+                f'Invalid save directory. '
+                f'Either correct it or create {save_dir}.'
+            )
+
+        return
 
     ### NOTE: Numpy processing methods
 
@@ -901,7 +933,10 @@ class OpenAQData:
             d.setdefault(loc, []).append(val)
 
         for k in d.keys():
-            d[k] = np.nanmean(d[k])
+            # avoids 'nan of empty slice' warning if there's lone nan value
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                d[k] = np.nanmean(d[k])
 
         return list(d.keys()), list(d.values())
 

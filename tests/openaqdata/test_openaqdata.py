@@ -25,7 +25,7 @@ class TestOpenAQData(unittest.TestCase):
             load_json=False,    
             load_csv=True,
             load_numpy=False,      
-            verbose=0,          
+            verbose=2,          
         )
         cls.dim = dim
         cls.save_dir = save_dir
@@ -152,3 +152,13 @@ class TestOpenAQData(unittest.TestCase):
 
         np.testing.assert_allclose(actual_vals, expected_vals)
         np.testing.assert_allclose(actual_locs, expected_locs)
+
+    def test_annual_date_split(self):
+        actual_start, actual_end = self.aq._annually_split_dates(
+            start_dt=pd.to_datetime("2023-08-02", utc=True),
+            end_dt=pd.to_datetime("2025-08-02", utc=True),
+        )
+        actual = len(actual_start), len(actual_end)
+        expected = 2, 2
+
+        self.assertEqual(actual, expected)
