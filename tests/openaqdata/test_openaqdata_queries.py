@@ -19,7 +19,7 @@ class TestOpenAQDataQueries(unittest.TestCase):
             load_json=False,    
             load_csv=True,
             load_numpy=False,      
-            verbose=2,          
+            verbose=0,          
         )
 
     @classmethod
@@ -34,8 +34,8 @@ class TestOpenAQDataQueries(unittest.TestCase):
         actual = len(self.aq._measurement_queries_for_a_sensor(
             api_key=os.getenv('OPENAQ_API_KEY'),
             sensor_id=2150,
-            start_dt=start-pd.Timedelta(hours=1),
-            end_dt=end-pd.Timedelta(hours=1),
+            start_dt=start - pd.Timedelta(hours=1),
+            end_dt=end - pd.Timedelta(hours=1),
             dates=dates,
             save_dir='tests/openaqdata/data',
         ))

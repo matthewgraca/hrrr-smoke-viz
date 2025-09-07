@@ -268,10 +268,37 @@ class OpenAQData:
 
         Gaps are imputed with 0.
         '''
+        date_to_sensorval = {k : np.nan for k in dates}
+
+        # if sensor data for the range exists, we skip the query
+        sensor_dir = f'{save_dir}/measurements/{sensor_id}'
+        if os.path.isdir(sensor_dir):
+            try:
+                if self.VERBOSE == 0:
+                    print('Sensor directory found, will attempt to read from json')
+                sensor_values = self._load_sensor_values_from_json_cache(
+                    save_dir=save_dir,
+                    df_locations=pd.DataFrame({'pm2.5 sensor id' : [sensor_id]}),
+                    start_date=start_dt + pd.Timedelta(hours=1), 
+                    end_date=end_dt + pd.Timedelta(hours=1),   
+                    dates=dates,
+                    save=False
+                )
+                if self.VERBOSE == 0:
+                    print('Successfully loaded sensor values from json.')
+
+                return sensor_values[0]
+            except Exception as e:
+                if self.VERBOSE == 0:
+                    print(
+                        f'{e}\n'
+                        f'Unable to load full sensor values from json, '
+                        f'performing query.'
+                    )
+
         start_dates, end_dates = self._annually_split_dates(start_dt, end_dt)
         for start, end in zip(start_dates, end_dates):
             page = 1
-            date_to_sensorval = {k : np.nan for k in dates}
             while page != -1:
                 # query
                 response = self._measurement_query(
@@ -285,10 +312,10 @@ class OpenAQData:
 
                 # read response
                 response_data = response.json()
+
                 for res in response_data['results']:
-                    date_to_sensorval[
-                        pd.to_datetime(res['period']['datetimeTo']['utc'])
-                    ] = res['value'] 
+                    date = pd.to_datetime(res['period']['datetimeTo']['utc'])
+                    date_to_sensorval[date] = res['value'] 
 
                 # save response in json
                 self._save_measurements_json(save_dir, sensor_id, response_data)
@@ -526,20 +553,27 @@ class OpenAQData:
         Saves to: 
             {save_dir}/measurements/{sensor_id}/{start_date}-{end_date}.json
         '''
-        json_save_dir = f'{save_dir}/measurements/{sensor_id}'
-        os.makedirs(json_save_dir, exist_ok=True)
-        first_date = response_data['results'][0]['period']['datetimeTo']['utc']
-        last_date = response_data['results'][-1]['period']['datetimeTo']['utc']
-        json_save_path= f'{json_save_dir}/{first_date}_{last_date}.json'
+        try:
+            json_save_dir = f'{save_dir}/measurements/{sensor_id}'
+            os.makedirs(json_save_dir, exist_ok=True)
+            first_date = response_data['results'][0]['period']['datetimeTo']['utc']
+            last_date = response_data['results'][-1]['period']['datetimeTo']['utc']
+            json_save_path= f'{json_save_dir}/{first_date}_{last_date}.json'
 
-        if self.VERBOSE == 0:
-            tqdm.write(
-                f'Writing measurements from sensor {sensor_id} from '
-                f'{first_date} to {last_date} to {json_save_path}'
-            )
+            if self.VERBOSE == 0:
+                tqdm.write(
+                    f'Writing measurements from sensor {sensor_id} from '
+                    f'{first_date} to {last_date} to {json_save_path}'
+                )
 
-        with open(json_save_path, 'w') as f:
-            json.dump(response_data, f, indent=4)
+            with open(json_save_path, 'w') as f:
+                json.dump(response_data, f, indent=4)
+        except:
+            if self.VERBOSE == 0:
+                tqdm.write(
+                    f'No measurements from sensor {sensor_id} found, '
+                    f'skipping save.'
+                )
 
         return
 
@@ -698,7 +732,6 @@ class OpenAQData:
 
         Missing values are imputed with np.nan.
         '''
-        vals = []
         date_to_sensorval = {k : np.nan for k in dates}
         for f in sorted(os.listdir(sensor_dir)):
             with open(f'{sensor_dir}/{f}', 'r') as j:
@@ -706,9 +739,8 @@ class OpenAQData:
             for res in response_data['results']:
                 date = pd.to_datetime(res['period']['datetimeTo']['utc'])
                 date_to_sensorval[date] = res['value'] 
-            vals.extend([v for k, v in sorted(date_to_sensorval.items())])
 
-        return vals 
+        return [v for k, v in sorted(date_to_sensorval.items())]
 
     def _load_locations_from_json_cache(self, save_dir, start_dt, end_dt):
         '''
@@ -736,7 +768,8 @@ class OpenAQData:
         df_locations,
         start_date, # start date used for checking files
         end_date,   # end date used for checking files
-        dates
+        dates,
+        save=True
     ):
         '''
         Loads the sensor values from the json files by checking the
@@ -760,12 +793,12 @@ class OpenAQData:
                 self._load_measurements_jsons_of_sensor(sensor_dir, dates)
             )
 
-        df_measurements = self._save_measurements_csv(
-            save_dir, df_locations, sensor_values
-        )
-
-        if self.VERBOSE == 0:
-            print(f'Measurements loaded:\n{df_measurements}\n')
+        if save:
+            df_measurements = self._save_measurements_csv(
+                save_dir, df_locations, sensor_values
+            )
+            if self.VERBOSE == 0:
+                print(f'Measurements loaded:\n{df_measurements}\n')
 
         return sensor_values
     
@@ -945,10 +978,11 @@ class OpenAQData:
         Replaces dead sensors and outliers with the mean value of the 
             closest three non-nan sensors
         """
-        # replace outliers with nan
+        # replace dead sensors and outliers with nan
         imputed_ground_sites = np.array(ground_sites)
         for x, y in sensor_locations.values():
             sensor_vals = imputed_ground_sites[:, x, y]
+            sensor_vals = self._replace_dead_sensors_with_nan(sensor_vals)
             sensor_vals = self._replace_outliers_with_nan(sensor_vals, max_z_score=4)
             imputed_ground_sites[:, x, y] = sensor_vals
 
@@ -967,6 +1001,13 @@ class OpenAQData:
                     frame[x, y] = np.mean(sensor_data[~np.isnan(sensor_data)][:3])
 
         return imputed_ground_sites
+
+    def _replace_dead_sensors_with_nan(self, data):
+        '''
+        The condition for dead sensors is when data reports 
+            less than or equal to 0
+        '''
+        return np.where(data <= 0, np.nan, data)
 
     def _replace_outliers_with_nan(self, data, max_z_score=3):
         '''
