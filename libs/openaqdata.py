@@ -305,6 +305,9 @@ class OpenAQData:
         dates,
         save_dir
     ):
+        '''
+        Simply performs the measurement query for every sensor descirbed
+        '''
         sensor_values = []
         sensor_ids = (
             tqdm(list(df['pm2.5 sensor id'])) 
@@ -529,6 +532,10 @@ class OpenAQData:
         start_dt,
         end_dt,
     ):
+        '''
+        Performs the location query along with pruning the sensor list
+            by date.
+        '''
         # query for list of sensors
         response = self._location_query(api_key, product, extent, save_dir)
 
@@ -548,6 +555,9 @@ class OpenAQData:
         end_dt,
         dates
     ):
+        '''
+        Alias for performing the measurement query on all sensors
+        '''
         # query by sensor
         sensor_values = self._measurement_query_for_all_sensors(
             df_locations, api_key, start_dt, end_dt, dates, save_dir 
@@ -678,6 +688,9 @@ class OpenAQData:
         return vals 
 
     def _load_locations_from_json_cache(self, save_dir, start_dt, end_dt):
+        '''
+        Loads the locations jsons, then prunes them by date.
+        '''
         if self.VERBOSE == 0:
             print(f'📂 Attempting to load locations data from json...')
 
@@ -702,6 +715,12 @@ class OpenAQData:
         end_date,   # end date used for checking files
         dates
     ):
+        '''
+        Loads the sensor values from the json files by checking the
+            sensor directories, then loading them.
+
+        Also saves the csv summary.
+        '''
         if self.VERBOSE == 0:
             print('📂 Attempting to load sensor values from json files...')
 
@@ -824,14 +843,19 @@ class OpenAQData:
     ### NOTE: Numpy processing methods
 
     def _get_sensor_locations_on_grid(self, df_locations, dim, extent):
+        '''
+        Creates a dictionary mapping the sensor locations in the physical 
+            world to the sensor locations on the numpy grid created.
+        '''
         df = pd.DataFrame({
             'lat' : df_locations['latitude'],
             'lon' : df_locations['longitude']
         })
+        data = np.array(df)
         lon_min, lon_max, lat_min, lat_max = extent 
         lat_dist, lon_dist = abs(lat_max - lat_min), abs(lon_max - lon_min)
-        data = np.array(df)
         locations_on_grid = []
+
         for i in range(data.shape[0]):
             lat, lon = data[i, 0], data[i, 1] 
 
@@ -851,6 +875,10 @@ class OpenAQData:
         dim,     
         locations_on_grid   # list of x,y pairs of each sensor location on grid
     ):
+        '''
+        Plots sensor values on the grid. Handles values that would occupy the
+            same location.
+        '''
         grid = np.full((dim, dim), np.nan)
         
         merged_locs, merged_vals = self._merge_values_in_the_same_location(
@@ -906,13 +934,13 @@ class OpenAQData:
         return imputed_ground_sites
 
     def _replace_outliers_with_nan(self, data, max_z_score=3):
-        """
+        '''
         If all data is just nan, then the mean will also be nan and 
             a runtime warning will pop up.
 
         You can avoid this by bumping up the max z score required to 
             replace the outlier.
-        """
+        '''
         return np.where(
             abs(data - np.nanmean(data)) <= max_z_score * np.nanstd(data),
             data,
@@ -931,11 +959,11 @@ class OpenAQData:
         }
 
     def _find_closest_values(self, x, y, coordinates, n=10):
-        """
+        '''
         Find n closest sensor locations for interpolation.
 
         Returns a pair (closest values, distances)
-        """
+        '''
         if not coordinates:
             return [], np.array([])
             
@@ -958,6 +986,9 @@ class OpenAQData:
         return closest_values, normalized_distances
 
     def _df_to_gridded_data(self, sensor_values, dim, sensor_locations, use_imputation):
+        '''
+        Converts the dataframe of sensor values to gridded data.
+        '''
         if self.VERBOSE == 0:
             msg = (
                 '📍 Processing ground sites and imputing dead sensors and outliers...'
