@@ -238,6 +238,23 @@ class OpenAQData:
         }
         headers = {'X-API-Key': api_key}
         response = requests.get(url, params=params, headers=headers)
+
+        # handle 500+ errors
+        retries = 0
+        if response.status_code in {500, 501, 502, 503, 504}:
+            if self.VERBOSE == 0:
+                tqdm.write(f'{response.status_code} returned, will back off and retry')
+            time.sleep(5)
+            response = requests.get(url, params=params, headers=headers)
+            retries += 1
+
+            if retries > 4:
+                tqdm.write(
+                    f'{response.status_code} returned, '
+                    'retries hit max of {retries}.'
+                )
+                response.raise_for_status()
+
         response.raise_for_status()
 
         if self.VERBOSE == 0:
