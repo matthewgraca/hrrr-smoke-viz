@@ -130,3 +130,25 @@ class TestOpenAQData(unittest.TestCase):
         )
 
         np.testing.assert_allclose(np.array(actual_1), np.array(actual_2))
+
+    def test_sensor_values_get_merged_on_the_same_location(self):
+        actual_locs, actual_vals = self.aq._merge_values_in_the_same_location(
+            data=[1, 3, 4, 5, 6, 7, 8],
+            locations_on_grid=[(0, 0), (1, 0), (3, 5), (4, 5), (0, 8), (0, 1), (0, 0)],
+        )
+        expected_vals = np.array([4.5, 3, 4, 5, 6, 7])
+        expected_locs = [(0, 0), (1, 0), (3, 5), (4, 5), (0, 8), (0, 1)]
+
+        np.testing.assert_allclose(actual_vals, expected_vals)
+        np.testing.assert_allclose(actual_locs, expected_locs)
+
+    def test_sensor_values_merged_on_the_same_location_ignores_nan(self):
+        actual_locs, actual_vals = self.aq._merge_values_in_the_same_location(
+            data=[1, 3, 4, 5, 6, 7, np.nan],
+            locations_on_grid=[(0, 0), (1, 0), (3, 5), (4, 5), (0, 8), (0, 1), (0, 0)],
+        )
+        expected_vals = np.array([1, 3, 4, 5, 6, 7])
+        expected_locs = [(0, 0), (1, 0), (3, 5), (4, 5), (0, 8), (0, 1)]
+
+        np.testing.assert_allclose(actual_vals, expected_vals)
+        np.testing.assert_allclose(actual_locs, expected_locs)

@@ -845,31 +845,37 @@ class OpenAQData:
 
         return dict(zip(df_locations['locations'], locations_on_grid))
 
-    def _preprocess_ground_sites(self, data, dim, locations_on_grid):
-        """
-        Places ground station data onto a regular grid with bounds checking and missing value handling.
-        
-        Parameters:
-        -----------
-        data: list of floats
-            The sensor values on this one frame
-        dim : int
-            The dimensions of the grid
-        locations_on_grid : list of int pairs
-            The x, y locations of each sensor on a grid
-        
-        Returns:
-        --------
-        numpy.ndarray
-            Grid (dim x dim) with station values at their geographic positions
-        """
+    def _preprocess_ground_sites(
+        self,
+        data,               # list of sensor values for one frame
+        dim,     
+        locations_on_grid   # list of x,y pairs of each sensor location on grid
+    ):
         grid = np.full((dim, dim), np.nan)
         
-        for i, xy in enumerate(locations_on_grid):
+        merged_locs, merged_vals = self._merge_values_in_the_same_location(
+            data, locations_on_grid
+        )
+        for i, xy in enumerate(merged_locs):
             x, y = xy
-            grid[x, y] = data[i]
+            grid[x, y] = merged_vals[i]
         
         return grid
+
+
+    def _merge_values_in_the_same_location(self, data, locations_on_grid):
+        '''
+        If sensors are in the same location, we take the mean. Any nans
+            will be ignored in the mean calculation
+        '''
+        d = {}
+        for val, loc in zip(data, locations_on_grid):
+            d.setdefault(loc, []).append(val)
+
+        for k in d.keys():
+            d[k] = np.nanmean(d[k])
+
+        return list(d.keys()), list(d.values())
 
     def _impute_ground_site_grids(self, ground_sites, sensor_locations):
         """
