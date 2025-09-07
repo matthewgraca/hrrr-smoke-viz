@@ -134,4 +134,4 @@ class TestOpenAQData(unittest.TestCase):
             )
         )
 
-        self.assertEqual(actual_1, actual_2)
+        np.testing.assert_allclose(np.array(actual_1), np.array(actual_2))

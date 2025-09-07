@@ -85,6 +85,8 @@ class OpenAQData:
         # process to numpy
         # TODO: flags for enabling/disabling interpolation, and imputation, saving ground site grids
         # TODO: test cases for interpolation
+        # TODO currently, if sensors occupy the same location, only the last one in the list is used
+        # idea: merge_sensor_locations(): {(x, y) : list of values}, then reduce each list to scalar
         df = pd.DataFrame({
             'lat' : df_locations['latitude'],
             'lon' : df_locations['longitude']
@@ -659,10 +661,10 @@ class OpenAQData:
         Loads the sensor values of a given sensor by opening each json in 
             the sensor directory and combining the values.
 
-        Missing values are imputed with -1.
+        Missing values are imputed with np.nan.
         '''
         vals = []
-        date_to_sensorval = {k : -1 for k in dates}
+        date_to_sensorval = {k : np.nan for k in dates}
         for f in sorted(os.listdir(sensor_dir)):
             with open(f'{sensor_dir}/{f}', 'r') as j:
                 response_data = json.load(j)
@@ -858,7 +860,7 @@ class OpenAQData:
         imputed_ground_sites = np.array(ground_sites)
         for x, y in sensor_locations.values():
             sensor_vals = imputed_ground_sites[:, x, y]
-            sensor_vals = self._replace_outliers_with_nan(sensor_vals)
+            sensor_vals = self._replace_outliers_with_nan(sensor_vals, max_z_score=4)
             imputed_ground_sites[:, x, y] = sensor_vals
 
         # get closest sensors to each station
@@ -880,7 +882,10 @@ class OpenAQData:
     def _replace_outliers_with_nan(self, data, max_z_score=3):
         """
         If all data is just nan, then the mean will also be nan and 
-        a runtime warning will pop up.
+            a runtime warning will pop up.
+
+        You can avoid this by bumping up the max z score required to 
+            replace the outlier.
         """
         return np.where(
             abs(data - np.nanmean(data)) <= max_z_score * np.nanstd(data),
