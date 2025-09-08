@@ -1,0 +1,2311 @@
+{
+    "meta": {
+        "name": "openaq-api",
+        "website": "/",
+        "page": 1,
+        "limit": 1000,
+        "found": 20
+    },
+    "results": [
+        {
+            "id": 290669,
+            "name": "6425 - Rowan El",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2000892,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2000888,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2000900,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.0286054,
+                "longitude": -118.1868189
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1868189,
+                34.0286054,
+                -118.1868189,
+                34.0286054
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:52:50Z",
+                "local": "2022-02-17T17:52:50-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2023-05-11T07:04:41Z",
+                "local": "2023-05-11T00:04:41-07:00"
+            }
+        },
+        {
+            "id": 929705,
+            "name": "Rowan ES (6425)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2088580,
+                    "name": "no2 ppm",
+                    "parameter": {
+                        "id": 7,
+                        "name": "no2",
+                        "units": "ppm",
+                        "displayName": "NO\u2082"
+                    }
+                },
+                {
+                    "id": 2088599,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2088585,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2088589,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5320029,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 5244329,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                },
+                {
+                    "id": 5244328,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.02861,
+                "longitude": -118.18682
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.18682,
+                34.02861,
+                -118.18682,
+                34.02861
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-11-15T14:59:10Z",
+                "local": "2022-11-15T06:59:10-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:04:19Z",
+                "local": "2025-09-03T12:04:19-07:00"
+            }
+        },
+        {
+            "id": 947197,
+            "name": "Garfield HS/Monterey CHS (8677)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2000947,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2000946,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2000963,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5244394,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 5244395,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.02844,
+                "longitude": -118.15864
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.15864,
+                34.02844,
+                -118.15864,
+                34.02844
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:52:37Z",
+                "local": "2022-02-17T17:52:37-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:06:00Z",
+                "local": "2025-09-03T12:06:00-07:00"
+            }
+        },
+        {
+            "id": 947271,
+            "name": "Harrison ES (4438)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2000824,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2000807,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2000820,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5244407,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                },
+                {
+                    "id": 5244406,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.05422,
+                "longitude": -118.18892
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.18892,
+                34.05422,
+                -118.18892,
+                34.05422
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:56:44Z",
+                "local": "2022-02-17T17:56:44-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:03:58Z",
+                "local": "2025-09-03T12:03:58-07:00"
+            }
+        },
+        {
+            "id": 947275,
+            "name": "Sierra Park ES (6753)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2000997,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2000995,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2000986,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5244584,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 5244585,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.08208,
+                "longitude": -118.16891
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.16891,
+                34.08208,
+                -118.16891,
+                34.08208
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:52:50Z",
+                "local": "2022-02-17T17:52:50-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:01:29Z",
+                "local": "2025-09-03T12:01:29-07:00"
+            }
+        },
+        {
+            "id": 947279,
+            "name": "Annandale ES (2151)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2000789,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2000794,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2000772,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5244589,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                },
+                {
+                    "id": 5244588,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.12878,
+                "longitude": -118.18647
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.18647,
+                34.12878,
+                -118.18647,
+                34.12878
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:52:27Z",
+                "local": "2022-02-17T17:52:27-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:07:07Z",
+                "local": "2025-09-03T12:07:07-07:00"
+            }
+        },
+        {
+            "id": 947285,
+            "name": "Multnomah St ES (5425)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2000844,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2000851,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2000835,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5319841,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 5244285,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                },
+                {
+                    "id": 5244284,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.06808,
+                "longitude": -118.1936
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1936,
+                34.06808,
+                -118.1936,
+                34.06808
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:55:00Z",
+                "local": "2022-02-17T17:55:00-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:05:52Z",
+                "local": "2025-09-03T12:05:52-07:00"
+            }
+        },
+        {
+            "id": 947318,
+            "name": "Sierra Vista ES (6767)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2000914,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2000902,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2000895,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5244462,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 5244463,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.09587,
+                "longitude": -118.15902
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.15902,
+                34.09587,
+                -118.15902,
+                34.09587
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:56:11Z",
+                "local": "2022-02-17T17:56:11-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:06:56Z",
+                "local": "2025-09-03T12:06:56-07:00"
+            }
+        },
+        {
+            "id": 947327,
+            "name": "El Sereno ES (3562)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2001074,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2001070,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2001079,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5319998,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 5244547,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                },
+                {
+                    "id": 5244546,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.09009,
+                "longitude": -118.17705
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.17705,
+                34.09009,
+                -118.17705,
+                34.09009
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:54:45Z",
+                "local": "2022-02-17T17:54:45-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:06:54Z",
+                "local": "2025-09-03T12:06:54-07:00"
+            }
+        },
+        {
+            "id": 947339,
+            "name": "San Pascual ES (6493)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 6,
+                "name": "Unknown Community Organization"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 2000594,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 2000591,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 2000583,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 5320073,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 5244323,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                },
+                {
+                    "id": 5244322,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.11921,
+                "longitude": -118.1725
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Unknown Community Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1725,
+                34.11921,
+                -118.1725,
+                34.11921
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2022-02-18T01:56:41Z",
+                "local": "2022-02-17T17:56:41-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:02:15Z",
+                "local": "2025-09-03T12:02:15-07:00"
+            }
+        },
+        {
+            "id": 1236047,
+            "name": "UltimateReality",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 4,
+                "name": "Unknown Governmental Organization"
+            },
+            "provider": {
+                "id": 66,
+                "name": "AirGradient"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 7,
+                    "name": "AirGradient Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 7972198,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 7972200,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 6530275,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 7972185,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 6530286,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 7972197,
+                    "name": "um003 particles/cm\u00b3",
+                    "parameter": {
+                        "id": 125,
+                        "name": "um003",
+                        "units": "particles/cm\u00b3",
+                        "displayName": "PM0.3 count"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.135396,
+                "longitude": -118.1013964
+            },
+            "licenses": [
+                {
+                    "id": 41,
+                    "name": "CC BY 4.0",
+                    "attribution": {
+                        "name": "Unknown Governmental Organization",
+                        "url": null
+                    },
+                    "dateFrom": "2023-07-15",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1013964,
+                34.135396,
+                -118.1013964,
+                34.135396
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2023-07-15T13:00:00Z",
+                "local": "2023-07-15T06:00:00-07:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:00:00Z",
+                "local": "2025-09-03T12:00:00-07:00"
+            }
+        },
+        {
+            "id": 1949204,
+            "name": "Unnamed (DCBSH3824 \u2192 AX9T9WLM)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 9,
+                "name": "Clarity"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 7526880,
+                    "name": "no2 ppb",
+                    "parameter": {
+                        "id": 15,
+                        "name": "no2",
+                        "units": "ppb",
+                        "displayName": "NO\u2082"
+                    }
+                },
+                {
+                    "id": 7526881,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 7526882,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 7526883,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 7526885,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                },
+                {
+                    "id": 7526884,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.0286054,
+                "longitude": -118.1868189
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Clarity",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1868189,
+                34.0286054,
+                -118.1868189,
+                34.0286054
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2023-12-11T22:44:40Z",
+                "local": "2023-12-11T14:44:40-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2024-01-13T09:30:36Z",
+                "local": "2024-01-13T01:30:36-08:00"
+            }
+        },
+        {
+            "id": 1949205,
+            "name": "Unnamed (DREKF2031 \u2192 A9J7X3VX)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 9,
+                "name": "Clarity"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 7526862,
+                    "name": "no2 ppb",
+                    "parameter": {
+                        "id": 15,
+                        "name": "no2",
+                        "units": "ppb",
+                        "displayName": "NO\u2082"
+                    }
+                },
+                {
+                    "id": 7526863,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 7526864,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 7526865,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 7526866,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 7526867,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.0286054,
+                "longitude": -118.1868189
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Clarity",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1868189,
+                34.0286054,
+                -118.1868189,
+                34.0286054
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2023-12-11T22:44:52Z",
+                "local": "2023-12-11T14:44:52-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2023-12-20T17:33:03Z",
+                "local": "2023-12-20T09:33:03-08:00"
+            }
+        },
+        {
+            "id": 1949206,
+            "name": "Unnamed (DFYXJ3461 \u2192 A64CNGJG)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 9,
+                "name": "Clarity"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 7526856,
+                    "name": "no2 ppb",
+                    "parameter": {
+                        "id": 15,
+                        "name": "no2",
+                        "units": "ppb",
+                        "displayName": "NO\u2082"
+                    }
+                },
+                {
+                    "id": 7526857,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 7526858,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 7526859,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 7526860,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 7526861,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.0286054,
+                "longitude": -118.1868189
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Clarity",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1868189,
+                34.0286054,
+                -118.1868189,
+                34.0286054
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2023-12-11T22:53:13Z",
+                "local": "2023-12-11T14:53:13-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2024-04-24T02:05:55Z",
+                "local": "2024-04-23T19:05:55-07:00"
+            }
+        },
+        {
+            "id": 2069581,
+            "name": "Unnamed (DHZCG3067 \u2192 AHYTLTN3)",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 9,
+                "name": "Clarity"
+            },
+            "provider": {
+                "id": 166,
+                "name": "Clarity"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 4,
+                    "name": "Clarity Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 7663006,
+                    "name": "no2 ppb",
+                    "parameter": {
+                        "id": 15,
+                        "name": "no2",
+                        "units": "ppb",
+                        "displayName": "NO\u2082"
+                    }
+                },
+                {
+                    "id": 7663007,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 7663008,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 7663009,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 7663010,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 7663011,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.0286054,
+                "longitude": -118.1868189
+            },
+            "licenses": [
+                {
+                    "id": 38,
+                    "name": "CC0 1.0",
+                    "attribution": {
+                        "name": "Clarity",
+                        "url": null
+                    },
+                    "dateFrom": "2021-10-20",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1868189,
+                34.0286054,
+                -118.1868189,
+                34.0286054
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2024-01-08T18:06:48Z",
+                "local": "2024-01-08T10:06:48-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2024-02-14T23:30:46Z",
+                "local": "2024-02-14T15:30:46-08:00"
+            }
+        },
+        {
+            "id": 2905670,
+            "name": "Story Park",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 11509,
+                "name": "Unknown Person"
+            },
+            "provider": {
+                "id": 66,
+                "name": "AirGradient"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 7,
+                    "name": "AirGradient Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 9660620,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 9660618,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 9660619,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 9660617,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 9660616,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 9660621,
+                    "name": "um003 particles/cm\u00b3",
+                    "parameter": {
+                        "id": 125,
+                        "name": "um003",
+                        "units": "particles/cm\u00b3",
+                        "displayName": "PM0.3 count"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.10001767516243,
+                "longitude": -118.1255146382581
+            },
+            "licenses": [
+                {
+                    "id": 41,
+                    "name": "CC BY 4.0",
+                    "attribution": {
+                        "name": "Unknown Person",
+                        "url": null
+                    },
+                    "dateFrom": "2023-07-15",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1255146382581,
+                34.10001767516243,
+                -118.1255146382581,
+                34.10001767516243
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2024-06-20T00:00:00Z",
+                "local": "2024-06-19T17:00:00-07:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:00:00Z",
+                "local": "2025-09-03T12:00:00-07:00"
+            }
+        },
+        {
+            "id": 3312559,
+            "name": "San Gabriel",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 11509,
+                "name": "Unknown Person"
+            },
+            "provider": {
+                "id": 66,
+                "name": "AirGradient"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 7,
+                    "name": "AirGradient Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 11626126,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 11626115,
+                    "name": "pm10 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 1,
+                        "name": "pm10",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM10"
+                    }
+                },
+                {
+                    "id": 11626125,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 11626129,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 11626120,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 11626111,
+                    "name": "um003 particles/cm\u00b3",
+                    "parameter": {
+                        "id": 125,
+                        "name": "um003",
+                        "units": "particles/cm\u00b3",
+                        "displayName": "PM0.3 count"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.099201,
+                "longitude": -118.107231
+            },
+            "licenses": [
+                {
+                    "id": 41,
+                    "name": "CC BY 4.0",
+                    "attribution": {
+                        "name": "Unknown Person",
+                        "url": null
+                    },
+                    "dateFrom": "2023-07-15",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.107231,
+                34.099201,
+                -118.107231,
+                34.099201
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2024-12-13T00:00:00Z",
+                "local": "2024-12-12T16:00:00-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:00:00Z",
+                "local": "2025-09-03T12:00:00-07:00"
+            }
+        },
+        {
+            "id": 3400958,
+            "name": "South Pasadena",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 11365,
+                "name": "Franciscan Woods"
+            },
+            "provider": {
+                "id": 66,
+                "name": "AirGradient"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 7,
+                    "name": "AirGradient Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 12178343,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 12178344,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 12178345,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 12178346,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 12178533,
+                    "name": "um003 particles/cm\u00b3",
+                    "parameter": {
+                        "id": 125,
+                        "name": "um003",
+                        "units": "particles/cm\u00b3",
+                        "displayName": "PM0.3 count"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.1195143,
+                "longitude": -118.1447079
+            },
+            "licenses": [
+                {
+                    "id": 41,
+                    "name": "CC BY 4.0",
+                    "attribution": {
+                        "name": "Franciscan Woods",
+                        "url": null
+                    },
+                    "dateFrom": "2023-07-15",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1447079,
+                34.1195143,
+                -118.1447079,
+                34.1195143
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2025-02-11T18:00:00Z",
+                "local": "2025-02-11T10:00:00-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:00:00Z",
+                "local": "2025-09-03T12:00:00-07:00"
+            }
+        },
+        {
+            "id": 3408049,
+            "name": "Del Mar and Euclid",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 4032,
+                "name": "William"
+            },
+            "provider": {
+                "id": 66,
+                "name": "AirGradient"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 7,
+                    "name": "AirGradient Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 12225985,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 12225986,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 12225987,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 12225988,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 12225989,
+                    "name": "um003 particles/cm\u00b3",
+                    "parameter": {
+                        "id": 125,
+                        "name": "um003",
+                        "units": "particles/cm\u00b3",
+                        "displayName": "PM0.3 count"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.1404601,
+                "longitude": -118.1430847
+            },
+            "licenses": [
+                {
+                    "id": 41,
+                    "name": "CC BY 4.0",
+                    "attribution": {
+                        "name": "William",
+                        "url": null
+                    },
+                    "dateFrom": "2023-07-15",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.1430847,
+                34.1404601,
+                -118.1430847,
+                34.1404601
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2025-02-18T01:00:00Z",
+                "local": "2025-02-17T17:00:00-08:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:00:00Z",
+                "local": "2025-09-03T12:00:00-07:00"
+            }
+        },
+        {
+            "id": 5477232,
+            "name": "San Rafael Hills, Pasadena",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 12,
+                "name": "AirGradient"
+            },
+            "provider": {
+                "id": 66,
+                "name": "AirGradient"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 7,
+                    "name": "AirGradient Sensor"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 13894443,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 13894444,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 13894445,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 13894446,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 13894447,
+                    "name": "um003 particles/cm\u00b3",
+                    "parameter": {
+                        "id": 125,
+                        "name": "um003",
+                        "units": "particles/cm\u00b3",
+                        "displayName": "PM0.3 count"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.13536,
+                "longitude": -118.18319
+            },
+            "licenses": [
+                {
+                    "id": 41,
+                    "name": "CC BY 4.0",
+                    "attribution": {
+                        "name": "AirGradient",
+                        "url": null
+                    },
+                    "dateFrom": "2023-07-15",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.18319,
+                34.13536,
+                -118.18319,
+                34.13536
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2025-08-18T15:00:00Z",
+                "local": "2025-08-18T08:00:00-07:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-03T19:00:00Z",
+                "local": "2025-09-03T12:00:00-07:00"
+            }
+        }
+    ]
+}
