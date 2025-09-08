@@ -25,6 +25,7 @@ class OpenAQData:
         load_csv=False,         # speficifies that the csvs should be loaded from cache
         load_numpy=False,       # specifies the numpy file should be loaded from cache
         use_interpolation=True,
+        power=2.0,
         use_imputation=True,
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ):
@@ -74,11 +75,13 @@ class OpenAQData:
         )
 
         if load_numpy:
+            cache_path = f'{save_dir}/openaq_processed.npz'
             cache_data = self._load_numpy_cache(cache_path)
             self.data = cache_data['data'] 
             self.start_date = cache_data['start_date']
             self.end_date = cache_data['end_date']
             self.extent = cache_data['extent']
+            self.sensor_locations = cache_data['sensor_locations'].item()
             return
         else:
             sensor_values, df_locations = self._load_sensor_values_and_locations_df(
@@ -88,8 +91,6 @@ class OpenAQData:
             )
 
         # process to numpy
-        # TODO currently, if sensors occupy the same location, only the last one in the list is used
-        # idea: merge_sensor_locations(): {(x, y) : list of values}, then reduce each list to scalar
         self.sensor_locations = self._get_sensor_locations_on_grid(df_locations, dim, self.extent)
 
         ground_site_grids = self._df_to_gridded_data(
@@ -102,7 +103,7 @@ class OpenAQData:
                 dim=dim,
                 apply_filter=False,
                 interp_flag=np.nan,
-                power=1.5
+                power=2.0
             )
             if use_interpolation
             else ground_site_grids
@@ -115,7 +116,8 @@ class OpenAQData:
             data=self.data,
             start_date=self.start_date,
             end_date=self.end_date,
-            extent=self.extent
+            extent=self.extent,
+            sensor_locations=self.sensor_locations
         )
 
         return
@@ -645,7 +647,7 @@ class OpenAQData:
         Loads numpy cache data.
         '''
         print(f'📂 Loading numpy data from {cache_path}...', end=' ')
-        cached_data = np.load(cache_path)
+        cached_data = np.load(cache_path, allow_pickle=True)
 
         # ensure data can be loaded
         try:
@@ -653,6 +655,7 @@ class OpenAQData:
             start_date = cached_data['start_date']
             end_date = cached_data['end_date']
             extent = cached_data['extent']
+            sensor_locations = cached_data['sensor_locations']
         except:
             raise ValueError(
                 'Cache data is missing keys '
@@ -662,15 +665,17 @@ class OpenAQData:
 
         return cached_data
     
-    def _save_numpy_to_cache(self, cache_path, data, start_date, end_date, extent):
+    def _save_numpy_to_cache(self, cache_path, data, start_date, end_date, extent, sensor_locations):
         if self.VERBOSE == 0:
             print(f'💾 Saving data to {cache_path}...', end=' ')
+
         np.savez_compressed(
             cache_path,
             data=self.data,
             start_date=start_date,
             end_date=end_date,
-            extent=extent
+            extent=extent,
+            sensor_locations=sensor_locations
         )
 
         if self.VERBOSE == 0:

@@ -54,8 +54,7 @@ def interpolate_frame(
     dim,                
     apply_filter=False, 
     interp_flag=0,      
-    power=2.0,           
-    epsilon=1e-6
+    power=2.0
 ):
     """
     Interpolates sparse data across a grid using Inverse Distance Weighting (IDW).
