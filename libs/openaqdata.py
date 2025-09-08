@@ -1038,11 +1038,13 @@ class OpenAQData:
         You can avoid this by bumping up the max z score required to 
             replace the outlier.
         '''
-        return np.where(
-            abs(data - np.nanmean(data)) <= max_z_score * np.nanstd(data),
-            data,
-            np.nan,
-        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            return np.where(
+                abs(data - np.nanmean(data)) <= max_z_score * np.nanstd(data),
+                data,
+                np.nan,
+            )
 
     def _get_closest_stations_to_each_sensor(self, sensor_locations):
         return {
