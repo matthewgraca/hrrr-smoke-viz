@@ -28,22 +28,23 @@ class AirNowData:
     '''
     def __init__(
         self,
-        start_date,
-        end_date,
-        extent,
+        start_date="2023-08-02-00",
+        end_date="2025-08-02-00",
+        extent=(-118.75, -117.0, 33.5, 34.5),
         airnow_api_key=None,
         save_dir='data/airnow.json',
         processed_cache_dir='data/airnow_processed.npz',
-        dim=200,
+        dim=40,
         idw_power=2,
         elevation_path=None,
         mask_path=None,
-        use_mask=True,
+        use_mask=False,
         sensor_whitelist=None,
         use_whitelist=False,
         force_reprocess=False,
         use_interpolation=True, # determines if interpolation should be run
-        use_imputation=True,    # determines if outliers/dead values are imputed
+        impute_dead=True,       # determines if dead sensors should be imputed
+        impute_outlier=True,    # determines if outlier removal should be performed
         use_variable_blur=False,# determines if variable blur is used after interpolation
         chunk_days=30,
         verbose=0,              # 0=allow all, 1=progress bar only, 2=silence all except warning
@@ -154,27 +155,34 @@ class AirNowData:
             raise ValueError("No valid AirNow data available.")
         
         if verbose < 2:
-            print(
-                "Processing ground sites and "
-                "imputing dead sensors and outliers..."
-            )
+            print("Plotting sensor data onto grid...")
         ground_site_grids = [
             self._preprocess_ground_sites(df, dim, extent)
             for df in (tqdm(list_df) if verbose < 2 else list_df)
         ]
-        if not use_imputation:
+        if impute_dead or impute_outlier:
+            if verbose < 2:
+                print("Preparing to impute sensor data...")
+
+            if impute_dead and verbose < 2:
+                print("Imputing dead sensors.")
+            if impute_outlier and verbose < 2:
+                print("Imputing outlier sensors.")
+                
+            # preprocess ground sites initializes air_sens_loc, so it should be usable here.
+            # this is why i hate using self, object state can change in any function...
+            ground_site_grids = self._impute_ground_site_grids(
+                ground_site_grids,
+                self.air_sens_loc,
+                impute_dead,
+                impute_outlier
+            )
+        else:
             if verbose < 2:
                 print(
                     "Imputation disabled. Dead sensors and outliers will be "
                     "kept in the data."
                 )
-        else:
-            # preprocess ground sites initializes air_sens_loc, so it should be usable here.
-            # this is why i hate using self, object state can change in any function...
-            ground_site_grids = self._impute_ground_site_grids(
-                ground_site_grids,
-                self.air_sens_loc
-            )
         
         if not use_interpolation:
             if verbose < 1:
@@ -657,7 +665,8 @@ class AirNowData:
         '''
         return unInter
 
-    def _impute_ground_site_grids(self, ground_sites, air_sens_loc):
+    
+    def _impute_ground_site_grids(self, ground_sites, air_sens_loc, impute_dead, impute_outlier):
         """
         Another method to consider here for imputing is performing IDW, and just
         plucking that value out of the interpolated frame. I did not go this route
@@ -669,8 +678,10 @@ class AirNowData:
         imputed_ground_sites = np.array(ground_sites)
         for x, y in air_sens_loc.values():
             sensor_vals = imputed_ground_sites[:, x, y]
-            sensor_vals = self._replace_dead_sensors_with_nan(sensor_vals)
-            sensor_vals = self._replace_outliers_with_nan(sensor_vals)
+            if impute_dead:
+                sensor_vals = self._replace_dead_sensors_with_nan(sensor_vals)
+            if impute_outlier:
+                sensor_vals = self._replace_outliers_with_nan(sensor_vals)
             imputed_ground_sites[:, x, y] = sensor_vals
 
         # get closest sensors to each station
