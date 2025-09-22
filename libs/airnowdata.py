@@ -43,8 +43,6 @@ class AirNowData:
         use_whitelist=False,
         force_reprocess=False,
         use_interpolation=True, # determines if interpolation should be run
-        impute_dead=True,       # determines if dead sensors should be imputed
-        impute_outlier=True,    # determines if outlier removal should be performed
         use_variable_blur=False,# determines if variable blur is used after interpolation
         chunk_days=30,
         verbose=0,              # 0=allow all, 1=progress bar only, 2=silence all except warning
@@ -149,40 +147,23 @@ class AirNowData:
         self.sensor_names = []
         
         # Process data from scratch
-        list_df = self._get_airnow_data(start_date, end_date, extent, save_dir, airnow_api_key)
-        
-        if not list_df:
-            raise ValueError("No valid AirNow data available.")
-        
+        airnow_df = self._get_airnow_data(start_date, end_date, extent, save_dir, airnow_api_key)        
+
+        # perform imputations and other data cleaning
+        if verbose < 2:
+            print(
+                "Performing: Removal of sensors with low uptime, imputing "
+                "invalid sensor data, imputing non-reporting sensors, imputing "
+                "outliers, and fillings all gaps with forward/backward fill"
+            )
+        list_df = self._process_dataframe(airnow_df, start_date, end_date)
+ 
         if verbose < 2:
             print("Plotting sensor data onto grid...")
         ground_site_grids = [
             self._preprocess_ground_sites(df, dim, extent)
             for df in (tqdm(list_df) if verbose < 2 else list_df)
         ]
-        if impute_dead or impute_outlier:
-            if verbose < 2:
-                print("Preparing to impute sensor data...")
-
-            if impute_dead and verbose < 2:
-                print("Imputing dead sensors.")
-            if impute_outlier and verbose < 2:
-                print("Imputing outlier sensors.")
-                
-            # preprocess ground sites initializes air_sens_loc, so it should be usable here.
-            # this is why i hate using self, object state can change in any function...
-            ground_site_grids = self._impute_ground_site_grids(
-                ground_site_grids,
-                self.air_sens_loc,
-                impute_dead,
-                impute_outlier
-            )
-        else:
-            if verbose < 2:
-                print(
-                    "Imputation disabled. Dead sensors and outliers will be "
-                    "kept in the data."
-                )
         
         if not use_interpolation:
             if verbose < 1:
@@ -205,8 +186,8 @@ class AirNowData:
                 )
             ]
         
-        self.data = interpolated_grids
-        self.ground_site_grids = ground_site_grids
+        self.data = np.array(interpolated_grids)
+        self.ground_site_grids = np.array(ground_site_grids)
         
         if self.air_sens_loc:
             self.sensor_names = list(self.air_sens_loc.keys())
@@ -540,24 +521,72 @@ class AirNowData:
                     print("Required columns for UTC construction not found.")
                     return []
             
-            try:
-                list_df = [group for name, group in airnow_df.groupby('UTC')]
-                if self.verbose < 2:
-                    print(f"Grouped AirNow data into {len(list_df)} time frames")
-                return list_df
-            except Exception as e:
-                print(f"Error grouping by UTC: {e}")
-                return []
+            return airnow_df
                 
         except Exception as e:
             print(f"Error processing AirNow data: {e}")
             return []
 
+    def _process_dataframe(self, airnow_df, start_date, end_date, min_uptime=0.25, zscore=3):
+        '''
+        Performs several data cleaning methods, then returns a list of dataframes grouped by UTC
+        '''
+        # remove sensors that have <25% uptime
+        def remove_underreporting_sensors(df, min_uptime=0.25):
+            timesteps = len(df.groupby('UTC').count())
+            return df.groupby('FullAQSCode').filter(lambda x : len(x) / timesteps > min_uptime).copy()
+
+        # replace invalid pm2.5 values with nan
+        def impute_invalid_values_with_nan(df):
+            df.loc[df['Value'] < 0, 'Value'] = np.nan
+            return df
+
+        # generate samples from sensors that are not reporting; set values to nan
+        def generate_samples_from_time(df, start_date, end_date):
+            dates_df = pd.DataFrame({'UTC': pd.date_range(start_date, end_date, inclusive='left', freq='h')})
+            df['UTC'] = pd.to_datetime(df['UTC'])
+            cols_to_interpolate = [
+                'Latitude', 'Longitude', 'Parameter', 'Unit', 
+                'SiteName', 'AgencyName', 'FullAQSCode', 'IntlAQSCode'
+            ]
+            sensor_dfs = []
+            for col in df['FullAQSCode'].unique():
+                a = pd.merge(dates_df, df.loc[df['FullAQSCode'] == col], on='UTC', how='left')
+                a[cols_to_interpolate] = a[cols_to_interpolate].ffill().bfill()
+                sensor_dfs.append(a)
+            return pd.concat(sensor_dfs, ignore_index=True)
+
+        # impute outlier sensor data with nan
+        def impute_outliers_with_nan(df, zscore=3):
+            sensor_group = df.groupby('FullAQSCode')['Value']
+            zscore_per_sensor_group = (df['Value'] - sensor_group.transform('mean')) / sensor_group.transform('std')
+            df['Value'] = np.where(np.abs(zscore_per_sensor_group) > zscore, np.nan, df['Value'])
+            return df
+
+        # replace all nans with a forward and back fill
+        def impute_nans_with_fbfill(df):
+            df['Value'] = (
+                df
+                .sort_values(['FullAQSCode', 'UTC'])
+                .groupby('FullAQSCode')['Value']
+                .transform(lambda s: s.ffill().bfill())
+            )
+            return df
+
+        original_data = airnow_df.copy()
+        filtered_data = remove_underreporting_sensors(original_data, min_uptime)
+        filtered_data = impute_invalid_values_with_nan(filtered_data)
+        filtered_data = generate_samples_from_time(filtered_data, start_date, end_date)
+        filtered_data = impute_outliers_with_nan(filtered_data, zscore)
+        filtered_data = impute_nans_with_fbfill(filtered_data)
+
+        return [group for name, group in filtered_data.groupby('UTC')]
+
     def _preprocess_ground_sites(self, df, dim, extent):
         """Convert ground sites data into grid format, with optional whitelist filtering."""
         lonMin, lonMax, latMin, latMax = extent
         latDist, lonDist = abs(latMax - latMin), abs(lonMax - lonMin)
-        unInter = np.zeros((dim, dim))
+        unInter = np.full((dim, dim), np.nan)
         
         # Handle different API response formats
         value_column = None
@@ -818,18 +847,18 @@ class AirNowData:
 
     def _interpolate_frame(self, unInter, use_variable_blur):
         """Interpolate a frame using 3D IDW method."""
-        nonzero_indices = np.nonzero(unInter)
+        nonzero_indices = np.where(~np.isnan(unInter))
         coordinates = list(zip(nonzero_indices[0], nonzero_indices[1]))
         
         if not coordinates:
             return unInter
             
         # Initialize with zeros (valid PM2.5 background)
-        interpolated = np.zeros((self.dim, self.dim), dtype=np.float32)
+        interpolated = np.full((self.dim, self.dim), np.nan)
         
         for x in range(self.dim):
             for y in range(self.dim):
-                if unInter[x, y] > 0:
+                if not np.isnan(unInter[x, y]):
                     # Use actual sensor measurement
                     interpolated[x, y] = unInter[x, y]
                     continue
