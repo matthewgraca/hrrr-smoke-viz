@@ -4,7 +4,7 @@
         "website": "/",
         "page": 1,
         "limit": 1000,
-        "found": 20
+        "found": 21
     },
     "results": [
         {
@@ -175,16 +175,6 @@
                     }
                 },
                 {
-                    "id": 5244329,
-                    "name": "temperature f",
-                    "parameter": {
-                        "id": 128,
-                        "name": "temperature",
-                        "units": "f",
-                        "displayName": "Temperature (F)"
-                    }
-                },
-                {
                     "id": 5244328,
                     "name": "temperature c",
                     "parameter": {
@@ -192,6 +182,16 @@
                         "name": "temperature",
                         "units": "c",
                         "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 5244329,
+                    "name": "temperature f",
+                    "parameter": {
+                        "id": 128,
+                        "name": "temperature",
+                        "units": "f",
+                        "displayName": "Temperature (F)"
                     }
                 }
             ],
@@ -223,8 +223,8 @@
                 "local": "2022-11-15T06:59:10-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:04:19Z",
-                "local": "2025-09-03T12:04:19-07:00"
+                "utc": "2025-09-22T21:02:38Z",
+                "local": "2025-09-22T14:02:38-07:00"
             }
         },
         {
@@ -333,8 +333,8 @@
                 "local": "2022-02-17T17:52:37-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:06:00Z",
-                "local": "2025-09-03T12:06:00-07:00"
+                "utc": "2025-09-22T21:03:04Z",
+                "local": "2025-09-22T14:03:04-07:00"
             }
         },
         {
@@ -443,8 +443,8 @@
                 "local": "2022-02-17T17:56:44-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:03:58Z",
-                "local": "2025-09-03T12:03:58-07:00"
+                "utc": "2025-09-22T21:06:54Z",
+                "local": "2025-09-22T14:06:54-07:00"
             }
         },
         {
@@ -553,8 +553,8 @@
                 "local": "2022-02-17T17:52:50-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:01:29Z",
-                "local": "2025-09-03T12:01:29-07:00"
+                "utc": "2025-09-22T21:05:47Z",
+                "local": "2025-09-22T14:05:47-07:00"
             }
         },
         {
@@ -663,8 +663,8 @@
                 "local": "2022-02-17T17:52:27-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:07:07Z",
-                "local": "2025-09-03T12:07:07-07:00"
+                "utc": "2025-09-22T21:03:31Z",
+                "local": "2025-09-22T14:03:31-07:00"
             }
         },
         {
@@ -783,8 +783,8 @@
                 "local": "2022-02-17T17:55:00-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:05:52Z",
-                "local": "2025-09-03T12:05:52-07:00"
+                "utc": "2025-09-22T21:02:16Z",
+                "local": "2025-09-22T14:02:16-07:00"
             }
         },
         {
@@ -893,8 +893,8 @@
                 "local": "2022-02-17T17:56:11-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:06:56Z",
-                "local": "2025-09-03T12:06:56-07:00"
+                "utc": "2025-09-22T21:05:32Z",
+                "local": "2025-09-22T14:05:32-07:00"
             }
         },
         {
@@ -1013,8 +1013,8 @@
                 "local": "2022-02-17T17:54:45-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:06:54Z",
-                "local": "2025-09-03T12:06:54-07:00"
+                "utc": "2025-09-22T21:03:11Z",
+                "local": "2025-09-22T14:03:11-07:00"
             }
         },
         {
@@ -1133,8 +1133,8 @@
                 "local": "2022-02-17T17:56:41-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:02:15Z",
-                "local": "2025-09-03T12:02:15-07:00"
+                "utc": "2025-09-22T21:04:58Z",
+                "local": "2025-09-22T14:04:58-07:00"
             }
         },
         {
@@ -1253,8 +1253,8 @@
                 "local": "2023-07-15T06:00:00-07:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:00:00Z",
-                "local": "2025-09-03T12:00:00-07:00"
+                "utc": "2025-09-22T22:00:00Z",
+                "local": "2025-09-22T15:00:00-07:00"
             }
         },
         {
@@ -1565,16 +1565,6 @@
                     }
                 },
                 {
-                    "id": 7526860,
-                    "name": "temperature c",
-                    "parameter": {
-                        "id": 100,
-                        "name": "temperature",
-                        "units": "c",
-                        "displayName": "Temperature (C)"
-                    }
-                },
-                {
                     "id": 7526861,
                     "name": "temperature f",
                     "parameter": {
@@ -1582,6 +1572,16 @@
                         "name": "temperature",
                         "units": "f",
                         "displayName": "Temperature (F)"
+                    }
+                },
+                {
+                    "id": 7526860,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
                     }
                 }
             ],
@@ -1853,8 +1853,8 @@
                 "local": "2024-06-19T17:00:00-07:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:00:00Z",
-                "local": "2025-09-03T12:00:00-07:00"
+                "utc": "2025-09-22T22:00:00Z",
+                "local": "2025-09-22T15:00:00-07:00"
             }
         },
         {
@@ -1973,8 +1973,8 @@
                 "local": "2024-12-12T16:00:00-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:00:00Z",
-                "local": "2025-09-03T12:00:00-07:00"
+                "utc": "2025-09-22T22:00:00Z",
+                "local": "2025-09-22T15:00:00-07:00"
             }
         },
         {
@@ -2083,8 +2083,118 @@
                 "local": "2025-02-11T10:00:00-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:00:00Z",
-                "local": "2025-09-03T12:00:00-07:00"
+                "utc": "2025-09-22T22:00:00Z",
+                "local": "2025-09-22T15:00:00-07:00"
+            }
+        },
+        {
+            "id": 3401000,
+            "name": "George E. Elder Park",
+            "locality": null,
+            "timezone": "America/Los_Angeles",
+            "country": {
+                "id": 155,
+                "code": "US",
+                "name": "United States"
+            },
+            "owner": {
+                "id": 11509,
+                "name": "Unknown Person"
+            },
+            "provider": {
+                "id": 66,
+                "name": "AirGradient"
+            },
+            "isMobile": false,
+            "isMonitor": false,
+            "instruments": [
+                {
+                    "id": 1,
+                    "name": "N/A"
+                }
+            ],
+            "sensors": [
+                {
+                    "id": 14152329,
+                    "name": "pm1 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 19,
+                        "name": "pm1",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM1"
+                    }
+                },
+                {
+                    "id": 14152330,
+                    "name": "pm25 \u00b5g/m\u00b3",
+                    "parameter": {
+                        "id": 2,
+                        "name": "pm25",
+                        "units": "\u00b5g/m\u00b3",
+                        "displayName": "PM2.5"
+                    }
+                },
+                {
+                    "id": 14152331,
+                    "name": "relativehumidity %",
+                    "parameter": {
+                        "id": 98,
+                        "name": "relativehumidity",
+                        "units": "%",
+                        "displayName": "RH"
+                    }
+                },
+                {
+                    "id": 14152332,
+                    "name": "temperature c",
+                    "parameter": {
+                        "id": 100,
+                        "name": "temperature",
+                        "units": "c",
+                        "displayName": "Temperature (C)"
+                    }
+                },
+                {
+                    "id": 14152333,
+                    "name": "um003 particles/cm\u00b3",
+                    "parameter": {
+                        "id": 125,
+                        "name": "um003",
+                        "units": "particles/cm\u00b3",
+                        "displayName": "PM0.3 count"
+                    }
+                }
+            ],
+            "coordinates": {
+                "latitude": 34.040726963045564,
+                "longitude": -118.12440243735992
+            },
+            "licenses": [
+                {
+                    "id": 41,
+                    "name": "CC BY 4.0",
+                    "attribution": {
+                        "name": "Unknown Person",
+                        "url": null
+                    },
+                    "dateFrom": "2023-07-15",
+                    "dateTo": null
+                }
+            ],
+            "bounds": [
+                -118.12440243735992,
+                34.040726963045564,
+                -118.12440243735992,
+                34.040726963045564
+            ],
+            "distance": null,
+            "datetimeFirst": {
+                "utc": "2025-09-19T00:00:00Z",
+                "local": "2025-09-18T17:00:00-07:00"
+            },
+            "datetimeLast": {
+                "utc": "2025-09-22T22:00:00Z",
+                "local": "2025-09-22T15:00:00-07:00"
             }
         },
         {
@@ -2193,8 +2303,8 @@
                 "local": "2025-02-17T17:00:00-08:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:00:00Z",
-                "local": "2025-09-03T12:00:00-07:00"
+                "utc": "2025-09-22T22:00:00Z",
+                "local": "2025-09-22T15:00:00-07:00"
             }
         },
         {
@@ -2303,8 +2413,8 @@
                 "local": "2025-08-18T08:00:00-07:00"
             },
             "datetimeLast": {
-                "utc": "2025-09-03T19:00:00Z",
-                "local": "2025-09-03T12:00:00-07:00"
+                "utc": "2025-09-22T22:00:00Z",
+                "local": "2025-09-22T15:00:00-07:00"
             }
         }
     ]

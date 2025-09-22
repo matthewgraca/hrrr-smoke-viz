@@ -34,8 +34,8 @@ class TestOpenAQDataQueries(unittest.TestCase):
         actual = len(self.aq._measurement_queries_for_a_sensor(
             api_key=os.getenv('OPENAQ_API_KEY'),
             sensor_id=2150,
-            start_dt=start - pd.Timedelta(hours=1),
-            end_dt=end - pd.Timedelta(hours=1),
+            start_dt=start,
+            end_dt=end,
             dates=dates,
             save_dir='tests/openaqdata/data',
         ))

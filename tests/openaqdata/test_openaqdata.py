@@ -109,8 +109,8 @@ class TestOpenAQData(unittest.TestCase):
     def test_sensor_values_loaded_from_csv_and_json_match(self):
         df_locations = self.aq._load_locations_from_json_cache(
             self.save_dir,
-            pd.to_datetime(self.aq.start_date, utc=True) - pd.Timedelta(hours=1),
-            pd.to_datetime(self.aq.end_date, utc=True) - pd.Timedelta(hours=1), 
+            pd.to_datetime(self.aq.start_date, utc=True),
+            pd.to_datetime(self.aq.end_date, utc=True), 
         )
         dates = pd.date_range(
             start=self.aq.start_date, 

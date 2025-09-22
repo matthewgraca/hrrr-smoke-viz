@@ -8,58 +8,6 @@
     },
     "results": [
         {
-            "value": 17.2,
-            "flagInfo": {
-                "hasFlags": false
-            },
-            "parameter": {
-                "id": 2,
-                "name": "pm25",
-                "units": "\u00b5g/m\u00b3",
-                "displayName": null
-            },
-            "period": {
-                "label": "1hour",
-                "interval": "01:00:00",
-                "datetimeFrom": {
-                    "utc": "2023-08-01T23:00:00Z",
-                    "local": "2023-08-01T16:00:00-07:00"
-                },
-                "datetimeTo": {
-                    "utc": "2023-08-02T00:00:00Z",
-                    "local": "2023-08-01T17:00:00-07:00"
-                }
-            },
-            "coordinates": null,
-            "summary": {
-                "min": 17.2,
-                "q02": 17.2,
-                "q25": 17.2,
-                "median": 17.2,
-                "q75": 17.2,
-                "q98": 17.2,
-                "max": 17.2,
-                "avg": 17.2,
-                "sd": null
-            },
-            "coverage": {
-                "expectedCount": 1,
-                "expectedInterval": "01:00:00",
-                "observedCount": 1,
-                "observedInterval": "01:00:00",
-                "percentComplete": 100.0,
-                "percentCoverage": 100.0,
-                "datetimeFrom": {
-                    "utc": "2023-08-01T23:00:00Z",
-                    "local": "2023-08-01T16:00:00-07:00"
-                },
-                "datetimeTo": {
-                    "utc": "2023-08-02T00:00:00Z",
-                    "local": "2023-08-01T17:00:00-07:00"
-                }
-            }
-        },
-        {
             "value": 22.6,
             "flagInfo": {
                 "hasFlags": false
@@ -52004,6 +51952,58 @@
                 "datetimeTo": {
                     "utc": "2023-09-16T14:00:00Z",
                     "local": "2023-09-16T07:00:00-07:00"
+                }
+            }
+        },
+        {
+            "value": 16.0,
+            "flagInfo": {
+                "hasFlags": false
+            },
+            "parameter": {
+                "id": 2,
+                "name": "pm25",
+                "units": "\u00b5g/m\u00b3",
+                "displayName": null
+            },
+            "period": {
+                "label": "1hour",
+                "interval": "01:00:00",
+                "datetimeFrom": {
+                    "utc": "2023-09-16T14:00:00Z",
+                    "local": "2023-09-16T07:00:00-07:00"
+                },
+                "datetimeTo": {
+                    "utc": "2023-09-16T15:00:00Z",
+                    "local": "2023-09-16T08:00:00-07:00"
+                }
+            },
+            "coordinates": null,
+            "summary": {
+                "min": 16.0,
+                "q02": 16.0,
+                "q25": 16.0,
+                "median": 16.0,
+                "q75": 16.0,
+                "q98": 16.0,
+                "max": 16.0,
+                "avg": 16.0,
+                "sd": null
+            },
+            "coverage": {
+                "expectedCount": 1,
+                "expectedInterval": "01:00:00",
+                "observedCount": 1,
+                "observedInterval": "01:00:00",
+                "percentComplete": 100.0,
+                "percentCoverage": 100.0,
+                "datetimeFrom": {
+                    "utc": "2023-09-16T14:00:00Z",
+                    "local": "2023-09-16T07:00:00-07:00"
+                },
+                "datetimeTo": {
+                    "utc": "2023-09-16T15:00:00Z",
+                    "local": "2023-09-16T08:00:00-07:00"
                 }
             }
         }

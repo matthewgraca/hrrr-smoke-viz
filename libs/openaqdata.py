@@ -66,10 +66,8 @@ class OpenAQData:
         self._validate_save_dir(save_dir)
 
         # datetimes to use for queries
-        # stagger by 1 hour (we want values from 00:00 -> 01:00 to be attributed to 1:00)
-        # we also are right-exclusive, so we shave an hour off for end time
-        start_dt = pd.to_datetime(start_date, utc=True) - pd.Timedelta(hours=1)
-        end_dt = pd.to_datetime(end_date, utc=True) - pd.Timedelta(hours=1)
+        start_dt = pd.to_datetime(start_date, utc=True)
+        end_dt = pd.to_datetime(end_date, utc=True)
         dates = pd.date_range(
             start_date, end_date, freq='h', inclusive='left', tz='UTC'
         )
@@ -87,7 +85,7 @@ class OpenAQData:
             sensor_values, df_locations = self._load_sensor_values_and_locations_df(
                 api_key, self.extent, product,
                 load_csv, load_json, save_dir, 
-                self.start_date, self.end_date, start_dt, end_dt, dates
+                start_dt, end_dt, dates
             )
 
         # process to numpy
@@ -132,8 +130,6 @@ class OpenAQData:
         load_csv,
         load_json,
         save_dir,
-        start_date,
-        end_date,
         start_dt,
         end_dt,
         dates
@@ -150,7 +146,7 @@ class OpenAQData:
                 save_dir, start_dt, end_dt
             )
             sensor_values = self._load_sensor_values_from_json_cache(
-                save_dir, df_locations, start_date, end_date, dates
+                save_dir, df_locations, start_dt, end_dt, dates
             )
         else:
             df_locations = self._ingest_locations_from_api(
@@ -285,7 +281,7 @@ class OpenAQData:
         We split the calls to a year, since openaq throws a fit and
             gives you a 408 error for doing anything
 
-        Gaps are imputed with 0.
+        Gaps are imputed with nan.
         '''
         date_to_sensorval = {k : np.nan for k in dates}
 
@@ -300,8 +296,8 @@ class OpenAQData:
                 sensor_values = self._load_sensor_values_from_json_cache(
                     save_dir=save_dir,
                     df_locations=pd.DataFrame({'pm2.5 sensor id' : [sensor_id]}),
-                    start_date=start_dt + pd.Timedelta(hours=1), 
-                    end_date=end_dt + pd.Timedelta(hours=1),   
+                    start_date=start_dt, 
+                    end_date=end_dt,   
                     dates=dates,
                     save=False
                 )
@@ -311,7 +307,7 @@ class OpenAQData:
                 return sensor_values[0]
             except Exception as e:
                 if self.VERBOSE == 0:
-                    print(
+                    tqdm.write(
                         f'{e}\n'
                         f'Unable to load full sensor values from json, '
                         f'performing query.'
@@ -335,7 +331,7 @@ class OpenAQData:
                 response_data = response.json()
 
                 for res in response_data['results']:
-                    date = pd.to_datetime(res['period']['datetimeTo']['utc'])
+                    date = pd.to_datetime(res['period']['datetimeFrom']['utc'])
                     date_to_sensorval[date] = res['value'] 
 
                 # save response in json
@@ -479,7 +475,7 @@ class OpenAQData:
             if self.VERBOSE == 0:
                 tqdm.write(
                     f'90% of ratelimit reached; backing off until reset period '
-                    'in {reset + 5} seconds...'
+                    f'in {reset + 5} seconds...'
                 )
             time.sleep(reset + 5)
 
@@ -577,8 +573,8 @@ class OpenAQData:
         try:
             json_save_dir = f'{save_dir}/measurements/{sensor_id}'
             os.makedirs(json_save_dir, exist_ok=True)
-            first_date = response_data['results'][0]['period']['datetimeTo']['utc']
-            last_date = response_data['results'][-1]['period']['datetimeTo']['utc']
+            first_date = response_data['results'][0]['period']['datetimeFrom']['utc']
+            last_date = response_data['results'][-1]['period']['datetimeFrom']['utc']
             json_save_path= f'{json_save_dir}/{first_date}_{last_date}.json'
 
             if self.VERBOSE == 0:
@@ -761,7 +757,7 @@ class OpenAQData:
             with open(f'{sensor_dir}/{f}', 'r') as j:
                 response_data = json.load(j)
             for res in response_data['results']:
-                date = pd.to_datetime(res['period']['datetimeTo']['utc'])
+                date = pd.to_datetime(res['period']['datetimeFrom']['utc'])
                 date_to_sensorval[date] = res['value'] 
 
         return [v for k, v in sorted(date_to_sensorval.items())]
