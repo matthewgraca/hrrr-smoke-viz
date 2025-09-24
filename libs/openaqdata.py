@@ -22,7 +22,7 @@ class OpenAQData:
         product=2,              # sensor data to ingest (2 is pm2.5)
         save_dir=None,          # where json files should be saved to
         load_json=False,        # specifies that jsons should be loaded from cache
-        load_csv=False,         # speficifies that the csvs should be loaded from cache
+        load_csv=False,         # specifies that the csvs should be loaded from cache
         load_numpy=False,       # specifies the numpy file should be loaded from cache
         use_interpolation=True,
         power=2.0,
@@ -1004,10 +1004,7 @@ class OpenAQData:
             d.setdefault(loc, []).append(val)
 
         for k in d.keys():
-            # avoids 'nan of empty slice' warning if there's lone nan value
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=RuntimeWarning)
-                d[k] = np.nanmean(d[k])
+            d[k] = np.nanmean(d[k])
 
         return list(d.keys()), list(d.values())
 
@@ -1107,13 +1104,13 @@ class OpenAQData:
         '''
         if self.VERBOSE == 0: print('📍 Processing ground sites...')
 
-        sensor_values = df_measurements.values.tolist()
+        sensor_values = df_measurements.to_numpy()
         ground_site_grids = [
             self._preprocess_ground_sites(vals, dim, sensor_locations.values())
             for vals in (
-                tqdm(np.transpose(sensor_values))
+                tqdm(sensor_values)
                 if self.VERBOSE < 2
-                else np.transpose(sensor_values)
+                else sensor_values
             )
         ]
 
