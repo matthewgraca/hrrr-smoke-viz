@@ -26,7 +26,6 @@ class OpenAQData:
         load_numpy=False,       # specifies the numpy file should be loaded from cache
         use_interpolation=True,
         power=2.0,
-        use_imputation=True,
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ):
         '''
@@ -40,18 +39,19 @@ class OpenAQData:
 
         On save_dir, load_json, load_numpy, and load_csv:
             - If a save_dir is provided, that's where we'll read/write from as 
-                our cache
+                our cache.
             - load_json is intended for when you have the measurements or
                 sensor jsons, but not the processed numpy file.
-            - load_csv is when you have processed the json files already.
+            - load_csv is when you have processed the json files into csvs
+                already.
             - load_numpy is intended for when you have the completely processed 
                 numpy file. 
 
             Think of it as:
-                json = raw api reponses
-                csv = processed jsons
-                numpy = gridded and interpolated
                 all false = ingest from scratch
+                json = farm-to-table raw api reponses from openaq
+                csv = stitched-together jsons (no imputation or processing yet)
+                numpy = gridded and interpolated
         '''
         # members
         self.data = None
@@ -87,12 +87,16 @@ class OpenAQData:
                 load_csv, load_json, save_dir, 
                 start_dt, end_dt, dates
             )
+            df_measurements = self._load_measurements_from_csv_cache(save_dir)
 
         # process to numpy
-        self.sensor_locations = self._get_sensor_locations_on_grid(df_locations, dim, self.extent)
+        self.sensor_locations = self._get_sensor_locations_on_grid(
+            df_locations, dim, self.extent
+        )
+        df_measurements = self._preprocess_dataframe(df_measurements)
 
         ground_site_grids = self._df_to_gridded_data(
-            sensor_values, dim, self.sensor_locations, use_imputation
+            df_measurements, dim, self.sensor_locations 
         )
 
         interpolated_grids = (
@@ -855,6 +859,18 @@ class OpenAQData:
         sensor_values = [list(df_measurements[col]) for col in df_measurements]
 
         return sensor_values
+
+    def _load_measurements_from_csv_cache(self, save_dir):
+        '''
+        No messages because if we're here, we've already loaded it once. You
+            might wonder why we load it twice? That's because planning is hard.
+        '''
+        df_measurements = pd.read_csv(
+            f'{save_dir}/measurements_summary.csv',
+            index_col='Unnamed: 0'
+        )
+
+        return df_measurements
     
     def _save_measurements_csv(self, save_dir, df, sensor_values):
         if self.VERBOSE == 0:
@@ -1085,18 +1101,13 @@ class OpenAQData:
         closest_values = [coordinates[i] for i in closest_indices]
         return closest_values, normalized_distances
 
-    def _df_to_gridded_data(self, sensor_values, dim, sensor_locations, use_imputation):
+    def _df_to_gridded_data(self, df_measurements, dim, sensor_locations):
         '''
         Converts the dataframe of sensor values to gridded data.
         '''
-        if self.VERBOSE == 0:
-            msg = (
-                '📍 Processing ground sites and imputing dead sensors and outliers...'
-                if use_imputation
-                else 'Imputation is disabled; sensor values will be used as-is'
-            )
-            print(msg)
+        if self.VERBOSE == 0: print('📍 Processing ground sites...')
 
+        sensor_values = df_measurements.values.tolist()
         ground_site_grids = [
             self._preprocess_ground_sites(vals, dim, sensor_locations.values())
             for vals in (
@@ -1105,13 +1116,71 @@ class OpenAQData:
                 else np.transpose(sensor_values)
             )
         ]
-        ground_site_grids = (
-            self._impute_ground_site_grids(ground_site_grids, sensor_locations)
-            if use_imputation
-            else ground_site_grids
-        )
 
         return np.array(ground_site_grids)
+
+    def _preprocess_dataframe(self, df, min_uptime=0.75, max_zscore=3):
+        # remove sensors than report < 75% of the time
+        def remove_underreporting_sensors(df, min_uptime):
+            sensors_below_threshold = df.count() / len(df) < min_uptime
+            if self.VERBOSE == 0:
+                print(
+                    f"Sensors to be removed for not reaching threshold:\n"
+                    f"{df.columns[sensors_below_threshold].tolist()}\n"
+                )
+            return df.drop(columns=df.columns[sensors_below_threshold])
+
+        # replace dead sensors (negative PM2.5) with nan
+        def impute_dead_sensors_with_nan(df):
+            if self.VERBOSE == 0:
+                print(
+                    f"Total values that will be imputed from false reporting "
+                    f"(negative PM2.5):\n" 
+                    f"{df[df < 0].count()}\n"
+                )
+            return df.mask(df < 0)
+
+        # replace outliers (zscore > 3) with nan
+        def impute_outliers_with_nan(df, max_zscore):
+            temp_df = df.copy()
+            for col in temp_df.columns:
+                zscore = (temp_df[col] - temp_df[col].mean()) / temp_df[col].std()
+                temp_df[col] = temp_df[col].mask(np.abs(zscore) > max_zscore)
+            return temp_df
+
+        # replace all nans with a forward and back fill
+        def impute_nans_with_fbfill(df):
+            if self.VERBOSE == 0:
+                print(
+                    f"Total values that will be imputed from dead sensors "
+                    f"and outliers:\n"
+                    f"{df.isna().sum().sort_values(ascending=False)}\n"
+                )
+            return df.ffill().bfill()
+
+        pd.set_option('display.precision', 1)
+        if self.VERBOSE == 0:
+            print(
+                f"🧼 Cleaning data...\n"
+                f" - Removing sensors with <{min_uptime * 100:.2f}% uptime\n"
+                f" - Imputing dead sensors and outliers with a "
+                f"forward + back fill\n"
+                f"Current statistics:\n{df.describe()}\n"
+            )
+
+        filtered_df = df.copy()
+        filtered_df = remove_underreporting_sensors(filtered_df, min_uptime)
+        filtered_df = impute_dead_sensors_with_nan(filtered_df)
+        filtered_df = impute_outliers_with_nan(filtered_df, max_zscore)
+        filtered_df = impute_nans_with_fbfill(filtered_df)
+
+        if self.VERBOSE == 0:
+            print(
+                f"✅ Complete! Final statistics:\n"
+                f"{filtered_df.describe()}\n"
+            )
+
+        return filtered_df
 
     def _interpolate_all_frames(
         self,
@@ -1123,6 +1192,7 @@ class OpenAQData:
     ):
         if self.VERBOSE == 0:
             print(
+                # and for his next trick, smokey the bear will perform idw
                 f"🐻 Performing IDW interpolation on "
                 f"{len(ground_site_grids)} frames..."
             )
