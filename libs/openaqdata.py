@@ -1127,16 +1127,6 @@ class OpenAQData:
                 )
             return df.drop(columns=df.columns[sensors_below_threshold])
 
-        # replace dead sensors (negative PM2.5) with nan
-        def impute_dead_sensors_with_nan(df):
-            if self.VERBOSE == 0:
-                print(
-                    f"Total values that will be imputed from false reporting "
-                    f"(negative PM2.5):\n" 
-                    f"{df[df < 0].count()}\n"
-                )
-            return df.mask(df < 0)
-
         # replace outliers (zscore > 3) with nan
         def impute_outliers_with_nan(df, max_zscore):
             temp_df = df.copy()
@@ -1167,7 +1157,6 @@ class OpenAQData:
 
         filtered_df = df.copy()
         filtered_df = remove_underreporting_sensors(filtered_df, min_uptime)
-        filtered_df = impute_dead_sensors_with_nan(filtered_df)
         filtered_df = impute_outliers_with_nan(filtered_df, max_zscore)
         filtered_df = impute_nans_with_fbfill(filtered_df)
 
