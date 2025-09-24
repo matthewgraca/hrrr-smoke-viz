@@ -4,6 +4,7 @@ import numpy as np
 import subprocess
 from shutil import which
 from libs.pwwb.utils.dataset import sliding_window
+import pandas as pd
 
 class TestAirNowData(unittest.TestCase):
     def setUp(self):
@@ -343,7 +344,7 @@ class TestAirNowData(unittest.TestCase):
         for loc, data in zip(locations, locations_data):
             synthetic_data[*loc] = data 
 
-        actual_grid = ad._impute_ground_site_grids([synthetic_data], air_sens_loc)
+        actual_grid = ad._impute_ground_site_grids([synthetic_data], air_sens_loc, impute_dead=True, impute_outlier=True)
         actual = actual_grid[0, *air_sens_loc['Glendora - Laurel']]
         expected = 3
 
@@ -374,7 +375,7 @@ class TestAirNowData(unittest.TestCase):
         for loc, data in zip(locations, locations_data):
             synthetic_data[*loc] = data 
 
-        actual_grid = ad._impute_ground_site_grids([synthetic_data], air_sens_loc)
+        actual_grid = ad._impute_ground_site_grids([synthetic_data], air_sens_loc, impute_dead=True, impute_outlier=True)
         actual = actual_grid[0, *air_sens_loc['Glendora - Laurel']]
         expected = 100
 
@@ -382,3 +383,4 @@ class TestAirNowData(unittest.TestCase):
         msg = f"{locations}, {locations_data}"
         msg = f"{actual_grid[actual_grid != 0]}"
         self.assertEqual(actual, expected, msg)
+
