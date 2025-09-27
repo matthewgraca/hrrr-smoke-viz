@@ -89,12 +89,17 @@ class OpenAQData:
             )
             df_measurements = self._load_measurements_from_csv_cache(save_dir)
 
-        # process to numpy
+        # preprocess dataframes 
+        df_measurements, df_locations = self._preprocess_dataframes(
+            df_measurements,
+            df_locations
+        )
+
         self.sensor_locations = self._get_sensor_locations_on_grid(
             df_locations, dim, self.extent
         )
-        df_measurements = self._preprocess_dataframe(df_measurements)
 
+        # process to numpys
         ground_site_grids = self._df_to_gridded_data(
             df_measurements, dim, self.sensor_locations 
         )
@@ -1116,7 +1121,42 @@ class OpenAQData:
 
         return np.array(ground_site_grids)
 
-    def _preprocess_dataframe(self, df, min_uptime=0.75, max_zscore=3):
+    def _preprocess_dataframes(
+        self,
+        df_measurements,
+        df_locations,
+        min_uptime=0.75,
+        max_zscore=3,
+        whitelist=set(['AirNow', 'Clarity'])
+    ):
+        # filter out sensors that are not in the whitelist
+        def filter_whitelisted_sensors(
+            df_measurements,
+            df_locations,
+            whitelist=set(['AirNow', 'Clarity'])
+        ):
+            if self.VERBOSE == 0:
+                print(
+                    f'Pruning sensors that are not in the whitelist of: '
+                    f'{whitelist}'
+                )
+
+            blacklist = (
+                df_locations[~df_locations['provider']
+                    .isin(whitelist)]['locations']
+                    .to_list()
+            )
+            df1 = df_measurements.drop(labels=blacklist, axis='columns')
+            df2 = (
+                df_locations[df_locations['provider']
+                    .isin(whitelist)]
+                    .reset_index(drop=True)
+            )
+
+            if self.VERBOSE == 0: print(f'Sensors removed: {blacklist}\n')
+
+            return df1, df2
+
         # remove sensors than report < 75% of the time
         def remove_underreporting_sensors(df, min_uptime):
             sensors_below_threshold = df.count() / len(df) < min_uptime
@@ -1149,13 +1189,19 @@ class OpenAQData:
         if self.VERBOSE == 0:
             print(
                 f"🧼 Cleaning data...\n"
+                f" - Filtering sensors not in the whitelist: {whitelist}\n"
                 f" - Removing sensors with <{min_uptime * 100:.2f}% uptime\n"
-                f" - Imputing dead sensors and outliers with a "
-                f"forward + back fill\n"
-                f"Current statistics:\n{df.describe()}\n"
+                f" - Imputing dead sensors and outliers (zscore={max_zscore}) "
+                f"with a forward + backward fill\n"
+                f"Current statistics:\n{df_measurements.describe()}\n"
             )
 
-        filtered_df = df.copy()
+        filtered_df = df_measurements.copy()
+        filtered_df, filtered_loc = filter_whitelisted_sensors(
+            filtered_df,
+            df_locations,
+            whitelist
+        )
         filtered_df = remove_underreporting_sensors(filtered_df, min_uptime)
         filtered_df = impute_outliers_with_nan(filtered_df, max_zscore)
         filtered_df = impute_nans_with_fbfill(filtered_df)
@@ -1166,7 +1212,7 @@ class OpenAQData:
                 f"{filtered_df.describe()}\n"
             )
 
-        return filtered_df
+        return filtered_df, filtered_loc
 
     def _interpolate_all_frames(
         self,
