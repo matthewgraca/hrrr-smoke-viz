@@ -162,3 +162,13 @@ class TestOpenAQData(unittest.TestCase):
         expected = 2, 2
 
         self.assertEqual(actual, expected)
+
+    def test_nowcast(self):
+        airnow_df = pd.read_csv(f'{self.save_dir}/airnow_la_sensor_subset.csv')
+        raw_df = pd.read_csv(f'{self.save_dir}/openaq_la_sensor_subset.csv')
+        nowcast_df = self.aq._compute_nowcast(raw_df) 
+
+        actual = airnow_df['Value'].values[12:]
+        expected = np.squeeze(nowcast_df.values[12:])
+
+        np.testing.assert_allclose(actual, expected, atol=0.1)

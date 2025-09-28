@@ -998,7 +998,6 @@ class OpenAQData:
         
         return grid
 
-
     def _merge_values_in_the_same_location(self, data, locations_on_grid):
         '''
         If sensors are in the same location, we take the mean. Any nans
@@ -1121,6 +1120,30 @@ class OpenAQData:
 
         return np.array(ground_site_grids)
 
+    def _interpolate_all_frames(
+        self,
+        ground_site_grids,
+        dim,
+        apply_filter,
+        interp_flag,
+        power
+    ):
+        if self.VERBOSE == 0:
+            print(
+                # and for his next trick, smokey the bear will perform idw
+                f"🐻 Performing IDW interpolation on "
+                f"{len(ground_site_grids)} frames..."
+            )
+        return np.array([
+            interpolate_frame(frame, dim, apply_filter, np.nan, power)
+            for frame in (
+                tqdm(ground_site_grids) 
+                if self.VERBOSE < 2 else ground_site_grids
+            )
+        ])
+
+    ### NOTE: Dataframe preprocessing methods
+
     def _preprocess_dataframes(
         self,
         df_measurements,
@@ -1203,6 +1226,11 @@ class OpenAQData:
             whitelist
         )
         filtered_df = remove_underreporting_sensors(filtered_df, min_uptime)
+        #FIXME Currently we just set the first 12 hours to nan, since nowcast
+        # requires 12 hours of previous observations To fix this, we'd need to
+        # ingest 12 hours of data before the start date, then shave
+        # off the first 12 hours somewhere here
+        filtered_df = self._compute_nowcast(filtered_df)
         filtered_df = impute_outliers_with_nan(filtered_df, max_zscore)
         filtered_df = impute_nans_with_fbfill(filtered_df)
 
@@ -1214,24 +1242,45 @@ class OpenAQData:
 
         return filtered_df, filtered_loc
 
-    def _interpolate_all_frames(
-        self,
-        ground_site_grids,
-        dim,
-        apply_filter,
-        interp_flag,
-        power
-    ):
+    def _compute_nowcast(self, df):
+        '''
+        Converts PM2.5 raw concentrations into NowCast values.
+
+        Would be a part of the process_dataframe pipeline. After imputation but 
+            before interpolation.
+
+        Assumptions made about the algorithm:
+            - If the max of 12 hours is 0, we return 0
+            - The result is truncated, not rounded
+        ''' 
+        WINDOW_SIZE = 12
+        def nowcast(pm_data):
+            if len(pm_data) < WINDOW_SIZE:
+                return np.nan
+            if np.isnan(pm_data.tail(3)).sum() >= 2:
+                return np.nan 
+            if np.nanmax(pm_data) == 0:
+                return 0
+
+            hours_ago = np.array(list(range(WINDOW_SIZE - 1, -1, -1)), dtype=float)
+            hours_ago[np.isnan(pm_data)] = np.nan
+
+            diff = np.nanmax(pm_data) - np.nanmin(pm_data)
+            scaled_rate_of_change = diff / np.nanmax(pm_data)
+            weight_factor = max(0.5, 1 - scaled_rate_of_change)
+            weighted_pm_data = np.array([
+                val * (weight_factor ** power)
+                for val, power in zip(pm_data.to_numpy(), hours_ago)
+            ])
+            weighted_weight_factors = [weight_factor ** hour for hour in hours_ago]
+            
+            res = np.nansum(weighted_pm_data) / np.nansum(weighted_weight_factors)
+            truncated_res = int(res * 10) / 10
+
+            return max(0, truncated_res)
+
         if self.VERBOSE == 0:
-            print(
-                # and for his next trick, smokey the bear will perform idw
-                f"🐻 Performing IDW interpolation on "
-                f"{len(ground_site_grids)} frames..."
-            )
-        return np.array([
-            interpolate_frame(frame, dim, apply_filter, np.nan, power)
-            for frame in (
-                tqdm(ground_site_grids) 
-                if self.VERBOSE < 2 else ground_site_grids
-            )
-        ])
+            print("Converting raw concentrations to nowcast...")
+        nowcast_df = df.rolling(window=WINDOW_SIZE, min_periods=0).apply(nowcast)
+
+        return nowcast_df
