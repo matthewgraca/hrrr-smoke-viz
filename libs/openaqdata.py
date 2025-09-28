@@ -20,6 +20,7 @@ class OpenAQData:
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
         product=2,              # sensor data to ingest (2 is pm2.5)
+        is_nowcast=True,        # determines if the values should be nowcast or raw
         save_dir=None,          # where json files should be saved to
         load_json=False,        # specifies that jsons should be loaded from cache
         load_csv=False,         # specifies that the csvs should be loaded from cache
@@ -64,6 +65,7 @@ class OpenAQData:
         ) 
         self.extent = None if load_numpy else self._validate_extent(extent)
         self._validate_save_dir(save_dir)
+        self.is_nowcast = is_nowcast
 
         # datetimes to use for queries
         start_dt = pd.to_datetime(start_date, utc=True)
@@ -1210,10 +1212,16 @@ class OpenAQData:
 
         pd.set_option('display.precision', 1)
         if self.VERBOSE == 0:
+            nowcast_msg = (
+                " - Converting values from raw concentration to nowcast\n"
+                if self.is_nowcast
+                else ""
+            )
             print(
                 f"🧼 Cleaning data...\n"
                 f" - Filtering sensors not in the whitelist: {whitelist}\n"
                 f" - Removing sensors with <{min_uptime * 100:.2f}% uptime\n"
+                f"{nowcast_msg}"
                 f" - Imputing dead sensors and outliers (zscore={max_zscore}) "
                 f"with a forward + backward fill\n"
                 f"Current statistics:\n{df_measurements.describe()}\n"
@@ -1230,7 +1238,16 @@ class OpenAQData:
         # requires 12 hours of previous observations To fix this, we'd need to
         # ingest 12 hours of data before the start date, then shave
         # off the first 12 hours somewhere here
-        filtered_df = self._compute_nowcast(filtered_df)
+        # however, it maybe annoying with how it interacts with the cache
+        # perhaps: ALWAYS ingest 12 extra hours, and chop it off regardless?
+        if self.is_nowcast:
+            filtered_df = self._compute_nowcast(filtered_df)
+        '''
+        filtered_df = (
+            self._compute_nowcast(filtered_df).iloc[12:].reset_index(drop=True)
+            if self.is_nowcast
+            else filtered_df.iloc[12:].reset_index(drop=True)
+        '''
         filtered_df = impute_outliers_with_nan(filtered_df, max_zscore)
         filtered_df = impute_nans_with_fbfill(filtered_df)
 
