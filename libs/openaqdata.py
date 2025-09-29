@@ -109,6 +109,7 @@ class OpenAQData:
         )
 
         # TODO handle elevation_grid; perhaps from separate path from cache?
+        if self.VERBOSE < 2: print("🐻 Performing IDW interpolation...")
         interpolated_grids = interpolate_frames(
             frames=ground_site_grids,
             dim=dim,
@@ -118,20 +119,6 @@ class OpenAQData:
             use_variable_blur=False,
             use_progbar=self.VERBOSE < 2
         )
-        # TODO remove when confident idw works
-        '''
-        interpolated_grids = (
-            self._interpolate_all_frames(
-                ground_site_grids=ground_site_grids,
-                dim=dim,
-                apply_filter=False,
-                interp_flag=np.nan,
-                power=2.0
-            )
-            if use_interpolation
-            else ground_site_grids
-        )
-        '''
 
         self.data = interpolated_grids
 
@@ -1029,100 +1016,6 @@ class OpenAQData:
 
         return list(d.keys()), list(d.values())
 
-    # TODO vestigial method, marked for removal
-    def _impute_ground_site_grids(self, ground_sites, sensor_locations):
-        """
-        Replaces dead sensors and outliers with the mean value of the 
-            closest three non-nan sensors
-        """
-        # replace dead sensors and outliers with nan
-        imputed_ground_sites = np.array(ground_sites)
-        for x, y in sensor_locations.values():
-            sensor_vals = imputed_ground_sites[:, x, y]
-            sensor_vals = self._replace_dead_sensors_with_nan(sensor_vals)
-            sensor_vals = self._replace_outliers_with_nan(sensor_vals, max_z_score=4)
-            imputed_ground_sites[:, x, y] = sensor_vals
-
-        # get closest sensors to each station
-        sensor_to_closest_stations = self._get_closest_stations_to_each_sensor(
-            sensor_locations
-        )
-
-        # pick from closest 3 non-nans 
-        loc_to_sensor = {v : k for k, v in sensor_locations.items()}
-        for frame in imputed_ground_sites:
-            for x, y in sensor_locations.values():
-                if np.isnan(frame[x, y]):
-                    closest_loc_to_xy = sensor_to_closest_stations[loc_to_sensor[(x, y)]]
-                    sensor_data = np.array([frame[a, b] for a, b in closest_loc_to_xy])
-                    frame[x, y] = np.mean(sensor_data[~np.isnan(sensor_data)][:3])
-
-        return imputed_ground_sites
-
-    # TODO vestigial method, marked for removal
-    def _replace_dead_sensors_with_nan(self, data):
-        '''
-        The condition for dead sensors is when data reports 
-            less than or equal to 0
-        '''
-        return np.where(data <= 0, np.nan, data)
-
-    def _replace_outliers_with_nan(self, data, max_z_score=3):
-        '''
-        If all data is just nan, then the mean will also be nan and 
-            a runtime warning will pop up.
-
-        You can avoid this by bumping up the max z score required to 
-            replace the outlier.
-        '''
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            return np.where(
-                abs(data - np.nanmean(data)) <= max_z_score * np.nanstd(data),
-                data,
-                np.nan,
-            )
-
-    # TODO vestigial method, marked for removal
-    def _get_closest_stations_to_each_sensor(self, sensor_locations):
-        return {
-            station : self._find_closest_values(
-                x=location[0], 
-                y=location[1], 
-                coordinates=list(sensor_locations.values()),
-                n=len(sensor_locations)
-            )[0][1:] 
-            for station, location in sensor_locations.items()
-        }
-
-    # TODO vestigial method, marked for removal
-    def _find_closest_values(self, x, y, coordinates, n=10):
-        '''
-        Find n closest sensor locations for interpolation.
-
-        Returns a pair (closest values, distances)
-        '''
-        if not coordinates:
-            return [], np.array([])
-            
-        coords_array = np.array(coordinates)
-        diffs = coords_array - np.array([x, y])
-        distances = np.sqrt(np.sum(diffs**2, axis=1))
-        
-        closest_indices = np.argsort(distances)[:n]
-        sorted_distances = distances[closest_indices]
-        
-        magnitude = np.linalg.norm(sorted_distances)
-
-        normalized_distances = (
-            sorted_distances / magnitude 
-            if magnitude > 0 
-            else sorted_distances
-        )
-            
-        closest_values = [coordinates[i] for i in closest_indices]
-        return closest_values, normalized_distances
-
     def _df_to_gridded_data(self, df_measurements, dim, sensor_locations):
         '''
         Converts the dataframe of sensor values to gridded data.
@@ -1139,30 +1032,13 @@ class OpenAQData:
             )
         ]
 
-        return np.array(ground_site_grids)
-
-    # TODO vestigial method, marked for removal
-    def _interpolate_all_frames(
-        self,
-        ground_site_grids,
-        dim,
-        apply_filter,
-        interp_flag,
-        power
-    ):
         if self.VERBOSE == 0:
-            print(
-                # and for his next trick, smokey the bear will perform idw
-                f"🐻 Performing IDW interpolation on "
-                f"{len(ground_site_grids)} frames..."
+            tqdm.write(
+                f" - Merged {len(sensor_locations)} sensors into "
+                f"{(~np.isnan(ground_site_grids[0])).sum()} pixels."
             )
-        return np.array([
-            interpolate_frame(frame, dim, apply_filter, np.nan, power)
-            for frame in (
-                tqdm(ground_site_grids) 
-                if self.VERBOSE < 2 else ground_site_grids
-            )
-        ])
+
+        return np.array(ground_site_grids)
 
     ### NOTE: Dataframe preprocessing methods
 
