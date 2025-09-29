@@ -61,7 +61,7 @@ def interpolate_frames(
         unInter=frames[0],
         dim=dim,
         coordinates=_init_sensor_coords_from_grid(frames[0]),
-        neighbors=10
+        neighbors=neighbors
     )
     # NOTE: elevation is disabled
     if elevation_grid is None:

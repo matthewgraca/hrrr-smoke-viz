@@ -28,6 +28,7 @@ class OpenAQData:
         use_interpolation=True,
         use_variable_blur=False,
         power=2.0,
+        neighbors=10,
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ):
         '''
@@ -112,7 +113,7 @@ class OpenAQData:
             frames=ground_site_grids,
             dim=dim,
             power=power,
-            neighbors=10,
+            neighbors=neighbors,
             elevation_grid=None,
             use_variable_blur=False,
             use_progbar=self.VERBOSE < 2
