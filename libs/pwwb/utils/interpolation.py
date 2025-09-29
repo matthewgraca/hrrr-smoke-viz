@@ -49,16 +49,17 @@ def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist, allow
     return grid
 
 def interpolate_frames(
-    frames,
-    dim,
-    power=2.0,
-    neighbors=10,
-    elevation_grid=None,
-    use_variable_blur=False,
-    use_progbar=True
+    frames,                     # the sparse grids to be interpolated
+    dim,                        # the dimensions of the grid 
+    power=2.0,                  # controls significance of far away points
+    neighbors=10,               # number of nearest sensors to consider 
+    elevation_grid=None,        # gridded elevation data
+    use_variable_blur=False,    # variable blur + gaussian filter over grid
+    use_progbar=True            # cli tracking progress 
 ):
     closest_coords_and_dists = _init_closest_coords_and_dists_per_pixel(
         unInter=frames[0],
+        dim=dim,
         coordinates=_init_sensor_coords_from_grid(frames[0]),
         neighbors=10
     )
@@ -98,6 +99,12 @@ def _find_closest_values(x, y, coordinates, n=10):
     return closest_values, normalized_distances
 
 def _init_sensor_coords_from_grid(unInter):
+    """
+    Initializes where the locations of the sensors are based on whether the
+        pixel is NaN or not. This means that we expect the frame to contain
+        ALL the sensor values (pre-imputed), and non-sensor locations to be
+        NaN.
+    """
     sensor_indices = np.where(~np.isnan(unInter))
     coordinates = list(zip(sensor_indices[0], sensor_indices[1]))
     if not coordinates:
@@ -108,20 +115,26 @@ def _init_sensor_coords_from_grid(unInter):
 
     return coordinates
 
-def _init_closest_coords_and_dists_per_pixel(unInter, coordinates, neighbors=10):
-# generate a frame that has the closest sensor locations for each pixel that can be reused
-# each pixel = two lists; one with the closest coordinates, the other with the closest distances
-# if its an actual sensor location, make it np.nan
+def _init_closest_coords_and_dists_per_pixel(unInter, dim, coordinates, neighbors=10):
+    """
+    For every pixel, generates a pair:
+        1. The coordinates of the closest sensors
+            e.g. [(0,2), (3,5), ... ]
+        2. The distances of those sensors
+            e.g. [13, 24, ...]
+
+    For the pixel that is itself a sensor location, it will be set to NaN
+    """
     if neighbors > len(coordinates):
         print(
             f"Neighbors cannot exceed number of sensors; setting neighbors to "
-            f"{len(coordinates)}"
+            f"{len(coordinates)}."
         )
         neighbors = len(coordinates)
 
-    closest_coords_and_dists = [[np.nan for _ in range(40)] for _ in range(40)] 
-    for x in range(40):
-        for y in range(40):
+    closest_coords_and_dists = [[np.nan for _ in range(dim)] for _ in range(dim)] 
+    for x in range(dim):
+        for y in range(dim):
             closest_coords_and_dists[x][y] = (
                 _find_closest_values(x, y, coordinates, neighbors)
                 if np.isnan(unInter[x, y])
@@ -159,25 +172,25 @@ def interpolate_frame(
                     power 
                 )
     
-    out = interpolated
-
     # Apply smoothing
     if use_variable_blur:
         kernel_size = np.random.randint(0, 5, (dim, dim))
-        out = _variable_blur(interpolated, kernel_size)
-        out = gaussian_filter(out, sigma=0.5)
+        interpolated = _variable_blur(interpolated, kernel_size)
+        interpolated = gaussian_filter(interpolated, sigma=0.5)
     
-    return out
+    return interpolated 
 
 def _find_values(coordinates, unInter):
     """Get sensor values at specified coordinates."""
-    values = []
-    for a, b in coordinates:
-        if 0 <= a < unInter.shape[0] and 0 <= b < unInter.shape[1]:
-            values.append(unInter[a, b])
-        else:
-            values.append(0)
-    return values
+    def validate_coordinates(coordinates, unInter):
+        n, m = unInter.shape
+        for a, b in coordinates:
+            err_msg = f"Coordinates ({a},{b}) out of bound for shape ({n},{m})."
+            if 0 > a >= n or 0 > b >= m:
+                raise ValueError(err_msg)
+
+    validate_coordinates(coordinates, unInter)
+    return [unInter[a, b] for a, b in coordinates]
 
 def _variable_blur(data, kernel_size):
     """Apply variable blur for smoothing."""
@@ -204,7 +217,7 @@ def _variable_blur(data, kernel_size):
                 
     return data_blurred
 
-def _idw_interpolate(values, distance_list, elevation_list, p=2):
+def _idw_interpolate(values, distance_list, elevation_list, p):
     """Perform 3D IDW interpolation using distance and elevation."""
     if len(values) == 0:
         return 0
