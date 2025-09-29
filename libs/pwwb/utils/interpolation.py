@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter
 import cv2
-
+from tqdm import tqdm
 
 def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist, allow_negative=False):
     """
@@ -48,103 +48,197 @@ def preprocess_ground_sites(df, dim, lat_max, lon_max, lat_dist, lon_dist, allow
     
     return grid
 
+def interpolate_frames(
+    frames,
+    dim,
+    power=2.0,
+    neighbors=10,
+    elevation_grid=None,
+    use_variable_blur=False,
+    use_progbar=True
+):
+    closest_coords_and_dists = _init_closest_coords_and_dists_per_pixel(
+        unInter=frames[0],
+        coordinates=_init_sensor_coords_from_grid(frames[0]),
+        neighbors=10
+    )
+    # NOTE: elevation is disabled
+    if elevation_grid is None:
+        elevation_grid = np.zeros((dim, dim), dtype=np.float32)
+
+    interpolated_grids = [
+        interpolate_frame(frame, dim, closest_coords_and_dists, elevation_grid, power, use_variable_blur)
+        for frame in (
+            tqdm(frames) 
+            if use_progbar else frames 
+        )
+    ]
+
+    return np.array(interpolated_grids)
+
+def _find_closest_values(x, y, coordinates, n=10):
+    """Find n closest sensor locations for interpolation."""
+    if not coordinates:
+        return [], np.array([])
+        
+    coords_array = np.array(coordinates)
+    diffs = coords_array - np.array([x, y])
+    distances = np.sqrt(np.sum(diffs**2, axis=1))
+    
+    closest_indices = np.argsort(distances)[:n]
+    sorted_distances = distances[closest_indices]
+    
+    magnitude = np.linalg.norm(sorted_distances)
+    if magnitude > 0:
+        normalized_distances = sorted_distances / magnitude
+    else:
+        normalized_distances = sorted_distances
+        
+    closest_values = [coordinates[i] for i in closest_indices]
+    return closest_values, normalized_distances
+
+def _init_sensor_coords_from_grid(unInter):
+    sensor_indices = np.where(~np.isnan(unInter))
+    coordinates = list(zip(sensor_indices[0], sensor_indices[1]))
+    if not coordinates:
+        print(
+            "No non-nan points found on grid, returning uninterpolated frame.\n"
+            "Note: non-nan points are used to determine sensor locations."
+        )
+
+    return coordinates
+
+def _init_closest_coords_and_dists_per_pixel(unInter, coordinates, neighbors=10):
+# generate a frame that has the closest sensor locations for each pixel that can be reused
+# each pixel = two lists; one with the closest coordinates, the other with the closest distances
+# if its an actual sensor location, make it np.nan
+    if neighbors > len(coordinates):
+        print(
+            f"Neighbors cannot exceed number of sensors; setting neighbors to "
+            f"{len(coordinates)}"
+        )
+        neighbors = len(coordinates)
+
+    closest_coords_and_dists = [[np.nan for _ in range(40)] for _ in range(40)] 
+    for x in range(40):
+        for y in range(40):
+            closest_coords_and_dists[x][y] = (
+                _find_closest_values(x, y, coordinates, neighbors)
+                if np.isnan(unInter[x, y])
+                else np.nan
+            )
+
+    return closest_coords_and_dists
 
 def interpolate_frame(
-    f,                  
-    dim,                
-    apply_filter=False, 
-    interp_flag=0,      
-    power=2.0
+    unInter,
+    dim,
+    closest_coords_and_dists,
+    elevation_grid,
+    power=2.0,
+    use_variable_blur=False
 ):
-    """
-    Interpolates sparse data across a grid using Inverse Distance Weighting (IDW).
+    """Interpolate a frame using 3D IDW method."""
+    interpolated = np.full((dim, dim), np.nan)
     
-    Parameters:
-    -----------
-    f : numpy.ndarray
-        Sparse grid with values at known locations
-    dim : int
-        Grid dimension
-    apply_filter : bool
-        Determines if IDW should apply Gaussian filter
-    interp_flag : any
-        Value that IDW should interpolate over. Usually 0 or np.nan 
-        Use case: if 0 is a valid value, then you would use np.nan as the
-        sentinel value that determines what cell gets interpolated
-    power : double
-        Controls the significance of the known points. More = nearby points 
-        have more influence
-    
-    Returns:
-    --------
-    numpy.ndarray
-        Smoothly interpolated grid
-    """
-    x_list, y_list, values = [], [], []
-    for x in range(f.shape[0]):
-        for y in range(f.shape[1]):
-            add_xy_to_list = False
-
-            if np.isnan(interp_flag):
-                if not np.isnan(f[x, y]):
-                    add_xy_to_list = True
+    for x in range(dim):
+        for y in range(dim):
+            if not np.isnan(unInter[x, y]):
+                interpolated[x, y] = unInter[x, y]
             else:
-                if f[x, y] != interp_flag:
-                    add_xy_to_list = True
-
-            if add_xy_to_list:
-                x_list.append(x)
-                y_list.append(y)
-                values.append(f[x, y])
-    
-    coords = list(zip(x_list, y_list))
-    
-    if not coords:
-        return np.zeros((dim, dim))
-    
-    if len(coords) == 1:
-        interpolated = np.zeros((dim, dim))
-        x0, y0 = coords[0]
-        value = values[0]
-        radius = dim * 0.3
-        
-        for x in range(dim):
-            for y in range(dim):
-                dist = np.sqrt((x - x0)**2 + (y - y0)**2)
-                if dist < radius:
-                    influence = np.exp(-2 * (dist / radius)**2)
-                    interpolated[x, y] = value * influence
-        
-        return interpolated
-    
-    try:
-        interpolated = np.zeros((dim, dim))
-        epsilon = 1e-6
-        
-        for i in range(dim):
-            for j in range(dim):
-                distances = np.sqrt([(i - x)**2 + (j - y)**2 for x, y in coords])
-                distances = np.array(distances)
+                closest_coords, closest_dists = closest_coords_and_dists[x][y] 
+                closest_sensor_vals = _find_values(closest_coords, unInter)
+                # TODO pull out for one-time calculation like with init_closest. Elevation doesn't change, so we shouldn't need to recompute
+                # passed in as a parameter; closest_elevation_diffs[x][y]
+                closest_elevation_diffs = _find_elevations(elevation_grid, x, y, closest_coords)
                 
-                exact_match = np.where(distances < 1e-10)[0]
-                if len(exact_match) > 0:
-                    interpolated[i, j] = values[exact_match[0]]
-                    continue
-                
-                weights = 1.0 / (distances**power + epsilon)
-                normalized_weights = weights / np.sum(weights)
-                interpolated[i, j] = np.sum(normalized_weights * np.array(values))
-        
-        return (
-            gaussian_filter(interpolated, sigma=1.5, mode='constant', cval=0)
-            if apply_filter 
-            else interpolated
-        )
-        
-    except Exception as e:
-        print(f"Error in IDW interpolation: {e}")
-        return np.zeros((dim, dim))
+                interpolated[x, y] = _idw_interpolate(
+                    closest_sensor_vals,
+                    closest_dists,
+                    closest_elevation_diffs,
+                    power 
+                )
+    
+    out = interpolated
 
+    # Apply smoothing
+    if use_variable_blur:
+        kernel_size = np.random.randint(0, 5, (dim, dim))
+        out = _variable_blur(interpolated, kernel_size)
+        out = gaussian_filter(out, sigma=0.5)
+    
+    return out
+
+def _find_values(coordinates, unInter):
+    """Get sensor values at specified coordinates."""
+    values = []
+    for a, b in coordinates:
+        if 0 <= a < unInter.shape[0] and 0 <= b < unInter.shape[1]:
+            values.append(unInter[a, b])
+        else:
+            values.append(0)
+    return values
+
+def _variable_blur(data, kernel_size):
+    """Apply variable blur for smoothing."""
+    data_blurred = np.empty(data.shape)
+    Ni, Nj = data.shape
+    
+    for i in range(Ni):
+        for j in range(Nj):
+            res = 0.0
+            weight = 0
+            sigma = kernel_size[i, j]
+            
+            for ii in range(i - sigma, i + sigma + 1):
+                for jj in range(j - sigma, j + sigma + 1):
+                    if ii < 0 or ii >= Ni or jj < 0 or jj >= Nj:
+                        continue
+                    res += data[ii, jj]
+                    weight += 1
+                    
+            if weight > 0:
+                data_blurred[i, j] = res / weight
+            else:
+                data_blurred[i, j] = data[i, j]
+                
+    return data_blurred
+
+def _idw_interpolate(values, distance_list, elevation_list, p=2):
+    """Perform 3D IDW interpolation using distance and elevation."""
+    if len(values) == 0:
+        return 0
+        
+    difference_factor = distance_list + elevation_list**2
+    eps = np.finfo(float).eps
+    difference_factor[difference_factor == 0] = eps
+    
+    weights = 1 / difference_factor**p
+    weights /= np.sum(weights)
+    estimated_value = np.sum(weights * np.array(values))
+
+    return estimated_value
+
+def _find_elevations(elevation_grid, x, y, coordinates):
+    """Calculate elevation differences between points."""
+    if not coordinates:
+        return np.array([])
+        
+    stat = elevation_grid[x, y]
+    elevations = []
+    for a, b in coordinates:
+        if 0 <= a < elevation_grid.shape[0] and 0 <= b < elevation_grid.shape[1]:
+            diff = np.float32(stat) - np.float32(elevation_grid[a, b])
+            elevations.append(diff)
+        else:
+            elevations.append(0.0)
+            
+    elevations = np.array(elevations, dtype=np.float32)
+    magnitude = np.linalg.norm(elevations)
+    if magnitude > 0:
+        elevations = elevations / magnitude
+        
+    return elevations
 
 def elevation_aware_wind_interpolation(stations, u_values, v_values, extent, dim, 
                                      elevation_grid, power=1.0, elevation_weight=0.15, 
