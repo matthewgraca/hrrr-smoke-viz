@@ -7,7 +7,7 @@ import os
 import math
 import numpy as np
 from tqdm import tqdm
-from libs.pwwb.utils.interpolation import interpolate_frame
+from libs.pwwb.utils.interpolation import interpolate_frames
 import warnings
 from collections import deque
 
@@ -26,6 +26,7 @@ class OpenAQData:
         load_csv=False,         # specifies that the csvs should be loaded from cache
         load_numpy=False,       # specifies the numpy file should be loaded from cache
         use_interpolation=True,
+        use_variable_blur=False,
         power=2.0,
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ):
@@ -106,6 +107,18 @@ class OpenAQData:
             df_measurements, dim, self.sensor_locations 
         )
 
+        # TODO handle elevation_grid; perhaps from separate path from cache?
+        interpolated_grids = interpolate_frames(
+            frames=ground_site_grids,
+            dim=dim,
+            power=power,
+            neighbors=10,
+            elevation_grid=None,
+            use_variable_blur=False,
+            use_progbar=self.VERBOSE < 2
+        )
+        # TODO remove when confident idw works
+        '''
         interpolated_grids = (
             self._interpolate_all_frames(
                 ground_site_grids=ground_site_grids,
@@ -117,6 +130,7 @@ class OpenAQData:
             if use_interpolation
             else ground_site_grids
         )
+        '''
 
         self.data = interpolated_grids
 
@@ -1014,6 +1028,7 @@ class OpenAQData:
 
         return list(d.keys()), list(d.values())
 
+    # TODO vestigial method, marked for removal
     def _impute_ground_site_grids(self, ground_sites, sensor_locations):
         """
         Replaces dead sensors and outliers with the mean value of the 
@@ -1043,6 +1058,7 @@ class OpenAQData:
 
         return imputed_ground_sites
 
+    # TODO vestigial method, marked for removal
     def _replace_dead_sensors_with_nan(self, data):
         '''
         The condition for dead sensors is when data reports 
@@ -1066,6 +1082,7 @@ class OpenAQData:
                 np.nan,
             )
 
+    # TODO vestigial method, marked for removal
     def _get_closest_stations_to_each_sensor(self, sensor_locations):
         return {
             station : self._find_closest_values(
@@ -1077,6 +1094,7 @@ class OpenAQData:
             for station, location in sensor_locations.items()
         }
 
+    # TODO vestigial method, marked for removal
     def _find_closest_values(self, x, y, coordinates, n=10):
         '''
         Find n closest sensor locations for interpolation.
@@ -1122,6 +1140,7 @@ class OpenAQData:
 
         return np.array(ground_site_grids)
 
+    # TODO vestigial method, marked for removal
     def _interpolate_all_frames(
         self,
         ground_site_grids,
@@ -1234,7 +1253,7 @@ class OpenAQData:
             whitelist
         )
         filtered_df = remove_underreporting_sensors(filtered_df, min_uptime)
-        #FIXME Currently we just set the first 12 hours to nan, since nowcast
+        #FIXME TODO Currently we just set the first 12 hours to nan, since nowcast
         # requires 12 hours of previous observations To fix this, we'd need to
         # ingest 12 hours of data before the start date, then shave
         # off the first 12 hours somewhere here
@@ -1298,6 +1317,12 @@ class OpenAQData:
 
         if self.VERBOSE == 0:
             print("Converting raw concentrations to nowcast...")
-        nowcast_df = df.rolling(window=WINDOW_SIZE, min_periods=0).apply(nowcast)
+
+        tqdm.pandas(total=df.shape[0] * df.shape[1])
+        nowcast_df = (
+            df.rolling(window=WINDOW_SIZE, min_periods=0).progress_apply(nowcast)
+            if self.VERBOSE < 2
+            else df.rolling(window=WINDOW_SIZE, min_periods=0).apply(nowcast)
+        )
 
         return nowcast_df
