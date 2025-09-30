@@ -7,7 +7,8 @@ import os
 import math
 import numpy as np
 from tqdm import tqdm
-from libs.pwwb.utils.interpolation import interpolate_frames
+#from libs.pwwb.utils.interpolation import interpolate_frames
+from libs.pwwb.utils.idw import IDW 
 import warnings
 from collections import deque
 
@@ -20,12 +21,13 @@ class OpenAQData:
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
         product=2,              # sensor data to ingest (2 is pm2.5)
-        is_nowcast=True,        # determines if the values should be nowcast or raw
+        is_nowcast=False,       # determines if the values should be nowcast or raw
         save_dir=None,          # where json files should be saved to
         load_json=False,        # specifies that jsons should be loaded from cache
         load_csv=False,         # specifies that the csvs should be loaded from cache
         load_numpy=False,       # specifies the numpy file should be loaded from cache
         use_interpolation=True,
+        elevation_path=None,
         use_variable_blur=False,
         power=2.0,
         neighbors=10,
@@ -93,6 +95,9 @@ class OpenAQData:
             )
             df_measurements = self._load_measurements_from_csv_cache(save_dir)
 
+        # init IDW
+        idw = IDW(power, neighbors, dim, elevation_path, use_variable_blur=False, verbose=self.VERBOSE)
+
         # preprocess dataframes 
         df_measurements, df_locations = self._preprocess_dataframes(
             df_measurements,
@@ -110,6 +115,7 @@ class OpenAQData:
 
         # TODO handle elevation_grid; perhaps from separate path from cache?
         if self.VERBOSE < 2: print("🐻 Performing IDW interpolation...")
+        '''
         interpolated_grids = interpolate_frames(
             frames=ground_site_grids,
             dim=dim,
@@ -119,6 +125,8 @@ class OpenAQData:
             use_variable_blur=False,
             use_progbar=self.VERBOSE < 2
         )
+        '''
+        interpolated_grids = idw.interpolate_frames(ground_site_grids)
 
         self.data = interpolated_grids
 
