@@ -7,7 +7,6 @@ import os
 import math
 import numpy as np
 from tqdm import tqdm
-#from libs.pwwb.utils.interpolation import interpolate_frames
 from libs.pwwb.utils.idw import IDW 
 import warnings
 from collections import deque
@@ -31,6 +30,7 @@ class OpenAQData:
         use_variable_blur=False,
         power=2.0,
         neighbors=10,
+        elevation_scale_factor=100,
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ):
         '''
@@ -96,7 +96,7 @@ class OpenAQData:
             df_measurements = self._load_measurements_from_csv_cache(save_dir)
 
         # init IDW
-        idw = IDW(power, neighbors, dim, elevation_path, use_variable_blur=False, verbose=self.VERBOSE)
+        idw = IDW(power, neighbors, dim, elevation_path, elevation_scale_factor, use_variable_blur=False, verbose=self.VERBOSE)
 
         # preprocess dataframes 
         df_measurements, df_locations = self._preprocess_dataframes(
