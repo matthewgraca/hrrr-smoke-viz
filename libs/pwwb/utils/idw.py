@@ -11,6 +11,7 @@ class IDW:
         neighbors=10,
         dim=40,
         elevation_path=None,
+        elevation_scale_factor=100,
         use_variable_blur=False,
         verbose=0   # 0 = all, 1 = progress bar + errors, 2 = errors only
     ):
@@ -33,30 +34,33 @@ class IDW:
         self.dim = dim
         self.VERBOSE = verbose
         self.use_variable_blur = use_variable_blur
-        self.elevation = self._get_elevation_data(elevation_path, dim)
+        self.elevation = self._get_elevation_data(elevation_path, dim, elevation_scale_factor)
 
         return
 
     ### NOTE: Public method
     def interpolate_frames(self, frames):
-        closest_coords_and_dists = self._init_closest_coords_and_dists_per_pixel(
+        """
+        Interpolates frames.
+
+        To avoid recomputing distances, we compute the closest coordinates, 
+            distances, and elevation differences for each pixel prior to 
+            interpolation.
+        """
+        closest_coords_and_dists = self._get_closest_coords_and_dists_per_pixel(
             unInter=frames[0],
             dim=self.dim,
-            coordinates=self._init_sensor_coords_from_grid(frames[0]),
+            coordinates=self._get_sensor_coords_from_grid(frames[0]),
             neighbors=self.neighbors,
             elevation=self.elevation
         )
-        # TODO remove prints
-        print(closest_coords_and_dists)
 
-        closest_elevation_diffs = self._init_elevation_dists_per_pixel(
+        closest_elevation_diffs = self._get_elevation_dists_per_pixel(
             self.elevation,
             frames[0],
             self.dim,
             closest_coords_and_dists
         )
-        print(closest_elevation_diffs)
-        print()
 
         interpolated_grids = [
             self._interpolate_frame(
@@ -75,9 +79,9 @@ class IDW:
 
         return np.array(interpolated_grids)
         
-    ### NOTE: Validation methods
+    ### NOTE: Methods that perform one-time calculations regardless of number of frames
 
-    def _get_elevation_data(self, elevation_path, dim):
+    def _get_elevation_data(self, elevation_path, dim, elevation_scale_factor):
         def validate_path(elevation_path, dim):
             flat_elevation = np.zeros((dim, dim), dtype=np.float32)
 
@@ -104,19 +108,37 @@ class IDW:
                 elevation = cv2.resize(elevation, (dim, dim))
             return elevation
 
-        def min_max_scale(elevation):
+        def min_max_scale(elevation, elevation_scale_factor):
+            """
+            Elevation scale factor controls how "powerful" elevation is.
+
+            Note that distances are not equal. A pixel of the current default
+                extent is about 4.86km, and the highest elevation is 2.5km.
+
+            If we considered elevation equal to x/y dimension, (by dividing
+                elevation by 4.86km), then elevation would have barely any 
+                effect on IDW.
+            
+            We can increase the scale of elevation to improve its role in IDW.
+                Intuitively, pollution (is complicated) but is affected more
+                by elevation than by distance on the x/y plane, so it makes
+                sense to boost its importance.
+
+            But by how much? You decide. For us, 100-500 is something we played
+                around with that looked reasonable.
+            """
             min_val = np.min(elevation)
             max_val = np.max(elevation)
             
             if max_val == min_val:
                 return np.zeros_like(elevation)
                 
-            normalized = (elevation - min_val) / (max_val - min_val) * 100
-            return normalized.astype(np.float32)
+            normalized = (elevation - min_val) / (max_val - min_val)
+            return normalized.astype(np.float32) * elevation_scale_factor
 
         elevation = validate_path(elevation_path, dim)
         elevation = validate_shape(elevation, dim)
-        elevation = min_max_scale(elevation)
+        elevation = min_max_scale(elevation, elevation_scale_factor)
 
         if self.VERBOSE == 0:
             print(
@@ -130,9 +152,7 @@ class IDW:
 
         return elevation
 
-    ### NOTE: Methods that perform one-time calculations regardless of number of frames
-
-    def _init_sensor_coords_from_grid(self, unInter):
+    def _get_sensor_coords_from_grid(self, unInter):
         """
         Initializes where the locations of the sensors are based on whether the
             pixel is NaN or not. This means that we expect the frame to contain
@@ -140,7 +160,8 @@ class IDW:
             NaN.
         """
         sensor_indices = np.where(~np.isnan(unInter))
-        coordinates = list(zip(sensor_indices[0], sensor_indices[1]))
+        x_idxs, y_idxs = sensor_indices[0], sensor_indices[1]
+        coordinates = list(zip(x_idxs, y_idxs))
         if not coordinates:
             print(
                 "No non-nan points found on grid, returning uninterpolated frame.\n"
@@ -149,7 +170,7 @@ class IDW:
 
         return coordinates
 
-    def _init_closest_coords_and_dists_per_pixel(
+    def _get_closest_coords_and_dists_per_pixel(
         self,
         unInter,
         dim,
@@ -174,9 +195,6 @@ class IDW:
             neighbors = len(coordinates)
 
         closest_coords_and_dists = [[np.nan for _ in range(dim)] for _ in range(dim)] 
-        # FIXME ELEVATION GOES HERE. PERHAPS COORDINATES = (X, Y, Z)?
-        # then np.sqrt((x1 - x2)^2 + (y1 - y2)^2 + (z1 - z2)^2)
-        # z1 = elevation_grid[x, y], z2 = elevation_grid[a, b] where (a, b) in coordinates
         for x in range(dim):
             for y in range(dim):
                 closest_coords_and_dists[x][y] = (
@@ -187,15 +205,33 @@ class IDW:
 
         return closest_coords_and_dists
 
-    def _init_elevation_dists_per_pixel(self, elevation, unInter, dim, closest_coords_and_dists):
+    def _get_elevation_dists_per_pixel(
+        self,
+        elevation,
+        unInter,
+        dim,
+        closest_coords_and_dists
+    ):
         def extract_coords_from_coords_and_dists(closest_coords_and_dists):
+            """
+            Pulls coords out from coords_and_dists. Troublesome since there are
+                nans interspersed. A possible improvement would be to replace
+                the nans with empty lists to avoid this unique logic.
+            """
+            def nan_detected(a):
+                """
+                Unfortunately, np.isnan(a) is insufficient. We need to
+                    check the type of the object since we're comparing
+                    lists vs. a nan value
+                """
+                return type(a) == float
+
             closest_coords = [[np.nan for _ in range(dim)] for _ in range(dim)] 
             for x in range(self.dim):
                 for y in range(self.dim):
                     val = (
                         closest_coords_and_dists[x][y][0]
-                        # checks nan or pair of lists
-                        if type(closest_coords_and_dists[x][y]) != float
+                        if not nan_detected(closest_coords_and_dists[x][y])
                         else np.nan
                     )
                     closest_coords[x][y] = val
@@ -220,36 +256,34 @@ class IDW:
         if not coordinates:
             return [], np.array([])
             
-        # TODO remove
-        '''
-        coords_array = np.array(coordinates)
-        diffs = coords_array - np.array([x, y])
-        distances = np.sqrt(np.sum(diffs**2, axis=1))
-        '''
         # euclidian dist with 3 dimensions 
-        x1_arr = np.array([x for x, y in coordinates])
-        y1_arr = np.array([y for x, y in coordinates])
-        xs, ys = zip(*coordinates)
-        z1_arr = np.array([z for z in elevation[xs, ys]])
+        def euclidian_dist(x, y, coordinates, elevation):
+            """
+            Calculates a list of euclidian distances with three dimensions.
+                x, y: The starting point
+                coordinates: The list of pairs of points on the x and y axis
+                elevation: The list of points on the z axis
+            """
+            x1 = np.array([x for x, y in coordinates])
+            y1 = np.array([y for x, y in coordinates])
+            x_coords, y_coords = zip(*coordinates)
+            z1 = np.array([z for z in elevation[x_coords, y_coords]])
 
-        x2, y2 = x, y
-        z2 = elevation[x, y]
+            x2, y2 = x, y
+            z2 = elevation[x, y]
 
-        distances = np.sqrt((x1_arr - x2)**2 + (y1_arr - y2)**2 + (z1_arr - z2)**2)
+            distances = np.sqrt((x1 - x2)**2 + (y1 - y2)**2 + (z1 - z2)**2)
+            return distances
         
+        distances = euclidian_dist(x, y, coordinates, elevation)
         closest_indices = np.argsort(distances)[:n]
         sorted_distances = distances[closest_indices]
         
-        # TODO remove?
-        magnitude = np.linalg.norm(sorted_distances)
-        if magnitude > 0:
-            normalized_distances = sorted_distances / magnitude
-        else:
-            normalized_distances = sorted_distances
-            
         closest_values = [coordinates[i] for i in closest_indices]
+        # likely should keep this off
+        #unit_distances = sorted_distances / np.linalg.norm(sorted_distances) 
+
         return closest_values, sorted_distances
-        return closest_values, normalized_distances
 
     def _find_values(self, coordinates, unInter):
         """Get sensor values at specified coordinates."""
@@ -261,6 +295,7 @@ class IDW:
                     raise ValueError(err_msg)
 
         validate_coordinates(coordinates, unInter)
+
         return [unInter[a, b] for a, b in coordinates]
 
     def _find_elevation_diff(self, elevation_grid, x, y, coordinates):
@@ -278,11 +313,9 @@ class IDW:
                 elevations.append(0.0)
                 
         elevations = np.array(elevations, dtype=np.float32)
-        # TODO remove?
-        magnitude = np.linalg.norm(elevations)
-        if magnitude > 0:
-            elevations = elevations / magnitude
-            
+        # likely should keep this off
+        #unit_distances = elevations / np.linalg.norm(elevations)
+
         return elevations
 
     ### NOTE: Core interpolation methods
@@ -303,7 +336,7 @@ class IDW:
             return
 
         validate_params(value_list, distance_list, elevation_list)
-        distances = np.sqrt(distance_list**2 + 5*elevation_list**2)
+        distances = np.sqrt(distance_list**2 + elevation_list**2)
 
         estimate = np.sum(value_list / distances**p) / np.sum(1 / distances**p)
 
