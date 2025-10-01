@@ -5,13 +5,13 @@ import sys
 import pandas as pd
 import numpy as np
 import cv2
-from scipy.ndimage import gaussian_filter
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
 import time
 from datetime import datetime
 from tqdm import tqdm 
+from libs.pwwb.utils.idw import IDW
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
@@ -35,14 +35,16 @@ class AirNowData:
         save_dir='data/airnow.json',
         processed_cache_dir='data/airnow_processed.npz',
         dim=40,
+        use_interpolation=True,
         idw_power=2,
+        neighbors=10,
         elevation_path=None,
+        elevation_scale_factor=100,
         mask_path=None,
         use_mask=False,
         sensor_whitelist=None,
         use_whitelist=False,
         force_reprocess=False,
-        use_interpolation=True, # determines if interpolation should be run
         use_variable_blur=False,# determines if variable blur is used after interpolation
         chunk_days=30,
         verbose=0,              # 0=allow all, 1=progress bar only, 2=silence all except warning
@@ -56,6 +58,16 @@ class AirNowData:
         self.use_mask = use_mask
         self.chunk_days = chunk_days
         self.verbose = verbose
+
+        idw = IDW(
+            power=idw_power,
+            neighbors=neighbors,
+            dim=dim,
+            elevation_path=elevation_path,
+            elevation_scale_factor=elevation_scale_factor,
+            use_variable_blur=use_variable_blur,
+            verbose=verbose
+        )
         
         # Try to load from cache first
         if not force_reprocess and os.path.exists(processed_cache_dir):
@@ -100,28 +112,13 @@ class AirNowData:
                 )
         
         # Set default paths
-        self.elevation_path = elevation_path if elevation_path else "inputs/elevation.npy"
         self.mask_path = mask_path if mask_path else "inputs/mask.npy"
         
         # Create directories
-        os.makedirs(os.path.dirname(self.elevation_path), exist_ok=True)
         if use_mask and mask_path:
             os.makedirs(os.path.dirname(self.mask_path), exist_ok=True)
         os.makedirs(os.path.dirname(processed_cache_dir), exist_ok=True)
         
-        # Load elevation data for 3D interpolation
-        if os.path.exists(self.elevation_path):
-            self.elevation = np.load(self.elevation_path)
-            if self.elevation.shape != (dim, dim):
-                self.elevation = cv2.resize(self.elevation, (dim, dim))
-            self.elevation = self._normalize_elevation(self.elevation)
-        else:
-            print(
-                f"Warning: Elevation data not found at {self.elevation_path}. "
-                f"Using flat elevation."
-            )
-            self.elevation = np.zeros((dim, dim), dtype=np.float32)
-            
         # Load mask data only if use_mask is True
         self.mask = None
         if use_mask:
@@ -178,14 +175,8 @@ class AirNowData:
                     f"Performing IDW interpolation on "
                     f"{len(ground_site_grids)} frames..."
                 )
-            interpolated_grids = [
-                self._interpolate_frame(frame, use_variable_blur) 
-                for frame in (
-                    tqdm(ground_site_grids) 
-                    if verbose < 2 else ground_site_grids
-                )
-            ]
-        
+            interpolated_grids = idw.interpolate_frames(ground_site_grids)        
+
         self.data = np.array(interpolated_grids)
         self.ground_site_grids = np.array(ground_site_grids)
         
@@ -225,17 +216,6 @@ class AirNowData:
             
         return sensor_name in self.sensor_whitelist
     
-    def _normalize_elevation(self, elevation_data):
-        """Normalize elevation data to prevent overflow in calculations."""
-        min_val = np.min(elevation_data)
-        max_val = np.max(elevation_data)
-        
-        if max_val == min_val:
-            return np.zeros_like(elevation_data)
-            
-        normalized = (elevation_data - min_val) / (max_val - min_val) * 100
-        return normalized.astype(np.float32)
-
     def _get_airnow_data(self, start_date, end_date, extent, save_dir, airnow_api_key):
         """Download or load AirNow data from API with chunking to avoid record limits."""
         lon_bottom, lon_top, lat_bottom, lat_top = extent
@@ -543,7 +523,9 @@ class AirNowData:
 
         # generate samples from sensors that are not reporting; set values to nan
         def generate_samples_from_time(df, start_date, end_date):
-            dates_df = pd.DataFrame({'UTC': pd.date_range(start_date, end_date, inclusive='left', freq='h')})
+            dates_df = pd.DataFrame({
+                'UTC': pd.date_range(start_date, end_date, inclusive='left', freq='h')
+            })
             df['UTC'] = pd.to_datetime(df['UTC'])
             cols_to_interpolate = [
                 'Latitude', 'Longitude', 'Parameter', 'Unit', 
@@ -693,228 +675,6 @@ class AirNowData:
         print(f"Included {len(included_sensors)} sensors in interpolation")
         '''
         return unInter
-
-    
-    def _impute_ground_site_grids(self, ground_sites, air_sens_loc, impute_dead, impute_outlier):
-        """
-        Another method to consider here for imputing is performing IDW, and just
-        plucking that value out of the interpolated frame. I did not go this route
-        because if we applied smoothing, that would create a less "real" target; so
-        as long as blur is possible, we shouldn't use IDW as targets (unless the 
-        interpolated frame itself becomes the target we want to predict)
-        """
-        # replace dead sensors and outliers with nan
-        imputed_ground_sites = np.array(ground_sites)
-        for x, y in air_sens_loc.values():
-            sensor_vals = imputed_ground_sites[:, x, y]
-            if impute_dead:
-                sensor_vals = self._replace_dead_sensors_with_nan(sensor_vals)
-            if impute_outlier:
-                sensor_vals = self._replace_outliers_with_nan(sensor_vals)
-            imputed_ground_sites[:, x, y] = sensor_vals
-
-        # get closest sensors to each station
-        sensor_to_closest_stations = self._get_closest_stations_to_each_sensor(
-            air_sens_loc
-        )
-
-        # pick from closest 3 non-nans 
-        loc_to_sensor = {v : k for k, v in air_sens_loc.items()}
-        for frame in imputed_ground_sites:
-            for x, y in air_sens_loc.values():
-                if np.isnan(frame[x, y]):
-                    closest_loc_to_xy = sensor_to_closest_stations[loc_to_sensor[(x, y)]]
-                    sensor_data = np.array([frame[a, b] for a, b in closest_loc_to_xy])
-                    frame[x, y] = np.mean(sensor_data[~np.isnan(sensor_data)][:3])
-
-        return imputed_ground_sites
-
-    def _replace_outliers_with_nan(self, data, max_z_score=3):
-        """
-        If all data is just nan, then the mean will also be nan and 
-        a runtime warning will pop up.
-        """
-        return np.where(
-            abs(data - np.nanmean(data)) <= max_z_score * np.nanstd(data),
-            data,
-            np.nan,
-        )
-
-    def _replace_dead_sensors_with_nan(self, data):
-        return np.where(data == 0, np.nan, data)
-
-    def _get_closest_stations_to_each_sensor(self, air_sens_loc):
-        return {
-            station : self._find_closest_values(
-                x=location[0], 
-                y=location[1], 
-                coordinates=list(air_sens_loc.values()),
-                n=len(air_sens_loc)
-            )[0][1:] 
-            for station, location in air_sens_loc.items()
-        }
-
-    def _find_closest_values(self, x, y, coordinates, n=10):
-        """Find n closest sensor locations for interpolation."""
-        if not coordinates:
-            return [], np.array([])
-            
-        coords_array = np.array(coordinates)
-        diffs = coords_array - np.array([x, y])
-        distances = np.sqrt(np.sum(diffs**2, axis=1))
-        
-        closest_indices = np.argsort(distances)[:n]
-        sorted_distances = distances[closest_indices]
-        
-        magnitude = np.linalg.norm(sorted_distances)
-        if magnitude > 0:
-            normalized_distances = sorted_distances / magnitude
-        else:
-            normalized_distances = sorted_distances
-            
-        closest_values = [coordinates[i] for i in closest_indices]
-        return closest_values, normalized_distances
-
-    def _find_elevations(self, x, y, coordinates):
-        """Calculate elevation differences between points."""
-        if not coordinates:
-            return np.array([])
-            
-        stat = self.elevation[x, y]
-        elevations = []
-        for a, b in coordinates:
-            if 0 <= a < self.elevation.shape[0] and 0 <= b < self.elevation.shape[1]:
-                diff = np.float32(stat) - np.float32(self.elevation[a, b])
-                elevations.append(diff)
-            else:
-                elevations.append(0.0)
-                
-        elevations = np.array(elevations, dtype=np.float32)
-        magnitude = np.linalg.norm(elevations)
-        if magnitude > 0:
-            elevations = elevations / magnitude
-            
-        return elevations
-
-    def _find_values(self, coordinates, unInter):
-        """Get sensor values at specified coordinates."""
-        values = []
-        for a, b in coordinates:
-            if 0 <= a < unInter.shape[0] and 0 <= b < unInter.shape[1]:
-                values.append(unInter[a, b])
-            else:
-                values.append(0)
-        return values
-
-    def _idw_interpolate(self, x, y, values, distance_list, elevation_list, p=2):
-        """Perform 3D IDW interpolation using distance and elevation."""
-        if len(values) == 0:
-            return 0
-            
-        difference_factor = distance_list + elevation_list**2
-        eps = np.finfo(float).eps
-        difference_factor[difference_factor == 0] = eps
-        
-        weights = 1 / difference_factor**p
-        weights /= np.sum(weights)
-        estimated_value = np.sum(weights * np.array(values))
-        return estimated_value
-
-    def _variable_blur(self, data, kernel_size):
-        """Apply variable blur for smoothing."""
-        data_blurred = np.empty(data.shape)
-        Ni, Nj = data.shape
-        
-        for i in range(Ni):
-            for j in range(Nj):
-                res = 0.0
-                weight = 0
-                sigma = kernel_size[i, j]
-                
-                for ii in range(i - sigma, i + sigma + 1):
-                    for jj in range(j - sigma, j + sigma + 1):
-                        if ii < 0 or ii >= Ni or jj < 0 or jj >= Nj:
-                            continue
-                        res += data[ii, jj]
-                        weight += 1
-                        
-                if weight > 0:
-                    data_blurred[i, j] = res / weight
-                else:
-                    data_blurred[i, j] = data[i, j]
-                    
-        return data_blurred
-
-    def _interpolate_frame(self, unInter, use_variable_blur):
-        """Interpolate a frame using 3D IDW method."""
-        nonzero_indices = np.where(~np.isnan(unInter))
-        coordinates = list(zip(nonzero_indices[0], nonzero_indices[1]))
-        
-        if not coordinates:
-            return unInter
-            
-        # Initialize with zeros (valid PM2.5 background)
-        interpolated = np.full((self.dim, self.dim), np.nan)
-        
-        for x in range(self.dim):
-            for y in range(self.dim):
-                if not np.isnan(unInter[x, y]):
-                    # Use actual sensor measurement
-                    interpolated[x, y] = unInter[x, y]
-                    continue
-                    
-                coords, distance_list = self._find_closest_values(x, y, coordinates)
-                if not coords:
-                    continue
-                    
-                elevation_list = self._find_elevations(x, y, coords)
-                vals = self._find_values(coords, unInter)
-                
-                value = self._idw_interpolate(x, y, vals, distance_list, elevation_list, self.idw_power)
-                interpolated[x, y] = max(0, value)  # PM2.5 can't be negative
-        
-        out = interpolated
-
-        # Apply smoothing
-        if use_variable_blur:
-            kernel_size = np.random.randint(0, 5, (self.dim, self.dim))
-            out = self._variable_blur(interpolated, kernel_size)
-            out = gaussian_filter(out, sigma=0.5)
-        
-        # Apply mask for geographic boundaries only if using mask
-        if self.use_mask and self.mask is not None and np.any(self.mask != 1):
-            out_masked = out.copy()
-            out_masked[self.mask == 0] = 0  # Set masked areas to 0 (water bodies, etc.)
-            out = out_masked
-        
-        return out
-
-    def get_sensor_vals_from_gridded_data(self, gridded_data, sensor_locations):
-        """
-        Extracts the sensor values from gridded data.
-
-        Assumes the data to be in the shape:
-            (n_samples, n_frames, xdim, ydim)
-        """
-        n_samples, n_frames, xdim, ydim = gridded_data.shape
-        n_sensors = len(sensor_locations)
-
-        if n_sensors == 0:
-            raise ValueError("No sensor locations available to generate target stations")
-
-        s = []
-        for sample in gridded_data:
-            f = []
-            for frame in sample:
-                t = []
-                for sensor, (loc, coords) in enumerate(sensor_locations.items()):
-                    x, y = coords
-                    sensor_val = frame[x, y]
-                    t.append(sensor_val)
-                f.append(t)
-            s.append(f)
-
-        return np.array(s)
 
     def _grid_to_latlon(self, x, y):
         """Convert grid coordinates to latitude/longitude."""
