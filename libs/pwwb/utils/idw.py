@@ -39,6 +39,7 @@ class IDW:
         return
 
     ### NOTE: Public method
+
     def interpolate_frames(self, frames):
         """
         Interpolates frames.
@@ -47,19 +48,16 @@ class IDW:
             distances, and elevation differences for each pixel prior to 
             interpolation.
         """
-        closest_coords_and_dists = self._get_closest_coords_and_dists_per_pixel(
-            unInter=frames[0],
-            dim=self.dim,
-            coordinates=self._get_sensor_coords_from_grid(frames[0]),
-            neighbors=self.neighbors,
-            elevation=self.elevation
-        )
+        first_frame = frames[0]
+        if not self._validate_grid_is_interpolatable(first_frame):
+            return frames
 
-        closest_elevation_diffs = self._get_elevation_dists_per_pixel(
-            self.elevation,
-            frames[0],
-            self.dim,
-            closest_coords_and_dists
+        closest_coords_and_dists = self._get_closest_coords_and_dists_per_pixel(
+            unInter=first_frame,
+            dim=self.dim,
+            sensor_coords=self._get_sensor_coords(first_frame),
+            neighbors=self.neighbors,
+            elevation_grid=self.elevation
         )
 
         interpolated_grids = [
@@ -67,7 +65,6 @@ class IDW:
                 frame,
                 self.dim,
                 closest_coords_and_dists,
-                closest_elevation_diffs,
                 self.power,
                 self.use_variable_blur
             )
@@ -152,7 +149,30 @@ class IDW:
 
         return elevation
 
-    def _get_sensor_coords_from_grid(self, unInter):
+    def _validate_grid_is_interpolatable(self, unInter):
+        """
+        Checks for sensor values (numbers) and nan values to interpolate.
+        
+        If there are no nans, that means nothing can be interpolated.
+        If there are only nans, then there are no real values to interpolate
+            with.
+        """
+        sensor_indices = np.where(~np.isnan(unInter))
+        if len(sensor_indices[0]) == 0:
+            print(
+                "No non-nan points found on grid, returning uninterpolated frame.\n"
+                "Note: non-nan points are used to determine sensor locations."
+            )
+            return False
+
+        x_dim, y_dim = unInter.shape
+
+        if np.isnan(unInter).all():
+            raise ValueError("Every value is nan; no value to interpolate.")
+
+        return True
+    
+    def _get_sensor_coords(self, unInter):
         """
         Initializes where the locations of the sensors are based on whether the
             pixel is NaN or not. This means that we expect the frame to contain
@@ -162,11 +182,6 @@ class IDW:
         sensor_indices = np.where(~np.isnan(unInter))
         x_idxs, y_idxs = sensor_indices[0], sensor_indices[1]
         coordinates = list(zip(x_idxs, y_idxs))
-        if not coordinates:
-            print(
-                "No non-nan points found on grid, returning uninterpolated frame.\n"
-                "Note: non-nan points are used to determine sensor locations."
-            )
 
         return coordinates
 
@@ -174,171 +189,111 @@ class IDW:
         self,
         unInter,
         dim,
-        coordinates,
+        sensor_coords,
         neighbors,
-        elevation
+        elevation_grid
     ):
         """
-        For every pixel, generates a pair:
+        For every pixel, generates a map:
             1. The coordinates of the closest sensors
-                e.g. [(0,2), (3,5), ... ]
             2. The distances of those sensors
-                e.g. [13, 24, ...]
+            e.g At pixel (0, 0):
+            {
+                (0,2) : 13,
+                (3,5) : 24,
+                ...
+            }
+            
+            The map is in sorted order, by distance.
 
-        For the pixel that is itself a sensor location, it will be set to NaN
+        For the pixel that is itself a sensor location, it will have a map
+            with its own coordinate mapped to a value of 0.
         """
-        if neighbors > len(coordinates):
+        if neighbors > len(sensor_coords):
             print(
                 f"Neighbors cannot exceed number of sensors; setting neighbors to "
                 f"{len(coordinates)}."
             )
-            neighbors = len(coordinates)
+            neighbors = len(sensor_coords)
 
         closest_coords_and_dists = [[np.nan for _ in range(dim)] for _ in range(dim)] 
         for x in range(dim):
             for y in range(dim):
                 closest_coords_and_dists[x][y] = (
-                    self._find_closest_values(x, y, coordinates, elevation, neighbors)
-                    if np.isnan(unInter[x, y])
-                    else np.nan
+                    self._find_closest_sensors_and_distances(
+                        x, y, sensor_coords, elevation_grid, neighbors
+                    )
                 )
 
         return closest_coords_and_dists
 
-    def _get_elevation_dists_per_pixel(
-        self,
-        elevation,
-        unInter,
-        dim,
-        closest_coords_and_dists
-    ):
-        def extract_coords_from_coords_and_dists(closest_coords_and_dists):
-            """
-            Pulls coords out from coords_and_dists. Troublesome since there are
-                nans interspersed. A possible improvement would be to replace
-                the nans with empty lists to avoid this unique logic.
-            """
-            def nan_detected(a):
-                """
-                Unfortunately, np.isnan(a) is insufficient. We need to
-                    check the type of the object since we're comparing
-                    lists vs. a nan value
-                """
-                return type(a) == float
-
-            closest_coords = [[np.nan for _ in range(dim)] for _ in range(dim)] 
-            for x in range(self.dim):
-                for y in range(self.dim):
-                    val = (
-                        closest_coords_and_dists[x][y][0]
-                        if not nan_detected(closest_coords_and_dists[x][y])
-                        else np.nan
-                    )
-                    closest_coords[x][y] = val
-            return closest_coords
-
-        closest_coords = extract_coords_from_coords_and_dists(closest_coords_and_dists)
-        closest_elevation_diffs = [[np.nan for _ in range(dim)] for _ in range(dim)] 
-        for x in range(dim):
-            for y in range(dim):
-                closest_elevation_diffs[x][y] = (
-                    self._find_elevation_diff(elevation, x, y, closest_coords[x][y])
-                    if np.isnan(unInter[x, y])
-                    else np.nan
-                )
-
-        return closest_elevation_diffs
-
     ### NOTE: Helpers
 
-    def _find_closest_values(self, x, y, coordinates, elevation, n):
-        """Find n closest sensor locations for interpolation."""
-        if not coordinates:
-            return [], np.array([])
+    def _find_closest_sensors_and_distances(
+        self,
+        x, y,           
+        sensor_coords,  
+        elevation_grid, 
+        neighbors       
+    ):
+        """
+        Find n closest sensor locations for interpolation.
+
+        (x, y): source point
+        sensor_coords: list of sensor locations (destinations)
+        elevation_grid: gridded elevation data providing z-axis data
+        neighbors: the closest n sensors and their distances to return
+
+        Returns a dictionary mapping the closest sensor coordinates and 
+            their distances. Python dictionaries should return dictionaries
+            in the order the entries are added, so it should also be in
+            sorted order when iterating.
+
+        If the source point is a sensor coordinate, then we simply return
+            the point mapping to 0.
+        """
+        if not sensor_coords:
+            raise ValueError("No sensor locations given; aborting IDW.")
+        if (x, y) in sensor_coords:
+            return { (x, y) : 0 }
             
         # euclidian dist with 3 dimensions 
-        def euclidian_dist(x, y, coordinates, elevation):
+        def euclidian_dist(x, y, sensor_coords, elevation_grid):
             """
             Calculates a list of euclidian distances with three dimensions.
                 x, y: The starting point
-                coordinates: The list of pairs of points on the x and y axis
+                sensor_coords: The list of pairs of points on the x and y axis
                 elevation: The list of points on the z axis
             """
-            x1 = np.array([x for x, y in coordinates])
-            y1 = np.array([y for x, y in coordinates])
-            x_coords, y_coords = zip(*coordinates)
-            z1 = np.array([z for z in elevation[x_coords, y_coords]])
+            x1 = np.array([x for x, y in sensor_coords])
+            y1 = np.array([y for x, y in sensor_coords])
+            x_coords, y_coords = zip(*sensor_coords)
+            z1 = np.array([z for z in elevation_grid[x_coords, y_coords]])
 
             x2, y2 = x, y
-            z2 = elevation[x, y]
+            z2 = elevation_grid[x, y]
 
-            distances = np.sqrt((x1 - x2)**2 + (y1 - y2)**2 + (z1 - z2)**2)
-            return distances
+            return np.sqrt((x1 - x2)**2 + (y1 - y2)**2 + (z1 - z2)**2)
         
-        distances = euclidian_dist(x, y, coordinates, elevation)
-        closest_indices = np.argsort(distances)[:n]
-        sorted_distances = distances[closest_indices]
-        
-        closest_values = [coordinates[i] for i in closest_indices]
+        distances = euclidian_dist(x, y, sensor_coords, elevation_grid)
+        closest_indices = np.argsort(distances)[:neighbors]
+        closest_dists = distances[closest_indices]
+        closest_sensor_coords = [sensor_coords[i] for i in closest_indices]
+
         # likely should keep this off
         #unit_distances = sorted_distances / np.linalg.norm(sorted_distances) 
 
-        return closest_values, sorted_distances
-
-    def _find_values(self, coordinates, unInter):
-        """Get sensor values at specified coordinates."""
-        def validate_coordinates(coordinates, unInter):
-            n, m = unInter.shape
-            for a, b in coordinates:
-                err_msg = f"Coordinates ({a},{b}) out of bound for shape ({n},{m})."
-                if 0 > a >= n or 0 > b >= m:
-                    raise ValueError(err_msg)
-
-        validate_coordinates(coordinates, unInter)
-
-        return [unInter[a, b] for a, b in coordinates]
-
-    def _find_elevation_diff(self, elevation_grid, x, y, coordinates):
-        """Calculate elevation differences between points."""
-        if not coordinates:
-            return np.array([])
-            
-        stat = elevation_grid[x, y]
-        elevations = []
-        for a, b in coordinates:
-            if 0 <= a < elevation_grid.shape[0] and 0 <= b < elevation_grid.shape[1]:
-                diff = np.float32(stat) - np.float32(elevation_grid[a, b])
-                elevations.append(diff)
-            else:
-                elevations.append(0.0)
-                
-        elevations = np.array(elevations, dtype=np.float32)
-        # likely should keep this off
-        #unit_distances = elevations / np.linalg.norm(elevations)
-
-        return elevations
+        return dict(zip(closest_sensor_coords, closest_dists))
 
     ### NOTE: Core interpolation methods
 
-    def _idw_interpolate(self, value_list, distance_list, elevation_list, p):
+    def _idw_interpolate(self, unInter, closest_coords_and_dists, p):
         """Perform 3D IDW interpolation using x, y and z distance"""
-        def validate_params(value_list, distance_list, elevation_list):
-            if not (
-                len(value_list) == 
-                len(distance_list) == 
-                len(elevation_list)
-            ):
-                raise ValueError(
-                    f"The number of values ({len(values)}), distances "
-                    f"({len(distance_list)}), and elevations "
-                    f"({len(elevation_list)}) must match."
-                )
-            return
+        sensor_coords, distance_list = zip(*closest_coords_and_dists.items())
+        value_list = [unInter[x, y] for x, y in sensor_coords]
+        values, distances = np.array(value_list), np.array(distance_list)
 
-        validate_params(value_list, distance_list, elevation_list)
-        distances = np.sqrt(distance_list**2 + elevation_list**2)
-
-        estimate = np.sum(value_list / distances**p) / np.sum(1 / distances**p)
+        estimate = np.sum(values / distances**p) / np.sum(1 / distances**p)
 
         return estimate
 
@@ -347,7 +302,6 @@ class IDW:
         unInter,
         dim,
         closest_coords_and_dists,
-        closest_elevation_diffs,
         power,
         use_variable_blur
     ):
@@ -356,19 +310,13 @@ class IDW:
         
         for x in range(dim):
             for y in range(dim):
-                if not np.isnan(unInter[x, y]):
-                    interpolated[x, y] = unInter[x, y]
-                else:
-                    closest_coords, closest_dists = closest_coords_and_dists[x][y] 
-                    closest_sensor_vals = self._find_values(closest_coords, unInter)
-                    closest_elevation_diffs_on_xy = closest_elevation_diffs[x][y]
-                    
-                    interpolated[x, y] = self._idw_interpolate(
-                        closest_sensor_vals,
-                        closest_dists,
-                        closest_elevation_diffs_on_xy,
-                        power 
+                interpolated[x, y] = (
+                    self._idw_interpolate(
+                        unInter, closest_coords_and_dists[x][y], power
                     )
+                    if np.isnan(unInter[x, y])
+                    else unInter[x, y]
+                )
         
         # Apply smoothing
         if use_variable_blur:
