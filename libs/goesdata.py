@@ -12,7 +12,7 @@ from tqdm import tqdm
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from libs.pwwb.utils.interpolation import interpolate_frame
+from scipy.interpolate import NearestNDInterpolator
 
 class GOESData:
     def __init__(
@@ -221,10 +221,17 @@ class GOESData:
         2. Resizes to given dimensions
         3. Interpolation/imputation of bad data
         """
+        def nearest_neighbor_interpolate(data):
+            mask = np.where(~np.isnan(data))
+            nn_interp = NearestNDInterpolator(np.transpose(mask), data[mask])
+            interpolated_data = nn_interp(*np.indices(data.shape))
+
+            return interpolated_data
+
         gridded_data = self._subregion(ds, extent).data
         gridded_data = cv2.resize(gridded_data, (dim, dim))
         gridded_data = (
-            interpolate_frame(gridded_data, dim, interp_flag=np.nan)
+            nearest_neighbor_interpolate(gridded_data)
             if self._data_meets_nonnan_threshold(gridded_data, 0.20)
             else self._use_prev_frame(self.data, dim, date, verbose)
         )
