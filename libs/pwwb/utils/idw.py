@@ -212,7 +212,7 @@ class IDW:
         if neighbors > len(sensor_coords):
             print(
                 f"Neighbors cannot exceed number of sensors; setting neighbors to "
-                f"{len(coordinates)}."
+                f"{len(sensor_coords)}."
             )
             neighbors = len(sensor_coords)
 
@@ -248,14 +248,9 @@ class IDW:
             their distances. Python dictionaries should return dictionaries
             in the order the entries are added, so it should also be in
             sorted order when iterating.
-
-        If the source point is a sensor coordinate, then we simply return
-            the point mapping to 0.
         """
         if not sensor_coords:
             raise ValueError("No sensor locations given; aborting IDW.")
-        if (x, y) in sensor_coords:
-            return { (x, y) : 0 }
             
         # euclidian dist with 3 dimensions 
         def euclidian_dist(x, y, sensor_coords, elevation_grid):

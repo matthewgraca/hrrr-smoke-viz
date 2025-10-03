@@ -71,7 +71,7 @@ class AirNowData:
         
         # Try to load from cache first
         if not force_reprocess and os.path.exists(processed_cache_dir):
-            if verbose < 2:
+            if verbose < 1:
                 print(
                     f"Loading processed AirNow data from cache: "
                     f"{processed_cache_dir}"
@@ -90,7 +90,7 @@ class AirNowData:
                 else:
                     self.sensor_names = list(self.air_sens_loc.keys())
                 
-                if verbose < 2:
+                if verbose < 1:
                     print(
                         f"✓ Successfully loaded processed data from cache\n"
                         f"  - Data shape: {self.data.shape}\n"
@@ -104,7 +104,7 @@ class AirNowData:
         self.sensor_whitelist = sensor_whitelist if sensor_whitelist else []
         
         if use_whitelist and sensor_whitelist:
-            if verbose < 2:
+            if verbose < 1:
                 print(
                     f"Using sensor whitelist: {len(self.sensor_whitelist)} "
                     f"sensors\n"
@@ -126,7 +126,7 @@ class AirNowData:
                 self.mask = np.load(self.mask_path)
                 if self.mask.shape != (dim, dim):
                     self.mask = cv2.resize(self.mask, (dim, dim))
-                if verbose < 2: print(f"Using mask from {self.mask_path}")
+                if verbose < 1: print(f"Using mask from {self.mask_path}")
             else:
                 print(
                     f"Warning: Mask requested but not found at "
@@ -134,7 +134,7 @@ class AirNowData:
                 )
                 self.mask = np.ones((dim, dim), dtype=np.float32)
         else:
-            if verbose < 2:
+            if verbose < 1:
                 print(
                     "Mask usage disabled. All sensors within extent "
                     "will be included."
@@ -147,15 +147,15 @@ class AirNowData:
         airnow_df = self._get_airnow_data(start_date, end_date, extent, save_dir, airnow_api_key)        
 
         # perform imputations and other data cleaning
-        if verbose < 2:
+        if verbose < 1:
             print(
-                "Performing: Removal of sensors with low uptime, imputing "
+                "Removing sensors with low uptime, imputing "
                 "invalid sensor data, imputing non-reporting sensors, imputing "
                 "outliers, and fillings all gaps with forward/backward fill"
             )
         list_df = self._process_dataframe(airnow_df, start_date, end_date)
  
-        if verbose < 2:
+        if verbose < 1:
             print("Plotting sensor data onto grid...")
         ground_site_grids = [
             self._preprocess_ground_sites(df, dim, extent)
@@ -186,7 +186,7 @@ class AirNowData:
             print("Warning: No air sensor locations found in the data.")
         
         # Save processed data to cache
-        if verbose < 2:
+        if verbose < 1:
             print(
                 f"Saving processed AirNow data to cache: {processed_cache_dir}"
             )
@@ -201,7 +201,7 @@ class AirNowData:
                 air_sens_loc=air_sens_loc_array,
                 sensor_names=sensor_names_array,
             )
-            if verbose < 2:
+            if verbose < 1:
                 print("✓ Successfully saved processed data to cache")
         except Exception as e:
             print(f"Warning: Could not save processed data to cache: {e}")
@@ -223,15 +223,14 @@ class AirNowData:
         end_date_adj = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
         
         if os.path.exists(save_dir):
-            if self.verbose < 2:
+            if self.verbose < 1:
                 print(f"Found existing file '{save_dir}'. Checking if download is complete...")
             try:
                 with open(save_dir, 'r') as file:
                     existing_data = json.load(file)
                 
                 if not existing_data:
-                    if self.verbose < 2:
-                        print("Existing file is empty. Starting fresh download...")
+                    print("Existing file is empty. Starting fresh download...")
                 else:
                     # Find the latest date in existing data
                     latest_dates = []
@@ -246,12 +245,12 @@ class AirNowData:
                         latest_date = max(latest_dates)
                         target_end = end_date_adj
                         
-                        if self.verbose < 2:
+                        if self.verbose < 1:
                             print(f"Latest data in file: {latest_date}")
                             print(f"Target end date: {target_end}")
                         
                         if latest_date >= target_end:
-                            if self.verbose < 2:
+                            if self.verbose < 1:
                                 print("Download appears complete. Using existing file.")
                         else:
                             print(f"Download incomplete. Resuming from {latest_date}")
@@ -455,7 +454,7 @@ class AirNowData:
 
         # Load and process the data
         try:
-            if self.verbose < 2:
+            if self.verbose < 1:
                 print(f"Loading AirNow data from {save_dir}...")
             with open(save_dir, 'r') as file:
                 airnow_data = json.load(file)

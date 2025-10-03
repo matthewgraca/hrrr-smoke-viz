@@ -3,10 +3,11 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from libs.pwwb.utils.dataset import sliding_window 
 from libs.pwwb.utils.dataset import PWWBPyDataset
+from libs.pwwb.utils.idw import IDW 
 import numpy as np
 import math
 
-class TestUtils(unittest.TestCase):
+class TestUtilsSlidingWindow(unittest.TestCase):
     def test_targets_are_n_samples_from_training(self):
         a = np.arange(10000).reshape(100, 10, 10, 1)
 
@@ -72,7 +73,92 @@ class TestUtils(unittest.TestCase):
             )),
             msg
         )
+
+class TestUtilsIDW(unittest.TestCase):
+    @classmethod
+    def setUp(cls):
+        cls.idw = IDW(verbose=2)
+        cls.air_sens_loc = {
+            'Simi Valley - Cochran Street': (8, 1),
+            'Reseda': (12, 4),
+            'Santa Clarita': (4, 5),
+            'North Holywood': (12, 8),
+            'Los Angeles - N. Main Street': (17, 11),
+            'Compton': (23, 12),
+            'Long Beach Signal Hill': (28, 13),
+            'Anaheim': (26, 18),
+            'Glendora - Laurel': (14, 20),
+            'Mira Loma - Van Buren': (20, 28),
+            'Fontana - Arrow Highway': (15, 28),
+            'Riverside - Rubidoux': (20, 30),
+            'Lake Elsinore - W. Flint Street': (32, 32),
+            'Crestline - Lake Gregory': (10, 33),
+            'Temecula (Lake Skinner)': (36, 38)
+        }
+
+    @classmethod
+    def tearDownClass(cls):
+        del cls.idw
+
+    def test_find_closest_sensors_to_la(self):
+        la_sensor_loc = self.air_sens_loc['Los Angeles - N. Main Street']
+        all_sensor_locs = list(self.air_sens_loc.values())
+        x, y = la_sensor_loc
+        actual = list(self.idw._find_closest_sensors_and_distances(
+            x=x, y=y,
+            sensor_coords=all_sensor_locs,
+            elevation_grid=self.idw.elevation,
+            neighbors=4
+        ).keys())
+        expected = [
+            self.air_sens_loc['Los Angeles - N. Main Street'],
+            self.air_sens_loc['North Holywood'],
+            self.air_sens_loc['Compton'],
+            self.air_sens_loc['Reseda'],
+        ]
+
+        self.assertEqual(actual, expected)
+
+    def test_find_closest_sensors_to_glendora(self):
+        la_sensor_loc = self.air_sens_loc['Glendora - Laurel']
+        all_sensor_locs = list(self.air_sens_loc.values())
+        x, y = la_sensor_loc
+        actual = list(self.idw._find_closest_sensors_and_distances(
+            x=x, y=y,
+            sensor_coords=all_sensor_locs,
+            elevation_grid=self.idw.elevation,
+            neighbors=4
+        ).keys())
+
+        expected = [
+            self.air_sens_loc['Glendora - Laurel'],
+            self.air_sens_loc['Fontana - Arrow Highway'],
+            self.air_sens_loc['Los Angeles - N. Main Street'],
+            self.air_sens_loc['Mira Loma - Van Buren'],
+        ]
+
+        self.assertEqual(actual, expected)
         
+    def test_find_closest_sensors_to_simi_valley(self):
+        la_sensor_loc = self.air_sens_loc['Simi Valley - Cochran Street']
+        all_sensor_locs = list(self.air_sens_loc.values())
+        x, y = la_sensor_loc
+        actual = list(self.idw._find_closest_sensors_and_distances(
+            x=x, y=y,
+            sensor_coords=all_sensor_locs,
+            elevation_grid=self.idw.elevation,
+            neighbors=4
+        ).keys())
+
+        expected = [
+            self.air_sens_loc['Simi Valley - Cochran Street'],
+            self.air_sens_loc['Reseda'],
+            self.air_sens_loc['Santa Clarita'],
+            self.air_sens_loc['North Holywood'],
+        ]
+
+        self.assertEqual(actual, expected)
+
 class TestPWWBPyDataset(unittest.TestCase):
     def test_sequence_length_matches_data_batches(self):
         X_paths = [
