@@ -14,7 +14,8 @@ warnings.filterwarnings('ignore')
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 tf.get_logger().setLevel('ERROR')
 
-class PM25ForecastPipeline:
+class PM25TrainingPipeline:
+    """Complete pipeline for PM2.5 forecasting experiments"""
     
     def __init__(self, experiment_config):
         self.config = experiment_config
@@ -26,6 +27,7 @@ class PM25ForecastPipeline:
         self._configure_gpu()
         
     def _configure_gpu(self):
+        """Configure GPU settings"""
         gpus = tf.config.experimental.list_physical_devices('GPU')
         if gpus:
             try:
@@ -38,12 +40,19 @@ class PM25ForecastPipeline:
                 print("GPU configuration failed")
     
     def load_data(self):
-        horizon = self.config['forecast_horizon']
-        folder_name = f"{horizon}in_{horizon}out_metar_temporal4_satellites"
-        
-        npy_dir = f"data/shared/preprocessed_cache/{folder_name}/npy_files"
-        
-        print(f"Loading memory-mapped data from {folder_name}...")
+        """Load preprocessed data from cache - can use custom path or default based on horizon"""
+        if 'data_cache' in self.config:
+            cache_path = self.config['data_cache']
+            if cache_path.endswith('/npy_files'):
+                npy_dir = cache_path
+            else:
+                npy_dir = f"{cache_path}/npy_files"
+            print(f"Loading memory-mapped data from custom cache: {cache_path}")
+        else:
+            horizon = self.config['forecast_horizon']
+            folder_name = f"{horizon}in_{horizon}out_metar_temporal4_satellites"
+            npy_dir = f"data/shared/preprocessed_cache/{folder_name}/npy_files"
+            print(f"Loading memory-mapped data from default cache: {folder_name}")
         
         if not os.path.exists(npy_dir):
             raise FileNotFoundError(f"Data directory not found: {npy_dir}")
@@ -64,7 +73,8 @@ class PM25ForecastPipeline:
         import pickle
         metadata_path = f"{npy_dir}/../metadata.pkl"
         if not os.path.exists(metadata_path):
-            metadata_path = f"data/shared/preprocessed_cache/{folder_name}/metadata.pkl"
+            parent_dir = os.path.dirname(npy_dir)
+            metadata_path = f"{parent_dir}/metadata.pkl"
         
         with open(metadata_path, 'rb') as f:
             metadata = pickle.load(f)
@@ -81,6 +91,7 @@ class PM25ForecastPipeline:
         return data
     
     def visualize_input_samples(self, data, save_dir, sample_indices=[800, 1000, 1232]):
+        """Visualize ALL input channels and targets for multiple samples"""
         os.makedirs(f"{save_dir}/inputs", exist_ok=True)
         
         max_idx = len(data['X_train']) - 1
@@ -90,6 +101,7 @@ class PM25ForecastPipeline:
             self._visualize_single_input(data, sample_idx, f"{save_dir}/inputs")
     
     def _visualize_single_input(self, data, sample_idx, save_dir):
+        """Visualize ALL channels for a single sample"""
         X_data = data['X_train']
         Y_data = data['Y_train_orig']
         
@@ -184,6 +196,7 @@ class PM25ForecastPipeline:
         print(f"  Input visualization saved for sample {sample_idx}")
     
     def save_best_worst_samples(self, Y_pred, Y_test, save_dir, n_samples=10):
+        """Save visualizations of best and worst performing samples"""
         os.makedirs(f"{save_dir}/best_samples", exist_ok=True)
         os.makedirs(f"{save_dir}/worst_samples", exist_ok=True)
         
@@ -208,6 +221,7 @@ class PM25ForecastPipeline:
         print(f"  Saved {n_samples} best and {n_samples} worst samples")
     
     def _plot_sample(self, pred, true, rmse, save_dir, sample_type, rank, idx):
+        """Plot a single sample comparison"""
         n_frames = min(pred.shape[0], 8)
         
         fig = plt.figure(figsize=(4*n_frames, 12))
@@ -266,6 +280,7 @@ class PM25ForecastPipeline:
         plt.close()
     
     def build_model(self, input_shape):
+        """Build model based on configuration"""
         if self.config['model_type'] == 'seq2seq':
             return self._build_seq2seq(input_shape)
         elif self.config['model_type'] == 'two_path':
@@ -276,6 +291,7 @@ class PM25ForecastPipeline:
             raise ValueError(f"Unknown model type: {self.config['model_type']}")
     
     def _build_seq2seq(self, input_shape):
+        """Seq2Seq architecture with encoder-decoder"""
         from tensorflow.keras.layers import Input, Conv3D, ConvLSTM2D, Lambda, Add
         from tensorflow.keras.models import Model
         
@@ -310,9 +326,10 @@ class PM25ForecastPipeline:
         return model, self._create_loss_fn()
     
     def _build_two_path(self, input_shape):
+        """Two-path architecture: PM2.5 path and Others path"""
         from tensorflow.keras.layers import Input, Conv3D, ConvLSTM2D, Lambda, concatenate, Add
         from tensorflow.keras.models import Model
-        # I was playing around with different filter sizes and counts here
+        
         inputs = Input(shape=input_shape)
         pm25_temporal = Lambda(lambda x: tf.concat([x[..., 0:2], x[..., 7:11]], axis=-1))(inputs)
         path1 = ConvLSTM2D(20, (3,3), padding='same', return_sequences=True)(pm25_temporal)
@@ -337,6 +354,7 @@ class PM25ForecastPipeline:
         return model, self._create_loss_fn()
     
     def _build_multi_path(self, input_shape):
+        """Multi-path architecture with separate paths for each channel group"""
         from tensorflow.keras.layers import Input, Conv3D, ConvLSTM2D, Lambda, concatenate, Add
         from tensorflow.keras.models import Model
         
@@ -373,6 +391,7 @@ class PM25ForecastPipeline:
         return model, self._create_loss_fn()
     
     def _create_loss_fn(self):
+        """Create masked MAE loss for sensor locations"""
         sensor_coords = []
         for loc in self.sensor_locations:
             if isinstance(loc, (tuple, list)) and len(loc) >= 2:
@@ -391,6 +410,7 @@ class PM25ForecastPipeline:
         return masked_mae
     
     def train(self, data):
+        """Train the model"""
         print(f"\nTraining {self.config['model_type']} model...")
         
         input_shape = data['X_train'].shape[1:]
@@ -446,6 +466,7 @@ class PM25ForecastPipeline:
         return model, history, {'train_loss': best_train_loss, 'val_loss': best_val_loss}
     
     def evaluate(self, model, data):
+        """Evaluate model and compute frame-by-frame metrics"""
         print("\nEvaluating on test set...")
         
         Y_pred = model.predict(data['X_test'], batch_size=16, verbose=1)
@@ -453,9 +474,6 @@ class PM25ForecastPipeline:
         
         Y_test_sensors = self._extract_sensors(Y_test)
         Y_pred_sensors = self._extract_sensors(Y_pred)
-        
-        rmse = np.sqrt(mean_squared_error(Y_test_sensors.flatten(), Y_pred_sensors.flatten()))
-        nrmse = (rmse / np.mean(Y_test_sensors)) * 100
         
         frame_metrics = {}
         horizon = self.config['forecast_horizon']
@@ -475,22 +493,19 @@ class PM25ForecastPipeline:
         
         print(f"\nTest Set Metrics:")
         print(f"  Average NRMSE: {avg_nrmse:.2f}%")
-        print(f"  Overall RMSE:  {rmse:.3f}")
-        print(f"  Overall NRMSE: {nrmse:.2f}%")
         
         print(f"\nHourly NRMSE:")
         for h in range(1, horizon + 1):
             print(f"  Hour {h:2d}: {frame_metrics[h]['nrmse']:.2f}%")
         
         return {
-            'rmse': rmse,
-            'nrmse': nrmse,
             'avg_nrmse': avg_nrmse,
             'predictions': Y_pred,
             'frame_metrics': frame_metrics
         }
     
     def save_incremental_results(self, metrics, train_metrics, save_dir):
+        """Save detailed frame-by-frame results"""
         os.makedirs(f"{save_dir}/detailed_results", exist_ok=True)
         
         horizon = self.config['forecast_horizon']
@@ -502,8 +517,7 @@ class PM25ForecastPipeline:
             'Horizon': horizon,
             'Train_Loss': train_metrics['train_loss'],
             'Val_Loss': train_metrics['val_loss'],
-            'Avg_NRMSE': metrics['avg_nrmse'],
-            'Overall_NRMSE': metrics['nrmse']
+            'Avg_NRMSE': metrics['avg_nrmse']
         }
         
         for hour in range(1, horizon + 1):
@@ -517,6 +531,7 @@ class PM25ForecastPipeline:
         print(f"Detailed metrics saved")
     
     def create_performance_table(self, results_df, save_dir):
+        """Create visualization table of results"""
         fig, ax = plt.subplots(figsize=(16, 8))
         ax.axis('tight')
         ax.axis('off')
@@ -551,12 +566,13 @@ class PM25ForecastPipeline:
                     if display_df.iloc[row_idx][col] == best_val:
                         table[(row_idx+1, col_idx)].set_facecolor('#66d966')
         
-        plt.title('Model Performance Comparison', fontsize=14, fontweight='bold')
+        plt.title('Model Performance Comparison - Updated Metrics', fontsize=14, fontweight='bold')
         plt.savefig(f"{save_dir}/performance_table.png", dpi=300, bbox_inches='tight')
         plt.close()
         print("Performance table saved")
     
     def _extract_sensors(self, grid_data):
+        """Extract values at sensor locations"""
         n_samples, n_frames = grid_data.shape[:2]
         n_sensors = len(self.sensor_locations)
         
@@ -570,6 +586,7 @@ class PM25ForecastPipeline:
         return values
     
     def visualize_results(self, predictions, test_data, history, save_dir):
+        """Create comprehensive visualizations"""
         print("\nCreating visualizations...")
         os.makedirs(save_dir, exist_ok=True)
         
@@ -594,6 +611,7 @@ class PM25ForecastPipeline:
             print("  ModelVisualizer not available")
     
     def _plot_frame_metrics(self, save_dir):
+        """Plot frame-by-frame NRMSE from saved results"""
         if not self.detailed_results:
             return
         
@@ -647,13 +665,14 @@ class PM25ForecastPipeline:
         print("Hourly NRMSE bar plot saved")
     
     def _plot_time_series_comparison(self, predictions, test_data, save_dir):
+        """Plot time series comparison for random sensors"""
         os.makedirs(f"{save_dir}/time_series", exist_ok=True)
         
         Y_test_sensors = self._extract_sensors(test_data)
         Y_pred_sensors = self._extract_sensors(predictions)
         
         n_sensors = Y_test_sensors.shape[2]
-        n_plots = n_sensors
+        n_plots = min(6, n_sensors)
         sensor_indices = np.random.choice(n_sensors, n_plots, replace=False)
         
         fig, axes = plt.subplots(n_plots, 1, figsize=(15, 3*n_plots))
@@ -692,12 +711,22 @@ class PM25ForecastPipeline:
 def run_experiments():
     experiments = [
         {
-            'name': 'Two-Path-test2',
+            'name': 'Two-Path-test',
             'model_type': 'two_path',
             'forecast_horizon': 5,
             'epochs': 5,
             'batch_size': 64
         },
+        # Example with custom data cache the default behavior will be to use the shared cache name with horizons changing it so you can easily swap between them w/o needing
+        # a direct path every time. However, for abalation studies you may want to use different data every expertiemtn so just put them in diff folders and point to them here:
+        # {
+        #     'name': 'Custom-Data-Experiment',
+        #     'model_type': 'two_path',
+        #     'data_cache': 'data/custom_cache/my_experiment',
+        #     'forecast_horizon': 5,
+        #     'epochs': 100,
+        #     'batch_size': 32
+        # },
     ]
     
     results = []
@@ -709,7 +738,7 @@ def run_experiments():
         print("="*60)
         
         try:
-            pipeline = PM25ForecastPipeline(exp_config)
+            pipeline = PM25TrainingPipeline(exp_config)
             
             data = pipeline.load_data()
             
@@ -767,7 +796,7 @@ def run_experiments():
         summary_cols = ['Experiment', 'Model', 'Horizon', 'Train_Loss', 'Val_Loss', 'Avg_NRMSE']
         print(df[summary_cols].to_string(index=False))
         
-        pipeline = PM25ForecastPipeline(experiments[0])
+        pipeline = PM25TrainingPipeline(experiments[0])
         pipeline.create_performance_table(df, "results")
         
         df.to_csv("results/comparison_full.csv", index=False)
