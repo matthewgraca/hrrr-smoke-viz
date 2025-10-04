@@ -22,6 +22,7 @@ class OpenAQData:
         product=2,              # sensor data to ingest (2 is pm2.5)
         is_nowcast=False,       # determines if the values should be nowcast or raw
         save_dir=None,          # where json files should be saved to
+        save_path=None,         # where the final numpy file should be saved to
         load_json=False,        # specifies that jsons should be loaded from cache
         load_csv=False,         # specifies that the csvs should be loaded from cache
         load_numpy=False,       # specifies the numpy file should be loaded from cache
@@ -79,7 +80,11 @@ class OpenAQData:
         )
 
         if load_numpy:
-            cache_path = f'{save_dir}/openaq_processed.npz'
+            cache_path = (
+                save_path 
+                if save_path is not None 
+                else f'{save_dir}/openaq_processed.npz'
+            )
             cache_data = self._load_numpy_cache(cache_path)
             self.data = cache_data['data'] 
             self.start_date = cache_data['start_date']
@@ -96,7 +101,15 @@ class OpenAQData:
             df_measurements = self._load_measurements_from_csv_cache(save_dir)
 
         # init IDW
-        idw = IDW(power, neighbors, dim, elevation_path, elevation_scale_factor, use_variable_blur=False, verbose=self.VERBOSE)
+        idw = IDW(
+            power,
+            neighbors,
+            dim,
+            elevation_path,
+            elevation_scale_factor,
+            use_variable_blur=False,
+            verbose=self.VERBOSE
+        )
 
         # preprocess dataframes 
         df_measurements, df_locations = self._preprocess_dataframes(
@@ -113,25 +126,17 @@ class OpenAQData:
             df_measurements, dim, self.sensor_locations 
         )
 
-        # TODO handle elevation_grid; perhaps from separate path from cache?
         if self.VERBOSE < 2: print("🐻 Performing IDW interpolation...")
-        '''
-        interpolated_grids = interpolate_frames(
-            frames=ground_site_grids,
-            dim=dim,
-            power=power,
-            neighbors=neighbors,
-            elevation_grid=None,
-            use_variable_blur=False,
-            use_progbar=self.VERBOSE < 2
-        )
-        '''
         interpolated_grids = idw.interpolate_frames(ground_site_grids)
 
         self.data = interpolated_grids
 
         self._save_numpy_to_cache(
-            cache_path=f'{save_dir}/openaq_processed.npz',
+            cache_path=(
+                save_path 
+                if save_path is not None 
+                else f'{save_dir}/openaq_processed.npz'
+            ),
             data=self.data,
             start_date=self.start_date,
             end_date=self.end_date,
@@ -1139,7 +1144,7 @@ class OpenAQData:
         )
         filtered_df = remove_underreporting_sensors(filtered_df, min_uptime)
         #FIXME TODO Currently we just set the first 12 hours to nan, since nowcast
-        # requires 12 hours of previous observations To fix this, we'd need to
+        # requires 12 hours of previous observations. To fix this, we'd need to
         # ingest 12 hours of data before the start date, then shave
         # off the first 12 hours somewhere here
         # however, it maybe annoying with how it interacts with the cache
