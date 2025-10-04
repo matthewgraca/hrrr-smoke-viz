@@ -15,7 +15,6 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 tf.get_logger().setLevel('ERROR')
 
 class PM25TrainingPipeline:
-    """Complete pipeline for PM2.5 forecasting experiments"""
     
     def __init__(self, experiment_config):
         self.config = experiment_config
@@ -27,7 +26,6 @@ class PM25TrainingPipeline:
         self._configure_gpu()
         
     def _configure_gpu(self):
-        """Configure GPU settings"""
         gpus = tf.config.experimental.list_physical_devices('GPU')
         if gpus:
             try:
@@ -40,7 +38,6 @@ class PM25TrainingPipeline:
                 print("GPU configuration failed")
     
     def load_data(self):
-        """Load preprocessed data from cache - can use custom path or default based on horizon"""
         if 'data_cache' in self.config:
             cache_path = self.config['data_cache']
             if cache_path.endswith('/npy_files'):
@@ -91,7 +88,6 @@ class PM25TrainingPipeline:
         return data
     
     def visualize_input_samples(self, data, save_dir, sample_indices=[800, 1000, 1232]):
-        """Visualize ALL input channels and targets for multiple samples"""
         os.makedirs(f"{save_dir}/inputs", exist_ok=True)
         
         max_idx = len(data['X_train']) - 1
@@ -101,7 +97,6 @@ class PM25TrainingPipeline:
             self._visualize_single_input(data, sample_idx, f"{save_dir}/inputs")
     
     def _visualize_single_input(self, data, sample_idx, save_dir):
-        """Visualize ALL channels for a single sample"""
         X_data = data['X_train']
         Y_data = data['Y_train_orig']
         
@@ -196,7 +191,6 @@ class PM25TrainingPipeline:
         print(f"  Input visualization saved for sample {sample_idx}")
     
     def save_best_worst_samples(self, Y_pred, Y_test, save_dir, n_samples=10):
-        """Save visualizations of best and worst performing samples"""
         os.makedirs(f"{save_dir}/best_samples", exist_ok=True)
         os.makedirs(f"{save_dir}/worst_samples", exist_ok=True)
         
@@ -221,7 +215,6 @@ class PM25TrainingPipeline:
         print(f"  Saved {n_samples} best and {n_samples} worst samples")
     
     def _plot_sample(self, pred, true, rmse, save_dir, sample_type, rank, idx):
-        """Plot a single sample comparison"""
         n_frames = min(pred.shape[0], 8)
         
         fig = plt.figure(figsize=(4*n_frames, 12))
@@ -280,7 +273,6 @@ class PM25TrainingPipeline:
         plt.close()
     
     def build_model(self, input_shape):
-        """Build model based on configuration"""
         if self.config['model_type'] == 'seq2seq':
             return self._build_seq2seq(input_shape)
         elif self.config['model_type'] == 'two_path':
@@ -291,7 +283,6 @@ class PM25TrainingPipeline:
             raise ValueError(f"Unknown model type: {self.config['model_type']}")
     
     def _build_seq2seq(self, input_shape):
-        """Seq2Seq architecture with encoder-decoder"""
         from tensorflow.keras.layers import Input, Conv3D, ConvLSTM2D, Lambda, Add
         from tensorflow.keras.models import Model
         
@@ -326,7 +317,6 @@ class PM25TrainingPipeline:
         return model, self._create_loss_fn()
     
     def _build_two_path(self, input_shape):
-        """Two-path architecture: PM2.5 path and Others path"""
         from tensorflow.keras.layers import Input, Conv3D, ConvLSTM2D, Lambda, concatenate, Add
         from tensorflow.keras.models import Model
         
@@ -354,7 +344,6 @@ class PM25TrainingPipeline:
         return model, self._create_loss_fn()
     
     def _build_multi_path(self, input_shape):
-        """Multi-path architecture with separate paths for each channel group"""
         from tensorflow.keras.layers import Input, Conv3D, ConvLSTM2D, Lambda, concatenate, Add
         from tensorflow.keras.models import Model
         
@@ -391,7 +380,6 @@ class PM25TrainingPipeline:
         return model, self._create_loss_fn()
     
     def _create_loss_fn(self):
-        """Create masked MAE loss for sensor locations"""
         sensor_coords = []
         for loc in self.sensor_locations:
             if isinstance(loc, (tuple, list)) and len(loc) >= 2:
@@ -410,7 +398,6 @@ class PM25TrainingPipeline:
         return masked_mae
     
     def train(self, data):
-        """Train the model"""
         print(f"\nTraining {self.config['model_type']} model...")
         
         input_shape = data['X_train'].shape[1:]
@@ -466,7 +453,6 @@ class PM25TrainingPipeline:
         return model, history, {'train_loss': best_train_loss, 'val_loss': best_val_loss}
     
     def evaluate(self, model, data):
-        """Evaluate model and compute frame-by-frame metrics"""
         print("\nEvaluating on test set...")
         
         Y_pred = model.predict(data['X_test'], batch_size=16, verbose=1)
@@ -505,7 +491,6 @@ class PM25TrainingPipeline:
         }
     
     def save_incremental_results(self, metrics, train_metrics, save_dir):
-        """Save detailed frame-by-frame results"""
         os.makedirs(f"{save_dir}/detailed_results", exist_ok=True)
         
         horizon = self.config['forecast_horizon']
@@ -531,7 +516,6 @@ class PM25TrainingPipeline:
         print(f"Detailed metrics saved")
     
     def create_performance_table(self, results_df, save_dir):
-        """Create visualization table of results"""
         fig, ax = plt.subplots(figsize=(16, 8))
         ax.axis('tight')
         ax.axis('off')
@@ -566,13 +550,12 @@ class PM25TrainingPipeline:
                     if display_df.iloc[row_idx][col] == best_val:
                         table[(row_idx+1, col_idx)].set_facecolor('#66d966')
         
-        plt.title('Model Performance Comparison - Updated Metrics', fontsize=14, fontweight='bold')
+        plt.title('Model Performance Comparison', fontsize=14, fontweight='bold')
         plt.savefig(f"{save_dir}/performance_table.png", dpi=300, bbox_inches='tight')
         plt.close()
         print("Performance table saved")
     
     def _extract_sensors(self, grid_data):
-        """Extract values at sensor locations"""
         n_samples, n_frames = grid_data.shape[:2]
         n_sensors = len(self.sensor_locations)
         
@@ -586,7 +569,6 @@ class PM25TrainingPipeline:
         return values
     
     def visualize_results(self, predictions, test_data, history, save_dir):
-        """Create comprehensive visualizations"""
         print("\nCreating visualizations...")
         os.makedirs(save_dir, exist_ok=True)
         
@@ -611,7 +593,6 @@ class PM25TrainingPipeline:
             print("  ModelVisualizer not available")
     
     def _plot_frame_metrics(self, save_dir):
-        """Plot frame-by-frame NRMSE from saved results"""
         if not self.detailed_results:
             return
         
@@ -665,7 +646,6 @@ class PM25TrainingPipeline:
         print("Hourly NRMSE bar plot saved")
     
     def _plot_time_series_comparison(self, predictions, test_data, save_dir):
-        """Plot time series comparison for random sensors"""
         os.makedirs(f"{save_dir}/time_series", exist_ok=True)
         
         Y_test_sensors = self._extract_sensors(test_data)
