@@ -355,6 +355,7 @@ class PM25TrainingPipeline:
         '''
         
         output = Conv2D(1, (3,3), activation='relu', padding='same')(combined)
+        # AR: output becomes (None, 40, 40, 1) due to 2d instead of (None, 1, 40, 40, 1)
         output = Reshape((1, input_shape[1], input_shape[2]))(output)
         
         model = Model(inputs, output)
@@ -407,6 +408,7 @@ class PM25TrainingPipeline:
         def masked_mae(y_true, y_pred):
             errors = []
             for x, y in sensor_coords:
+                # AR: true becomes (None, 1, 40, 40)
                 true_at_sensor = y_true[:, :, x, y]
                 pred_at_sensor = y_pred[:, :, x, y]
                 errors.append(tf.abs(true_at_sensor - pred_at_sensor))
@@ -463,23 +465,57 @@ class PM25TrainingPipeline:
         
         return model, history, {'train_loss': best_train_loss, 'val_loss': best_val_loss}
     
-    def evaluate(self, model, data):
+    def evaluate(self, model, data, save_dir):
+        # added saving ypred and xtest here
         print("\nEvaluating on test set...")
         
         ### AR
         def shift_and_ffill(X_test, y_pred, idx=0):
             # idx : the channel y_pred will replace
             X_test = np.concatenate((X_test[:, 1:, :, :, :], X_test[:, [-1], :, :, :]), axis=1)
-            X_test[:, [-1], :, :, [idx]] = np.transpose(y_pred, (1, 0, 2, 3)) # for some reason, y_pred is (1, 2623, 40, 40)
+
+            # fix borders
+            for i in range(y_pred.shape[0]):
+                y_pred[i, 0, ...] = replace_perimeter_with_nan(y_pred[i, 0, ...])
+
+            # for some reason, y_pred needs to be (1, 2623, 40, 40) instead of (2623, 1, 40, 40)
+            #X_test[:, [-1], :, :, [idx]] = y_pred
+            y_pred = np.transpose(y_pred, (1, 0, 2, 3))
+            
+            X_test[:, [-1], :, :, [idx]] = y_pred
             return X_test
 
+        from scipy.interpolate import NearestNDInterpolator
+        def replace_perimeter_with_nan(grid, depth=2):
+            perimeter_mask = np.zeros(grid.shape, dtype=bool)
+            for i in range(depth):
+                # top, bottom, left, right
+                perimeter_mask[i, :] = True
+                perimeter_mask[-(i+1), :] = True
+                perimeter_mask[(i+1):-(i+1), i] = True
+                perimeter_mask[(i+1):-(i+1), -(i+1)] = True
+
+            masked_grid = np.where(perimeter_mask, np.nan, grid)
+            mask = np.where(~np.isnan(masked_grid))
+            interp_grid = NearestNDInterpolator(np.transpose(mask), grid[mask])
+
+            return interp_grid(*np.indices(grid.shape))
+
+        import joblib
+        scaler = joblib.load('/home/mgraca/Workspace/hrrr-smoke-viz/pwwb-experiments/tensorflow/final_input_data/multipath_data/AirNow_PM25_std_scaler.bin')
         X_test = data['X_test'].copy()
         y_preds = []
-        for _ in range(X_test.shape[1]):
+        for i in range(X_test.shape[1]):
             y_pred = model.predict(X_test)
-            X_test = shift_and_ffill(X_test, y_pred)
+            scaled_y_pred = scaler.transform(y_pred.reshape(-1, 1)).reshape(y_pred.shape)
+            np.save(f'{save_dir}/AR_{i}_X_test.npy', X_test)
+            X_test = shift_and_ffill(X_test, scaled_y_pred)
             y_preds.append(y_pred)
         Y_pred = np.expand_dims(np.concatenate(y_preds, axis=1), axis=-1)
+
+        # save preds, test, and model
+        np.save(f'{save_dir}/Y_pred.npy', Y_pred)
+        model.save(f'{save_dir}/model.keras')
         
         #Y_pred = model.predict(data['X_test'], batch_size=32, verbose=1)
         ###
@@ -719,22 +755,22 @@ class PM25TrainingPipeline:
 def run_experiments():
     data_cache_base_dir = '/home/mgraca/Workspace/hrrr-smoke-viz/pwwb-experiments/tensorflow/final_input_data/multipath_data' 
     experiments = [
-#        {
-#            'name': 'Two-Path-test',
-#            'model_type': 'two_path',
-#            'data_cache': f'{data_cache_base_dir}/25_scale',
-#            'forecast_horizon': 5,
-#            'epochs': 3,
-#            'batch_size': 32 
-#        },
         {
-            'name' : 'autoregression-5in-1out',
+            'name': 'Two-Path-test',
             'model_type': 'two_path',
             'data_cache': f'{data_cache_base_dir}/25_scale',
             'forecast_horizon': 5,
-            'epochs': 100,
-            'batch_size': 32
+            'epochs': 3,
+            'batch_size': 32 
         },
+#        {
+#            'name' : 'autoregression-5in-1out',
+#            'model_type': 'two_path',
+#            'data_cache': f'{data_cache_base_dir}/25_scale',
+#            'forecast_horizon': 5,
+#            'epochs': 100,
+#            'batch_size': 32
+#        },
     ]
     
     results = []
@@ -754,9 +790,7 @@ def run_experiments():
         
         model, history, train_metrics = pipeline.train(data, exp_config['data_cache'])
         
-        metrics = pipeline.evaluate(model, data)
-
-        np.save(f'{save_dir}/Y_pred.npy', metrics['predictions'])
+        metrics = pipeline.evaluate(model, data, save_dir)
 
         plot_model(
             model, 
