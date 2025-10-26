@@ -12,6 +12,7 @@ import sys
 sys.path.append('/home/mgraca/Workspace/hrrr-smoke-viz')
 from libs.pwwb.utils.dataset import PWWBPyDataset
 from keras.utils import plot_model
+from itertools import product
 
 warnings.filterwarnings('ignore')
 
@@ -93,7 +94,7 @@ class PM25TrainingPipeline:
 
             return x_in_bound and y_in_bound
         
-        def find_neighbors(sources, radius):
+        def find_neighbors(sources, radius, dim):
             n_hood = set(product(range(-radius, radius + 1), repeat=2))
             n_hood.remove((0, 0))
             neighbors = set()
@@ -108,6 +109,7 @@ class PM25TrainingPipeline:
         def determine_weights(
             sources,
             n_hood,
+            dim,
             source_multiplier,
             n_hood_multiplier
         ):
@@ -127,10 +129,11 @@ class PM25TrainingPipeline:
                 n_hood_multiplier=5
         ):
             sensor_coords = set(sensor_locations)
-            neighbors = find_neighbors(sensor_coords, radius=radius)
+            neighbors = find_neighbors(sensor_coords, radius, dim)
             weights = determine_weights(
                 sensor_coords,
                 neighbors,
+                dim,
                 source_multiplier,
                 n_hood_multiplier
             )
@@ -529,7 +532,7 @@ class PM25TrainingPipeline:
         '''
 
         def weighted_mae(y_true, y_pred):
-            return tf.reduce_mean(tf.abs(y_true, y_pred) * self.weights)
+            return tf.reduce_mean(tf.abs(y_true - y_pred) * self.weights)
         
         return weighted_mae 
     
@@ -839,7 +842,7 @@ def run_experiments():
 #            'batch_size': 32
 #        },
         {
-            'name' : 'error-of-avg-rescon-with-1-kernel',
+            'name' : 'error-of-avg-nhood-loss',
             'model_type': 'two_path_res',
             'data_cache': f'{data_cache_base_dir}/25_scale',
             'forecast_horizon': 5,
