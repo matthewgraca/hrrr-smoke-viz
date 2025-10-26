@@ -26,6 +26,7 @@ class PM25TrainingPipeline:
         self.sensor_locations = None
         self.base_hour = 0
         self.detailed_results = []
+        self.weights = None
         
         self._configure_gpu()
         
@@ -84,6 +85,61 @@ class PM25TrainingPipeline:
             metadata = pickle.load(f)
         
         self.sensor_locations = metadata['sensor_locations']
+
+        #### NOTE long block of funcs that find weights
+        def in_bounds(x, y, bound):
+            x_in_bound = x >= 0 and x < bound
+            y_in_bound = y >= 0 and y < bound
+
+            return x_in_bound and y_in_bound
+        
+        def find_neighbors(sources, radius):
+            n_hood = set(product(range(-radius, radius + 1), repeat=2))
+            n_hood.remove((0, 0))
+            neighbors = set()
+            for x, y in sources:
+                for a, b in n_hood:
+                    f, g = x + a, y + b
+                    if in_bounds(f, g, dim):
+                        neighbors.add((f, g))
+
+            return neighbors
+
+        def determine_weights(
+            sources,
+            n_hood,
+            source_multiplier,
+            n_hood_multiplier
+        ):
+            weights = np.ones((dim, dim))
+            for (x, y) in n_hood:
+                weights[x, y] = n_hood_multiplier
+            for (x, y) in sources:
+                weights[x, y] = source_multiplier 
+
+            return weights
+        
+        def get_weights(
+                sensor_locations,
+                dim,
+                radius=1,
+                source_multiplier=25,
+                n_hood_multiplier=5
+        ):
+            sensor_coords = set(sensor_locations)
+            neighbors = find_neighbors(sensor_coords, radius=radius)
+            weights = determine_weights(
+                sensor_coords,
+                neighbors,
+                source_multiplier,
+                n_hood_multiplier
+            )
+            return weights
+
+        #### end of weights block of funcs
+
+        self.weights = get_weights(self.sensor_locations, self.dim)
+
         self.base_hour = metadata.get('base_hour', 0)
         data['channel_names'] = metadata['channel_names']
         data['metadata'] = metadata
@@ -429,6 +485,7 @@ class PM25TrainingPipeline:
         return model, self._create_loss_fn()
     
     def _create_loss_fn(self):
+        '''
         sensor_coords = []
         for loc in self.sensor_locations:
             if isinstance(loc, (tuple, list)) and len(loc) >= 2:
@@ -436,7 +493,7 @@ class PM25TrainingPipeline:
                 if 0 <= x < self.dim and 0 <= y < self.dim:
                     sensor_coords.append((x, y))
         
-        '''
+        # average of errors
         def masked_mae(y_true, y_pred):
             errors = []
             for x, y in sensor_coords:
@@ -445,8 +502,11 @@ class PM25TrainingPipeline:
                 errors.append(tf.abs(true_at_sensor - pred_at_sensor))
             return tf.reduce_mean(tf.stack(errors, axis=-1))
         
+        return masked_mae
         '''
-
+        
+        '''
+        # error of average
         def masked_mae(y_true, y_pred):
             # grab vals at sensors: (None, 5, 15)
             truth_sensors = tf.concat(
@@ -466,6 +526,12 @@ class PM25TrainingPipeline:
             return tf.reduce_mean(tf.abs(avg_truth - avg_pred))
 
         return masked_mae
+        '''
+
+        def weighted_mae(y_true, y_pred):
+            return tf.reduce_mean(tf.abs(y_true, y_pred) * self.weights)
+        
+        return weighted_mae 
     
     def train(self, data, data_dir):
         print(f"\nTraining {self.config['model_type']} model...")
