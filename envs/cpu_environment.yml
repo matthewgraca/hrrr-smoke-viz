@@ -22,4 +22,6 @@ dependencies:
   - goes2go
   - conda-forge::pydot
   - conda-forge::rioxarray
+  - conda-forge::adjusttext
+  - scikit-gstat
 prefix: /home/mgraca/miniconda3/envs/tf-hrrrenv
