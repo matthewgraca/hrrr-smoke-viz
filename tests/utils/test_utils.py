@@ -4,6 +4,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 from libs.pwwb.utils.dataset import sliding_window 
 from libs.pwwb.utils.dataset import PWWBPyDataset
 from libs.pwwb.utils.idw import IDW 
+from libs.pwwb.utils.residual_kriging import ResidualKriging
 import numpy as np
 import math
 
@@ -187,3 +188,26 @@ class TestPWWBPyDataset(unittest.TestCase):
 
         with self.assertRaises(AssertionError):
             PWWBPyDataset(X_paths, y_path, batch_size)
+
+class TestResidualKriging(unittest.TestCase):
+    ''' Unfortunately you just have to vibe check by looking at the frames '''
+    def test_constructor_runs(self):
+        '''Just tests if the constructor runs'''
+        rk = ResidualKriging()
+
+    def test_kriging_runs(self):
+        '''Just tests if the interpolation method runs'''
+        rk = ResidualKriging(dim=40, verbose=2)
+
+        sensor_frames = np.load(
+            'tests/utils/data/residual_kriging/uninterpolated_grid.npy'
+        )
+        model_frames = np.load(
+            'tests/naqfcdata/data/naqfc_aqm_20240514T07.npy'
+        )
+
+        inter = rk.interpolate_frames(
+            # expects (n, dim, dim)
+            np.expand_dims(sensor_frames, axis=0),
+            np.expand_dims(model_frames, axis=0)
+        )
