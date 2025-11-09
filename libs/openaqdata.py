@@ -118,7 +118,7 @@ class OpenAQData:
         self.sensor_locations = self._get_sensor_locations_on_grid(
             df_locations, dim, self.extent
         )
-
+        
         # process to numpys
         ground_site_grids = self._df_to_gridded_data(
             df_measurements, dim, self.sensor_locations 
@@ -983,9 +983,9 @@ class OpenAQData:
             lat, lon = data[i, 0], data[i, 1] 
 
             x = int(((lat_max - lat) / lat_dist) * dim)
-            y = dim - int(((lon_max + abs(lon)) / lon_dist) * dim)
-            
             x = max(0, min(x, dim - 1))
+
+            y = int(((lon - lon_min) / lon_dist) * dim)
             y = max(0, min(y, dim - 1))
 
             locations_on_grid.append((x, y)) 
