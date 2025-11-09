@@ -8,8 +8,6 @@ import math
 import numpy as np
 from tqdm import tqdm
 from libs.pwwb.utils.idw import IDW 
-import warnings
-from collections import deque
 
 class OpenAQData:
     def __init__(
@@ -1006,12 +1004,13 @@ class OpenAQData:
         '''
         grid = np.full((dim, dim), np.nan)
         
-        merged_locs, merged_vals = self._merge_values_in_the_same_location(
+        merged_loc_to_value = self._merge_values_in_the_same_location(
             data, locations_on_grid
         )
-        for i, xy in enumerate(merged_locs):
-            x, y = xy
-            grid[x, y] = merged_vals[i]
+
+        for loc, val in merged_loc_to_value.items():
+            x, y = loc
+            grid[x, y] = val
         
         return grid
 
@@ -1027,7 +1026,7 @@ class OpenAQData:
         for k in d.keys():
             d[k] = np.nanmean(d[k])
 
-        return list(d.keys()), list(d.values())
+        return d
 
     def _df_to_gridded_data(self, df_measurements, dim, sensor_locations):
         '''
@@ -1036,8 +1035,10 @@ class OpenAQData:
         if self.VERBOSE == 0: print('📍 Processing ground sites...')
 
         sensor_values = df_measurements.to_numpy()
+        sensor_coords = sensor_locations.values()
+
         ground_site_grids = [
-            self._preprocess_ground_sites(vals, dim, sensor_locations.values())
+            self._preprocess_ground_sites(vals, dim, sensor_coords)
             for vals in (
                 tqdm(sensor_values)
                 if self.VERBOSE < 2
@@ -1092,14 +1093,20 @@ class OpenAQData:
             return df1, df2
 
         # remove sensors than report < 75% of the time
-        def remove_underreporting_sensors(df, min_uptime):
+        def remove_underreporting_sensors(df, df_loc, min_uptime):
             sensors_below_threshold = df.count() / len(df) < min_uptime
             if self.VERBOSE == 0:
                 print(
                     f"Sensors to be removed for not reaching threshold:\n"
                     f"{df.columns[sensors_below_threshold].tolist()}\n"
                 )
-            return df.drop(columns=df.columns[sensors_below_threshold])
+
+            dropped_cols = df.columns[sensors_below_threshold]
+
+            filtered_df = df.drop(columns=dropped_cols)
+            filtered_loc = df_loc[~df_loc['locations'].isin(dropped_cols)]
+            
+            return filtered_df, filtered_loc 
 
         # replace outliers (zscore > 3) with nan
         def impute_outliers_with_nan(df, max_zscore):
@@ -1142,7 +1149,9 @@ class OpenAQData:
             df_locations,
             whitelist
         )
-        filtered_df = remove_underreporting_sensors(filtered_df, min_uptime)
+        filtered_df, filtered_loc = remove_underreporting_sensors(
+            filtered_df, filtered_loc, min_uptime
+        )
         #FIXME TODO Currently we just set the first 12 hours to nan, since nowcast
         # requires 12 hours of previous observations. To fix this, we'd need to
         # ingest 12 hours of data before the start date, then shave
