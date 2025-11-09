@@ -11,6 +11,7 @@ class NAQFCData:
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
     ):
+        raise NotImplementedError("Pushing to allow clean merge of the rest of the branch to main, but this one's not done yet.")
         s3 = s3fs.S3FileSystem(anon=True)
         print([filename.removeprefix('noaa-nws-naqfc-pds/') for filename in s3.ls('noaa-nws-naqfc-pds')])
 
