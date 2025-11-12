@@ -112,13 +112,15 @@ class OpenAQData:
         # preprocess dataframes 
         df_measurements, df_locations = self._preprocess_dataframes(
             df_measurements,
-            df_locations
+            df_locations,
+            dim,
+            self.extent
         )
 
-        self.sensor_locations = self._get_sensor_locations_on_grid(
-            df_locations, dim, self.extent
+        self.sensor_locations = dict(
+            zip(df_locations['locations'], df_locations['x, y'])
         )
-        
+ 
         # process to numpys
         ground_site_grids = self._df_to_gridded_data(
             df_measurements, dim, self.sensor_locations 
@@ -967,8 +969,11 @@ class OpenAQData:
 
     def _get_sensor_locations_on_grid(self, df_locations, dim, extent):
         '''
-        Creates a dictionary mapping the sensor locations in the physical 
-            world to the sensor locations on the numpy grid created.
+        Creates a dataframe with three columns:
+            - locations
+            - x, y
+        Where locations is the sensor location string and x, y are the 
+            converted lat/lon to x/y coordinates.
         '''
         df = pd.DataFrame({
             'lat' : df_locations['latitude'],
@@ -977,7 +982,7 @@ class OpenAQData:
         data = np.array(df)
         lon_min, lon_max, lat_min, lat_max = extent 
         lat_dist, lon_dist = abs(lat_max - lat_min), abs(lon_max - lon_min)
-        locations_on_grid = []
+        xy_locations = []
 
         for i in range(data.shape[0]):
             lat, lon = data[i, 0], data[i, 1] 
@@ -988,9 +993,15 @@ class OpenAQData:
             y = int(((lon - lon_min) / lon_dist) * dim)
             y = max(0, min(y, dim - 1))
 
-            locations_on_grid.append((x, y)) 
+            xy_locations.append((x, y))
 
-        return dict(zip(df_locations['locations'], locations_on_grid))
+        return pd.DataFrame(
+            data=[
+                (loc, xy)
+                for loc, xy in zip(df_locations['locations'], xy_locations)
+            ],
+            columns=['locations', 'x, y']
+        )
 
     def _preprocess_ground_sites(
         self,
@@ -1017,7 +1028,7 @@ class OpenAQData:
     def _merge_values_in_the_same_location(self, data, locations_on_grid):
         '''
         If sensors are in the same location, we take the mean. Any nans
-            will be ignored in the mean calculation
+            will be ignored in the mean calculation.
         '''
         d = {}
         for val, loc in zip(data, locations_on_grid):
@@ -1060,10 +1071,13 @@ class OpenAQData:
         self,
         df_measurements,
         df_locations,
+        dim,
+        extent,
         min_uptime=0.75,
         max_zscore=3,
         whitelist=set(['AirNow', 'Clarity'])
     ):
+        #### start helpers
         # filter out sensors that are not in the whitelist
         def filter_whitelisted_sensors(
             df_measurements,
@@ -1072,7 +1086,7 @@ class OpenAQData:
         ):
             if self.VERBOSE == 0:
                 print(
-                    f'Pruning sensors that are not in the whitelist of: '
+                    f'✂️  Pruning sensors that are not in the whitelist of: '
                     f'{whitelist}'
                 )
 
@@ -1097,7 +1111,7 @@ class OpenAQData:
             sensors_below_threshold = df.count() / len(df) < min_uptime
             if self.VERBOSE == 0:
                 print(
-                    f"Sensors to be removed for not reaching threshold:\n"
+                    f"✂️  Sensors to be removed for not reaching threshold:\n"
                     f"{df.columns[sensors_below_threshold].tolist()}\n"
                 )
 
@@ -1126,6 +1140,34 @@ class OpenAQData:
                 )
             return df.ffill().bfill()
 
+        def drop_sensors_colliding_with_reference_monitors(
+            df_measurements,
+            df_locations
+        ):
+            if self.VERBOSE == 0:
+                print(
+                    '✂️  Pruning sensors that collide with '
+                    'regulatory grade sensors... '
+                )
+
+            xy = set(df_locations[df_locations['provider'] == 'AirNow']['x, y'])
+
+            df = df_locations[
+                (df_locations['x, y'].isin(xy)) &
+                (df_locations['provider'] != 'AirNow')
+            ]
+            trimmed_locations = df_locations[
+                ~df_locations['locations'].isin(df['locations'])
+            ]
+            trimmed_measurements = df_measurements.drop(df['locations'], axis=1)
+
+            if self.VERBOSE == 0:
+                print('Sensors dropped due to collision with AirNow:')
+                print(list(df['locations']), '\n')
+
+            return trimmed_measurements, trimmed_locations
+        #### end helpers
+
         pd.set_option('display.precision', 1)
         if self.VERBOSE == 0:
             nowcast_msg = (
@@ -1152,6 +1194,13 @@ class OpenAQData:
         filtered_df, filtered_loc = remove_underreporting_sensors(
             filtered_df, filtered_loc, min_uptime
         )
+
+        filtered_loc = pd.merge(
+            self._get_sensor_locations_on_grid(filtered_loc, dim, extent),
+            filtered_loc,
+            on='locations',
+            how='left'
+        )
         #FIXME TODO Currently we just set the first 12 hours to nan, since nowcast
         # requires 12 hours of previous observations. To fix this, we'd need to
         # ingest 12 hours of data before the start date, then shave
@@ -1168,6 +1217,9 @@ class OpenAQData:
         '''
         filtered_df = impute_outliers_with_nan(filtered_df, max_zscore)
         filtered_df = impute_nans_with_fbfill(filtered_df)
+        filtered_df, filtered_loc = drop_sensors_colliding_with_reference_monitors(
+            filtered_df, filtered_loc
+        )
 
         if self.VERBOSE == 0:
             print(
