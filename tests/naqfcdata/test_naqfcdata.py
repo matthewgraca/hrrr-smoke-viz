@@ -9,12 +9,27 @@ class TestNAQFCData(unittest.TestCase):
         cls.nd = NAQFCData(
             start_date="2025-01-10 00:00",
             end_date="2025-01-17 00:59",
-            local_path='tests/naqfcdata/data/noaa-nws-naqfc-pds-pm25'
+            local_path='tests/naqfcdata/data/'
         )
+
+        cls.models = {
+            'pm25' : 'aqm',
+            'o3' : 'aqm',
+            'dust' : 'dust',
+            'smoke' : 'smoke'
+        }
+
+        cls.model_init_times = {
+            'aqm' : ['06', '12'],
+            'dust' : ['06', '12'],
+            'smoke' : ['03']
+        }
 
     @classmethod
     def tearDownClass(cls):
         del cls.nd
+        del cls.models
+        del cls.model_init_times
 
     # NOTE: Tests for searching for models in the bucket
     def test_can_find_aqm_model(self):
@@ -38,13 +53,8 @@ class TestNAQFCData(unittest.TestCase):
 
     def test_find_files_in_one_week(self):
         prefix = 'noaa-nws-naqfc-pds/AQMv7/CS/'
-        models = {
-            'pm25' : 'aqm',
-            'o3' : 'aqm',
-            'dust' : 'dust',
-            'smoke' : 'smoke'
-        }
         expected = [
+            f'{prefix}20250109/12/aqm.t12z.ave_1hr_pm25_bc.20250109.227.grib2',
             f'{prefix}20250110/06/aqm.t06z.ave_1hr_pm25_bc.20250110.227.grib2',
             f'{prefix}20250110/12/aqm.t12z.ave_1hr_pm25_bc.20250110.227.grib2',
             f'{prefix}20250111/06/aqm.t06z.ave_1hr_pm25_bc.20250111.227.grib2',
@@ -59,17 +69,22 @@ class TestNAQFCData(unittest.TestCase):
             f'{prefix}20250115/12/aqm.t12z.ave_1hr_pm25_bc.20250115.227.grib2',
             f'{prefix}20250116/06/aqm.t06z.ave_1hr_pm25_bc.20250116.227.grib2',
             f'{prefix}20250116/12/aqm.t12z.ave_1hr_pm25_bc.20250116.227.grib2',
-            f'{prefix}20250117/06/aqm.t06z.ave_1hr_pm25_bc.20250117.227.grib2',
-            f'{prefix}20250117/12/aqm.t12z.ave_1hr_pm25_bc.20250117.227.grib2'
         ]
-        actual = self.nd._get_file_paths(self.nd._s3, models, self.nd.product, pd.to_datetime(self.nd.start_date), pd.to_datetime(self.nd.end_date))
+        actual = self.nd._get_file_paths(
+            self.nd._s3,
+            self.models,
+            self.model_init_times,
+            self.nd.product,
+            pd.to_datetime(self.nd.start_date),
+            pd.to_datetime(self.nd.end_date)
+        )
         self.assertEqual(expected, actual)
 
     def test_find_files_across_models(self):
         nd = NAQFCData(
             start_date="2024-05-10 00:00",
             end_date="2024-05-17 00:59",
-            local_path='tests/naqfcdata/data/noaa-nws-naqfc-pds-pm25'
+            local_path='tests/naqfcdata/data'
         )
 
         models = {
@@ -80,6 +95,7 @@ class TestNAQFCData(unittest.TestCase):
         }
         prefix = 'noaa-nws-naqfc-pds/'
         expected = [
+            f'{prefix}AQMv6/CS/20240509/12/aqm.t12z.ave_1hr_pm25_bc.20240509.227.grib2',
             f'{prefix}AQMv6/CS/20240510/06/aqm.t06z.ave_1hr_pm25_bc.20240510.227.grib2',
             f'{prefix}AQMv6/CS/20240510/12/aqm.t12z.ave_1hr_pm25_bc.20240510.227.grib2',
             f'{prefix}AQMv6/CS/20240511/06/aqm.t06z.ave_1hr_pm25_bc.20240511.227.grib2',
@@ -94,11 +110,16 @@ class TestNAQFCData(unittest.TestCase):
             f'{prefix}AQMv7/CS/20240515/12/aqm.t12z.ave_1hr_pm25_bc.20240515.227.grib2',
             f'{prefix}AQMv7/CS/20240516/06/aqm.t06z.ave_1hr_pm25_bc.20240516.227.grib2',
             f'{prefix}AQMv7/CS/20240516/12/aqm.t12z.ave_1hr_pm25_bc.20240516.227.grib2',
-            f'{prefix}AQMv7/CS/20240517/06/aqm.t06z.ave_1hr_pm25_bc.20240517.227.grib2',
-            f'{prefix}AQMv7/CS/20240517/12/aqm.t12z.ave_1hr_pm25_bc.20240517.227.grib2'
         ]
 
-        actual = nd._get_file_paths(nd._s3, models, nd.product, pd.to_datetime(nd.start_date), pd.to_datetime(nd.end_date))
+        actual = self.nd._get_file_paths(
+            nd._s3,
+            self.models,
+            self.model_init_times,
+            nd.product,
+            pd.to_datetime(nd.start_date),
+            pd.to_datetime(nd.end_date)
+        )
         self.assertEqual(expected, actual)
 
     def test_download_worked(self):
