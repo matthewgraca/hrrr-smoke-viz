@@ -2,86 +2,221 @@ import s3fs
 import xarray as xr
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
+import re
+import pandas as pd
+import os
+import bisect
+from tqdm import tqdm
 
 class NAQFCData:
     def __init__(
         self,
         start_date="2025-01-10 00:00",
-        end_date="2025-01-10 00:59",
+        end_date="2025-01-17 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
+        product='pm25',         # 'pm25' = pm2.5, 'o3' = ozone, 'dust', 'smoke'
+        local_path=None,        # where grib files should be saved to/live in
+        numpy_save_path=None,   # where the final numpy file should be saved to
+        load_numpy=False,       # specifies the numpy file should be loaded from cache
+        verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ):
-        raise NotImplementedError("Pushing to allow clean merge of the rest of the branch to main, but this one's not done yet.")
-        s3 = s3fs.S3FileSystem(anon=True)
-        print([filename.removeprefix('noaa-nws-naqfc-pds/') for filename in s3.ls('noaa-nws-naqfc-pds')])
+        if False:
+            # does not like with open() for some reason, some io buffer subscripting error
+            ds = xr.load_dataset('/home/mgraca/Workspace/hrrr-smoke-viz/tests/naqfcdata/data/aqm.t06z.ave_1hr_pm25_bc.20240514.227.grib2', engine='cfgrib')
+        
+            print(ds)
+            '''
+            Probably gonna be s3.open(...) with xarray open/load dataset with cfgrib engine
+            Look into backend_kwargs to see if you can filter things by keys to trim the file
+            with s3.open(s3.ls(path)[0], 'rb') as f:
+                print(f'opening {f}...')
+                ds = xr.open_dataset(f, engine='cfgrib')
+                print('complete.')
+                print(ds.info())
+            '''
 
-        # example
-        print([filename for filename in s3.ls('noaa-nws-naqfc-pds/AQMv7/CS/20240514/06') if 'ave_1hr_pm25_bc' in filename])
-
-        # filepath structure
-        # noaa-nws-naqfc-pds/AQMv7/CS/20240514/06/aqm.t06z.ave_1hr_pm25_bc.20240514.227.grib2
-        # noaa-nws-naqfc-pds/{model}/{area}/{date}/{forecast_start}/aqm.t{forecast_start}z.ave_1hr_pm25_bc.{date}.{location}.grib2
-
-        # here we can define the valid params
-        area_code = {
-            'AK' : 198,
-            'CS' : 227,
-            'HI' : 196
+        '''
+        Pipeline:
+            1. Find all files within start/end date
+            2. Download
+            3. Process
+                - Reproject, subregion, resize
+        '''
+        models = {
+            'pm25' : 'aqm',
+            'o3' : 'aqm',
+            'dust' : 'dust',
+            'smoke' : 'smoke'
         }
-        aqm_file_params = {
-            'model' : {'AQMv5', 'AQMv6', 'AQMv7', 'AQMv7_suppl'},
-            'area' : {'AK', 'CS', 'HI'},
-            'forecast_start' : {'06', '12'}
+        self.VERBOSE = verbose if verbose in {0, 1, 2} else 0
+        self._s3 = s3fs.S3FileSystem(anon=True)
+        self.product = self._validate_product(product, models)
+        self.start_date, self.end_date = self._validate_dates(start_date, end_date)
+        self.extent = self._validate_extent(extent)
+        self.local_path = self._validate_save_path(local_path)
+
+        start_dt = pd.to_datetime(start_date, utc=True)
+        end_dt = pd.to_datetime(end_date, utc=True)
+        dates = pd.date_range(
+            start_date, end_date, freq='h', inclusive='left', tz='UTC'
+        )
+
+        paths = self._get_file_paths(self._s3, models, self.product, start_dt, end_dt)
+        self._download(s3=self._s3, sources=paths, destination=self.local_path)
+
+    ### NOTE: Validation helpers
+
+    def _validate_product(self, product, models):
+        valid_products = set(models.keys())
+        if product not in valid_products:
+            raise ValueError('Product must be in {valid_products}')
+        return product 
+
+    def _validate_dates(self, start_date, end_date):
+        try:
+            start = pd.to_datetime(start_date)
+            end = pd.to_datetime(end_date)
+        except:
+            raise ValueError(
+                f'Unable to read {start_date} or {end_date} as a '
+                f'datetime object.'
+            )
+        else:
+            return start_date, end_date
+
+    def _validate_extent(self, extent):
+        try:
+            a = len(extent)
+            a == 4
+        except:
+            raise ValueError('Extent must be a tuple of four.')
+        
+        try:
+            lon_min, lon_max, lat_min, lat_max = extent
+            if (lon_min >= lon_max):
+                raise ValueError('Longitude minimum should be less than longitude maximum')
+            elif (lon_min < -180 or lon_max > 180):
+                raise ValueError('Longitudes are out of bounds.')
+            elif (lat_min < -90 or lat_max > 90):
+                raise ValueError('Latitudes are out of bounds.')
+            else:
+                pass
+        except:
+            raise ValueError('Longitude and/or latitude values are invalid.')
+
+        return extent
+
+    def _validate_save_path(self, save_path):
+        '''
+        Ensure it's a valid directory that exists. Force the user to define
+        one so that there are no surprises on where the data ends up.
+        '''
+        if not os.path.isdir(save_path):
+            raise ValueError(
+                f'Invalid save directory. '
+                f'Either correct it or create {save_path}.'
+            )
+
+        return save_path
+
+    ### NOTE: Querying and Downloading helpers
+
+    def _find_model_directories(self, s3, model='aqm'):
+        model_patterns = {
+            # match to AQMv 0 to 99
+            'aqm' : 'AQMv([0-9]|([0-9][0-9]))',
+            'dust' : 'HYSPLIT_Dust',
+            'smoke' : 'RAP_Smoke',
+        }
+        valid_models = set(model_patterns.keys())
+        if model not in valid_models:
+            raise ValueError(f'Invalid model. Pick from {valid_models}')
+
+        text = s3.ls('noaa-nws-naqfc-pds', refresh=True)
+        pattern = fr'noaa-nws-naqfc-pds\/{model_patterns[model]}\b'
+
+        matches = [re.search(pattern, dirname) for dirname in text]
+        return [match.group() for match in matches if match]
+
+    # TODO: implement this so that we don't need so many ls calls, it's expensive
+    # this may mean we hardcode some stuff about the file structure
+    def _get_file_paths(self, s3, models, product, start_dt, end_dt):
+        '''
+        Grabs the file paths of the files we want.
+        Pipeline:
+            1. Gets the models of interest (e.g. for PM2.5, it's AQMv5-v7)
+            2. Picks only continential US for simplicity
+            3. Finds the correct dates in the bucket
+            4. Walks through the model initialization times
+            5. Grabs all the relevant files
+                - pm25: bias corrected, 1-hour averages
+                - o3: bias corrected, 1-hour averages
+                - dust: not implemented (can pick b/t surface and column)
+                - smoke: not implemented (can pick b/t surface and column)
+        '''
+        model_init_times = {
+            'aqm' : ['06', '12'],
+            'dust' : ['06', '12'],
+            'smoke' : ['03']
         }
 
-        # then construct a valid set of params
-        path_params = {
-            'model' : 'AQMv7',
-            'area' : 'CS',
-            'forecast_start' : '06',
-            'date' : '20240514'
+        product_filename_form = {
+            'pm25' : 'ave_1hr_pm25_bc',
+            'o3' : 'ave_1hr_o3_bc',
+            # saving dev time here to get core pm2.5 product running
+            'dust' : NotImplementedError('Dust product not fully supported yet.'),
+            'smoke' : NotImplementedError('Smoke product not fully supported yet.')
         }
-        print(aqm_file_params)
-        path = '/'.join([
-            f'noaa-nws-naqfc-pds',
-            f'{path_params["model"]}',
-            f'{path_params["area"]}',
-            f'{path_params["date"]}',
-            f'{path_params["forecast_start"]}',
-            f'aqm.t{path_params["forecast_start"]}z.ave_1hr_pm25_bc.{path_params["date"]}.{area_code[path_params["area"]]}.grib2'
-        ])
-        print(path)
-        src = s3.ls(path)[0]
-        print(src)
-        '''
-        broadly speaking, there are 3 classes
-        1. pm2.5 vs ozone
-        2. bias corrected vs original
-            - we'll use bias corrected for now until we have a good reason not to
-        3. x-hour average, x-hour max
-            - we want 1-hour average
-            - 24-hour average is just the average value over 24 hours (only gives 3 values)
-            - 1-hour max just gives the maximum value over the 72 hours (only gives 1 value)
-        So we want: 'ave_1hr_pm25_bc'
-        '''
 
-        # open and read data
-        '''
-        s3.get(src, '/home/mgraca/Workspace/hrrr-smoke-viz')
-        '''
-        # does not like with open() for some reason, some io buffer subscripting error
-        ds = xr.load_dataset('/home/mgraca/Workspace/hrrr-smoke-viz/tests/naqfcdata/data/aqm.t06z.ave_1hr_pm25_bc.20240514.227.grib2', engine='cfgrib')
-    
-        print(ds)
-        '''
-        Probably gonna be s3.open(...) with xarray open/load dataset with cfgrib engine
-        Look into backend_kwargs to see if you can filter things by keys to trim the file
-        with s3.open(s3.ls(path)[0], 'rb') as f:
-            print(f'opening {f}...')
-            ds = xr.open_dataset(f, engine='cfgrib')
-            print('complete.')
-            print(ds.info())
-        '''
+        # bucket/model/CS
+        paths = [
+            # only supports conus for simplicity
+            s3.ls(path + '/CS')
+            for path in self._find_model_directories(s3, model=models[product])
+        ]
 
+        # bucket/model/CS/dates
+        flattened_paths = [item for sublist in paths for item in sublist]
+        model_dates = [
+            os.path.basename(os.path.normpath(model_date))
+            for model_date in flattened_paths
+        ]
+        start_idx = bisect.bisect_left(model_dates, start_dt.strftime('%Y%m%d'))
+        end_idx = bisect.bisect_right(model_dates, end_dt.strftime('%Y%m%d'))
 
-        # plottingz -> see jupyter notebook
+        paths = flattened_paths[start_idx : end_idx]
+
+        # bucket/model/CS/dates/init_hour
+        paths = [
+            f'{path}/' + init_hr
+            for path in paths 
+            for init_hr in model_init_times[models[product]]
+        ]
+
+        # bucket/model/CS/dates/init_hour/file.grib2
+        paths = [
+            f
+            for path in paths
+            for f in s3.ls(path)
+            if product_filename_form[product] in os.path.basename(f)
+        ]
+
+        return paths
+
+    def _download(self, s3, sources, destination):
+        if self.VERBOSE < 2:
+            print('Downloading GRIB files from the NAQFC bucket...')
+
+        for src in (tqdm(sources) if self.VERBOSE < 2 else sources):
+            file = os.path.basename(src)
+            dst = os.path.join(destination, file)
+            if os.path.exists(dst):
+                if self.VERBOSE < 1:
+                    tqdm.write(
+                        f'Local copy of {file} found, skipping download.'
+                    )
+            else:
+                s3.get_file(src, dst)
+
+        return

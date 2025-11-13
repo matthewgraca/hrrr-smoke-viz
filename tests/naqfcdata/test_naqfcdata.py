@@ -1,7 +1,124 @@
 import unittest
 from libs.naqfcdata import NAQFCData 
+import pandas as pd
+import os
 
 class TestNAQFCData(unittest.TestCase):
-    def test(self):
-        nd = NAQFCData()
-        self.assertTrue(True)
+    @classmethod
+    def setUpClass(cls):
+        cls.nd = NAQFCData(
+            start_date="2025-01-10 00:00",
+            end_date="2025-01-17 00:59",
+            local_path='tests/naqfcdata/data/noaa-nws-naqfc-pds-pm25'
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        del cls.nd
+
+    # NOTE: Tests for searching for models in the bucket
+    def test_can_find_aqm_model(self):
+        expected = 1
+        actual = len(self.nd._find_model_directories(self.nd._s3, model='aqm'))
+        self.assertTrue(actual >= expected)
+
+    def test_can_find_dust_model(self):
+        expected = 1
+        actual = len(self.nd._find_model_directories(self.nd._s3, model='dust'))
+        self.assertTrue(actual >= expected)
+
+    def test_can_find_smoke_model(self):
+        expected = 1
+        actual = len(self.nd._find_model_directories(self.nd._s3, model='smoke'))
+        self.assertTrue(actual >= expected)
+
+    def test_random_not_found_in_files(self):
+        with self.assertRaises(ValueError) as err:
+            self.nd._find_model_directories(self.nd._s3, model='random')
+
+    def test_find_files_in_one_week(self):
+        prefix = 'noaa-nws-naqfc-pds/AQMv7/CS/'
+        models = {
+            'pm25' : 'aqm',
+            'o3' : 'aqm',
+            'dust' : 'dust',
+            'smoke' : 'smoke'
+        }
+        expected = [
+            f'{prefix}20250110/06/aqm.t06z.ave_1hr_pm25_bc.20250110.227.grib2',
+            f'{prefix}20250110/12/aqm.t12z.ave_1hr_pm25_bc.20250110.227.grib2',
+            f'{prefix}20250111/06/aqm.t06z.ave_1hr_pm25_bc.20250111.227.grib2',
+            f'{prefix}20250111/12/aqm.t12z.ave_1hr_pm25_bc.20250111.227.grib2',
+            f'{prefix}20250112/06/aqm.t06z.ave_1hr_pm25_bc.20250112.227.grib2',
+            f'{prefix}20250112/12/aqm.t12z.ave_1hr_pm25_bc.20250112.227.grib2',
+            f'{prefix}20250113/06/aqm.t06z.ave_1hr_pm25_bc.20250113.227.grib2',
+            f'{prefix}20250113/12/aqm.t12z.ave_1hr_pm25_bc.20250113.227.grib2',
+            f'{prefix}20250114/06/aqm.t06z.ave_1hr_pm25_bc.20250114.227.grib2',
+            f'{prefix}20250114/12/aqm.t12z.ave_1hr_pm25_bc.20250114.227.grib2',
+            f'{prefix}20250115/06/aqm.t06z.ave_1hr_pm25_bc.20250115.227.grib2',
+            f'{prefix}20250115/12/aqm.t12z.ave_1hr_pm25_bc.20250115.227.grib2',
+            f'{prefix}20250116/06/aqm.t06z.ave_1hr_pm25_bc.20250116.227.grib2',
+            f'{prefix}20250116/12/aqm.t12z.ave_1hr_pm25_bc.20250116.227.grib2',
+            f'{prefix}20250117/06/aqm.t06z.ave_1hr_pm25_bc.20250117.227.grib2',
+            f'{prefix}20250117/12/aqm.t12z.ave_1hr_pm25_bc.20250117.227.grib2'
+        ]
+        actual = self.nd._get_file_paths(self.nd._s3, models, self.nd.product, pd.to_datetime(self.nd.start_date), pd.to_datetime(self.nd.end_date))
+        self.assertEqual(expected, actual)
+
+    def test_find_files_across_models(self):
+        nd = NAQFCData(
+            start_date="2024-05-10 00:00",
+            end_date="2024-05-17 00:59",
+            local_path='tests/naqfcdata/data/noaa-nws-naqfc-pds-pm25'
+        )
+
+        models = {
+            'pm25' : 'aqm',
+            'o3' : 'aqm',
+            'dust' : 'dust',
+            'smoke' : 'smoke'
+        }
+        prefix = 'noaa-nws-naqfc-pds/'
+        expected = [
+            f'{prefix}AQMv6/CS/20240510/06/aqm.t06z.ave_1hr_pm25_bc.20240510.227.grib2',
+            f'{prefix}AQMv6/CS/20240510/12/aqm.t12z.ave_1hr_pm25_bc.20240510.227.grib2',
+            f'{prefix}AQMv6/CS/20240511/06/aqm.t06z.ave_1hr_pm25_bc.20240511.227.grib2',
+            f'{prefix}AQMv6/CS/20240511/12/aqm.t12z.ave_1hr_pm25_bc.20240511.227.grib2',
+            f'{prefix}AQMv6/CS/20240512/06/aqm.t06z.ave_1hr_pm25_bc.20240512.227.grib2',
+            f'{prefix}AQMv6/CS/20240512/12/aqm.t12z.ave_1hr_pm25_bc.20240512.227.grib2',
+            f'{prefix}AQMv6/CS/20240513/06/aqm.t06z.ave_1hr_pm25_bc.20240513.227.grib2',
+            f'{prefix}AQMv6/CS/20240513/12/aqm.t12z.ave_1hr_pm25_bc.20240513.227.grib2',
+            f'{prefix}AQMv7/CS/20240514/06/aqm.t06z.ave_1hr_pm25_bc.20240514.227.grib2',
+            f'{prefix}AQMv7/CS/20240514/12/aqm.t12z.ave_1hr_pm25_bc.20240514.227.grib2',
+            f'{prefix}AQMv7/CS/20240515/06/aqm.t06z.ave_1hr_pm25_bc.20240515.227.grib2',
+            f'{prefix}AQMv7/CS/20240515/12/aqm.t12z.ave_1hr_pm25_bc.20240515.227.grib2',
+            f'{prefix}AQMv7/CS/20240516/06/aqm.t06z.ave_1hr_pm25_bc.20240516.227.grib2',
+            f'{prefix}AQMv7/CS/20240516/12/aqm.t12z.ave_1hr_pm25_bc.20240516.227.grib2',
+            f'{prefix}AQMv7/CS/20240517/06/aqm.t06z.ave_1hr_pm25_bc.20240517.227.grib2',
+            f'{prefix}AQMv7/CS/20240517/12/aqm.t12z.ave_1hr_pm25_bc.20240517.227.grib2'
+        ]
+
+        actual = nd._get_file_paths(nd._s3, models, nd.product, pd.to_datetime(nd.start_date), pd.to_datetime(nd.end_date))
+        self.assertEqual(expected, actual)
+
+    def test_download_worked(self):
+        expected = set([
+            'aqm.t06z.ave_1hr_pm25_bc.20250110.227.grib2',
+            'aqm.t12z.ave_1hr_pm25_bc.20250110.227.grib2',
+            'aqm.t06z.ave_1hr_pm25_bc.20250111.227.grib2',
+            'aqm.t12z.ave_1hr_pm25_bc.20250111.227.grib2',
+            'aqm.t06z.ave_1hr_pm25_bc.20250112.227.grib2',
+            'aqm.t12z.ave_1hr_pm25_bc.20250112.227.grib2',
+            'aqm.t06z.ave_1hr_pm25_bc.20250113.227.grib2',
+            'aqm.t12z.ave_1hr_pm25_bc.20250113.227.grib2',
+            'aqm.t06z.ave_1hr_pm25_bc.20250114.227.grib2',
+            'aqm.t12z.ave_1hr_pm25_bc.20250114.227.grib2',
+            'aqm.t06z.ave_1hr_pm25_bc.20250115.227.grib2',
+            'aqm.t12z.ave_1hr_pm25_bc.20250115.227.grib2',
+            'aqm.t06z.ave_1hr_pm25_bc.20250116.227.grib2',
+            'aqm.t12z.ave_1hr_pm25_bc.20250116.227.grib2',
+            'aqm.t06z.ave_1hr_pm25_bc.20250117.227.grib2',
+            'aqm.t12z.ave_1hr_pm25_bc.20250117.227.grib2'
+        ])
+        actual = set(os.listdir(self.nd.local_path))
+        self.assertTrue(expected.issubset(actual))
