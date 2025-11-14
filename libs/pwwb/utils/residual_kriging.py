@@ -13,7 +13,7 @@ class ResidualKriging:
         mode='exact',
         # variogram settings
         estimator='matheron',
-        model='spherical',
+        model='exponential',
         bin_func='kmeans',
         use_nugget=False,
         n_lags=10
@@ -126,6 +126,6 @@ class ResidualKriging:
         ok = skg.OrdinaryKriging(V, **self.kriging_kwargs)
 
         res_field = ok.transform(xx.flatten(), yy.flatten()).reshape(xx.shape)
-        final_field = res_field + model_frame
+        final_field = np.where(np.isnan(res_field), 0, res_field) + model_frame
 
         return final_field
