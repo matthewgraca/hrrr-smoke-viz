@@ -53,10 +53,8 @@ class IDW:
             return frames
 
         closest_coords_and_dists = self._get_closest_coords_and_dists_per_pixel(
-            unInter=first_frame,
             dim=self.dim,
-            sensor_coords=self._get_sensor_coords(first_frame),
-            neighbors=self.neighbors,
+            sensor_coords=self._get_sensor_coords(frames),
             elevation_grid=self.elevation
         )
 
@@ -66,6 +64,7 @@ class IDW:
                 self.dim,
                 closest_coords_and_dists,
                 self.power,
+                self.neighbors,
                 self.use_variable_blur
             )
             for frame in (
@@ -172,25 +171,22 @@ class IDW:
 
         return True
     
-    def _get_sensor_coords(self, unInter):
+    def _get_sensor_coords(self, frames):
         """
         Initializes where the locations of the sensors are based on whether the
             pixel is NaN or not. This means that we expect the frame to contain
             ALL the sensor values (pre-imputed), and non-sensor locations to be
             NaN.
+        Looks at every frame; any (x, y) coordinate that has ever had a real
+            value is considered a sensor location.
         """
-        sensor_indices = np.where(~np.isnan(unInter))
-        x_idxs, y_idxs = sensor_indices[0], sensor_indices[1]
-        coordinates = list(zip(x_idxs, y_idxs))
-
-        return coordinates
+        x_idxs, y_idxs = np.where(np.any(~np.isnan(frames), axis=0))
+        return list(zip(x_idxs, y_idxs))
 
     def _get_closest_coords_and_dists_per_pixel(
         self,
-        unInter,
         dim,
         sensor_coords,
-        neighbors,
         elevation_grid
     ):
         """
@@ -209,19 +205,12 @@ class IDW:
         For the pixel that is itself a sensor location, it will have a map
             with its own coordinate mapped to a value of 0.
         """
-        if neighbors > len(sensor_coords):
-            print(
-                f"Neighbors cannot exceed number of sensors; setting neighbors to "
-                f"{len(sensor_coords)}."
-            )
-            neighbors = len(sensor_coords)
-
         closest_coords_and_dists = [[np.nan for _ in range(dim)] for _ in range(dim)] 
         for x in range(dim):
             for y in range(dim):
                 closest_coords_and_dists[x][y] = (
                     self._find_closest_sensors_and_distances(
-                        x, y, sensor_coords, elevation_grid, neighbors
+                        x, y, sensor_coords, elevation_grid
                     )
                 )
 
@@ -233,8 +222,7 @@ class IDW:
         self,
         x, y,           
         sensor_coords,  
-        elevation_grid, 
-        neighbors       
+        elevation_grid
     ):
         """
         Find n closest sensor locations for interpolation.
@@ -242,7 +230,6 @@ class IDW:
         (x, y): source point
         sensor_coords: list of sensor locations (destinations)
         elevation_grid: gridded elevation data providing z-axis data
-        neighbors: the closest n sensors and their distances to return
 
         Returns a dictionary mapping the closest sensor coordinates and 
             their distances. Python dictionaries should return dictionaries
@@ -271,7 +258,7 @@ class IDW:
             return np.sqrt((x1 - x2)**2 + (y1 - y2)**2 + (z1 - z2)**2)
         
         distances = euclidian_dist(x, y, sensor_coords, elevation_grid)
-        closest_indices = np.argsort(distances)[:neighbors]
+        closest_indices = np.argsort(distances)
         closest_dists = distances[closest_indices]
         closest_sensor_coords = [sensor_coords[i] for i in closest_indices]
 
@@ -282,13 +269,22 @@ class IDW:
 
     ### NOTE: Core interpolation methods
 
-    def _idw_interpolate(self, unInter, closest_coords_and_dists, p):
-        """Perform 3D IDW interpolation using x, y and z distance"""
-        sensor_coords, distance_list = zip(*closest_coords_and_dists.items())
-        value_list = [unInter[x, y] for x, y in sensor_coords]
-        values, distances = np.array(value_list), np.array(distance_list)
+    def _idw_interpolate(self, unInter, closest_coords_and_dists, p, neighbors):
+        """
+        Perform 3D IDW interpolation using x, y and z distance
+            - z may be scaled.
+            - Takes from nearest reporting neighbors; meaning even if your
+                closest 10 neighbors are nan, it'll pull from the next 10
+                reporting sensors thereafter.
+        """
+        X, Y = zip(*closest_coords_and_dists.keys())
+        raw_values = unInter[X, Y]
+        raw_dists = np.array(list(closest_coords_and_dists.values()))
 
-        estimate = np.sum(values / distances**p) / np.sum(1 / distances**p)
+        values = raw_values[np.where(~np.isnan(raw_values))][:neighbors]
+        distances = raw_dists[np.where(~np.isnan(raw_values))][:neighbors]
+
+        estimate = sum(values / distances**p) / sum(1 / distances**p)
 
         return estimate
 
@@ -298,6 +294,7 @@ class IDW:
         dim,
         closest_coords_and_dists,
         power,
+        neighbors,
         use_variable_blur
     ):
         """Interpolate a frame using 3D IDW method."""
@@ -307,7 +304,10 @@ class IDW:
             for y in range(dim):
                 interpolated[x, y] = (
                     self._idw_interpolate(
-                        unInter, closest_coords_and_dists[x][y], power
+                        unInter, 
+                        closest_coords_and_dists[x][y],
+                        power,
+                        neighbors
                     )
                     if np.isnan(unInter[x, y])
                     else unInter[x, y]

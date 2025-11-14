@@ -559,7 +559,7 @@ class AirNowData:
         filtered_data = impute_invalid_values_with_nan(filtered_data)
         filtered_data = generate_samples_from_time(filtered_data, start_date, end_date)
         filtered_data = impute_outliers_with_nan(filtered_data, zscore)
-        filtered_data = impute_nans_with_fbfill(filtered_data)
+        #filtered_data = impute_nans_with_fbfill(filtered_data)
 
         return [group for name, group in filtered_data.groupby('UTC')]
 

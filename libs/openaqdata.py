@@ -8,6 +8,7 @@ import math
 import numpy as np
 from tqdm import tqdm
 from libs.pwwb.utils.idw import IDW 
+import warnings
 
 class OpenAQData:
     def __init__(
@@ -1034,8 +1035,11 @@ class OpenAQData:
         for val, loc in zip(data, locations_on_grid):
             d.setdefault(loc, []).append(val)
 
-        for k in d.keys():
-            d[k] = np.nanmean(d[k])
+        # allow mean of empty slice and return nan for that sensor
+        with warnings.catch_warnings():
+            warnings.filterwarnings(action='ignore', message='Mean of empty slice')
+            for k in d.keys():
+                d[k] = np.nanmean(d[k])
 
         return d
 
@@ -1180,8 +1184,8 @@ class OpenAQData:
                 f" - Filtering sensors not in the whitelist: {whitelist}\n"
                 f" - Removing sensors with <{min_uptime * 100:.2f}% uptime\n"
                 f"{nowcast_msg}"
-                f" - Imputing dead sensors and outliers (zscore={max_zscore}) "
-                f"with a forward + backward fill\n"
+                #f" - Imputing dead sensors and outliers (zscore={max_zscore}) "
+                #f"with a forward + backward fill\n"
                 f"Current statistics:\n{df_measurements.describe()}\n"
             )
 
@@ -1207,8 +1211,10 @@ class OpenAQData:
         # off the first 12 hours somewhere here
         # however, it maybe annoying with how it interacts with the cache
         # perhaps: ALWAYS ingest 12 extra hours, and chop it off regardless?
-        if self.is_nowcast:
-            filtered_df = self._compute_nowcast(filtered_df)
+        filtered_df = (
+            self._compute_nowcast(filtered_df) 
+            if self.is_nowcast else filtered_df
+        )
         '''
         filtered_df = (
             self._compute_nowcast(filtered_df).iloc[12:].reset_index(drop=True)
@@ -1216,7 +1222,7 @@ class OpenAQData:
             else filtered_df.iloc[12:].reset_index(drop=True)
         '''
         filtered_df = impute_outliers_with_nan(filtered_df, max_zscore)
-        filtered_df = impute_nans_with_fbfill(filtered_df)
+        #filtered_df = impute_nans_with_fbfill(filtered_df)
         filtered_df, filtered_loc = drop_sensors_colliding_with_reference_monitors(
             filtered_df, filtered_loc
         )
