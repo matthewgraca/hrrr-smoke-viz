@@ -2,15 +2,12 @@ import unittest
 from libs.naqfcdata import NAQFCData 
 import pandas as pd
 import os
+import numpy as np
 
 class TestNAQFCData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.nd = NAQFCData(
-            start_date="2025-01-10 00:00",
-            end_date="2025-01-17 00:59",
-            local_path='tests/naqfcdata/data/'
-        )
+        cls.local_path = 'tests/naqfcdata/data/'
 
         cls.models = {
             'pm25' : 'aqm',
@@ -24,6 +21,13 @@ class TestNAQFCData(unittest.TestCase):
             'dust' : ['06', '12'],
             'smoke' : ['03']
         }
+
+        cls.nd = NAQFCData(
+            start_date="2025-01-10 00:00",
+            end_date="2025-01-17 00:59",
+            local_path=cls.local_path,
+            save_path='tests/naqfcdata/data/',
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -50,6 +54,8 @@ class TestNAQFCData(unittest.TestCase):
     def test_random_not_found_in_files(self):
         with self.assertRaises(ValueError) as err:
             self.nd._find_model_directories(self.nd._s3, model='random')
+
+   # NOTE: Test being able to find the files in the bucket 
 
     def test_find_files_in_one_week(self):
         prefix = 'noaa-nws-naqfc-pds/AQMv7/CS/'
@@ -84,7 +90,8 @@ class TestNAQFCData(unittest.TestCase):
         nd = NAQFCData(
             start_date="2024-05-10 00:00",
             end_date="2024-05-17 00:59",
-            local_path='tests/naqfcdata/data'
+            local_path='tests/naqfcdata/data',
+            save_path='tests/naqfcdata/data'
         )
 
         models = {
@@ -141,8 +148,13 @@ class TestNAQFCData(unittest.TestCase):
             'aqm.t06z.ave_1hr_pm25_bc.20250117.227.grib2',
             'aqm.t12z.ave_1hr_pm25_bc.20250117.227.grib2'
         ])
-        actual = set(os.listdir(self.nd.local_path))
+        actual = set(os.listdir(os.path.join(
+            self.local_path, 
+            'noaa-nws-naqfc-pds-pm25'
+        )))
         self.assertTrue(expected.issubset(actual))
+
+    # NOTE: test some downloading helpers
 
     def test_backfilling(self):
         expected = (
@@ -158,3 +170,20 @@ class TestNAQFCData(unittest.TestCase):
             pd.to_datetime(self.nd.end_date, utc=True)
         )
         self.assertEqual(expected, actual)
+
+    # NOTE: test caching logic
+
+    def test_loading_from_cache_without_save_path_raises_error(self):
+        with self.assertRaises(ValueError) as err:
+            nd = NAQFCData(
+                start_date="2025-01-10 00:00",
+                end_date="2025-01-17 00:59",
+                local_path='tests/naqfcdata/data/',
+                save_path=None,
+                load_numpy=True
+            )
+
+    def test_saving_the_cached_data(self):
+        path = 'tests/naqfcdata/data/naqfc_pm25_processed.npz'
+        self.nd._load_numpy_cache(path)
+        self.assertTrue(True)

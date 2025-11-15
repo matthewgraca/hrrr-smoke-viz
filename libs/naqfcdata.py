@@ -7,6 +7,7 @@ import pandas as pd
 import os
 import bisect
 from tqdm import tqdm
+import numpy as np
 
 class NAQFCData:
     def __init__(
@@ -28,6 +29,21 @@ class NAQFCData:
             3. Process
                 - Reproject, subregion, resize
         '''
+        self.VERBOSE = verbose if verbose in {0, 1, 2} else 0
+
+        if load_numpy:
+            if save_path is None:
+                raise ValueError(
+                    'Provide a save path to pull the numpy file from.'
+                )
+            cache_data = self._load_numpy_cache(save_path)
+            self.data = cache_data['data'] 
+            self.start_date = cache_data['start_date']
+            self.end_date = cache_data['end_date']
+            self.extent = cache_data['extent']
+            self.product = cache_data['product']
+            return
+
         models = {
             'pm25' : 'aqm',
             'o3' : 'aqm',
@@ -49,15 +65,15 @@ class NAQFCData:
             start_date, end_date
         )
         self.extent = self._validate_extent(extent)
-        self.local_path = self._validate_save_path(local_path, self.product)
+        self.data = None
+        local_path = self._validate_local_path(local_path, self.product)
+        save_path = self._validate_save_path(save_path)
 
         start_dt = pd.to_datetime(start_date, utc=True)
         end_dt = pd.to_datetime(end_date, utc=True)
         dates = pd.date_range(
             start_date, end_date, freq='h', inclusive='left', tz='UTC'
         )
-
-        # TODO load from cache
 
         # find all files 
         sorted_paths = self._get_file_paths(
@@ -70,13 +86,13 @@ class NAQFCData:
         )
 
         # download
-        self._download(s3=self._s3, sources=sorted_paths, destination=self.local_path)
+        self._download(s3=self._s3, sources=sorted_paths, destination=local_path)
 
         # TODO process
 
         # get local files
         sorted_local_files = [
-            os.path.join(self.local_path, os.path.basename(path))
+            os.path.join(local_path, os.path.basename(path))
             for path in sorted_paths
         ]
         # crack the file open
@@ -88,7 +104,16 @@ class NAQFCData:
         ds = xr.load_dataset('/home/mgraca/Workspace/hrrr-smoke-viz/tests/naqfcdata/data/aqm.t06z.ave_1hr_pm25_bc.20240514.227.grib2', engine='cfgrib')
         '''
 
-        # TODO save to cache
+        self.data = np.full((dim, dim), np.nan)
+
+        self._save_numpy_to_cache(
+            cache_path=save_path,
+            data=self.data,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            extent=self.extent,
+            product=self.product
+        )
 
     ### NOTE: Validation helpers
 
@@ -132,13 +157,15 @@ class NAQFCData:
 
         return extent
 
-    def _validate_save_path(self, save_path, product):
+    def _validate_local_path(self, save_path, product):
         '''
         Ensure it's a valid directory that exists. Force the user to define
         one so that there are no surprises on where the data ends up. We want
         to create as few files and directories under the hood as possible.
         '''
-        if not os.path.isdir(save_path):
+        if save_path is None:
+            raise ValueError('Provide a save path.')
+        if not os.path.exists(save_path):
             raise ValueError(
                 f'Invalid save directory. '
                 f'Either correct it or create {save_path}.'
@@ -151,6 +178,23 @@ class NAQFCData:
         os.makedirs(name=final_save_path, exist_ok=True)
 
         return final_save_path
+
+    def _validate_save_path(self, save_path):
+        '''
+        Ensure it's a valid directory that exists. Force the user to define
+        one so that there are no surprises on where the data ends up. We want
+        to create as few files and directories under the hood as possible.
+        '''
+        if save_path is None:
+            raise ValueError('Provide a save path.')
+
+        dirpath = os.path.dirname(save_path)
+        if not os.path.exists(dirpath):
+            raise ValueError(
+                f'Invalid path to file. '
+                f'Either correct it or create {dirpath}.'
+            )
+        return save_path
 
     ### NOTE: Querying and Downloading helpers
 
@@ -327,3 +371,59 @@ class NAQFCData:
         )
 
         return start_dt, backfill_start_steps, end_dt, backfill_end_steps
+
+    ### NOTE: Cache methods
+    def _load_numpy_cache(self, cache_path):
+        '''
+        Loads numpy cache data.
+        '''
+        if self.VERBOSE == 0:
+            print(f'📂 Loading numpy data from {cache_path}...', end=' ')
+        cached_data = np.load(cache_path, allow_pickle=True)
+
+        # ensure data can be loaded
+        try:
+            data = cached_data['data']
+            start_date = cached_data['start_date']
+            end_date = cached_data['end_date']
+            extent = cached_data['extent']
+            product = cached_data['product']
+        except:
+            raise ValueError(
+                'Cache data is missing one or more keys: '
+                '(date, start_date, end_date, extent, product)'
+            )
+
+        if self.VERBOSE == 0: print(f'✅ Completed!\n')
+        return
+
+    def _save_numpy_to_cache(
+        self, cache_path, data, start_date, end_date, extent, product
+    ):
+        '''
+        Saves to cache. If the cache path is just directories, it will save 
+            to the directories under the file naqfc_product_processed.npz;
+            otherwise, use the cache path file.
+        '''
+        cache_path = (
+            cache_path
+            if os.path.isfile(cache_path)
+            else os.path.join(cache_path, f'naqfc_{product}_processed.npz')
+        )
+
+        if self.VERBOSE == 0:
+            print(f'💾 Saving data to {cache_path}...', end=' ')
+
+        np.savez_compressed(
+            file=cache_path,
+            data=self.data,
+            start_date=start_date,
+            end_date=end_date,
+            extent=extent,
+            product=product
+        )
+
+        if self.VERBOSE == 0:
+            print('✅ Complete!\n')
+
+        return
