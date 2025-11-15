@@ -3,6 +3,7 @@ from libs.naqfcdata import NAQFCData
 import pandas as pd
 import os
 import numpy as np
+import xarray as xr
 
 class TestNAQFCData(unittest.TestCase):
     @classmethod
@@ -187,3 +188,44 @@ class TestNAQFCData(unittest.TestCase):
         path = 'tests/naqfcdata/data/naqfc_pm25_processed.npz'
         self.nd._load_numpy_cache(path)
         self.assertTrue(True)
+
+    # NOTE: test processing logic
+
+    def test_proper_dates_are_found_in_dataset(self):
+        dates = pd.date_range(
+            self.nd.start_date, self.nd.end_date,
+            freq='h', inclusive='left', tz='UTC'
+        )
+        base_path = 'tests/naqfcdata/data/noaa-nws-naqfc-pds-pm25/'
+        file = 'aqm.t12z.ave_1hr_pm25_bc.20250109.227.grib2'
+        ds = xr.load_dataset(base_path + file, engine='cfgrib')
+
+        actual = self.nd._get_dates(ds, dates)
+
+        expected_date_range = pd.date_range(
+            self.nd.start_date, '2025-01-10T07:00', 
+            freq='h', inclusive='left', tz='UTC'
+        )
+        expected = np.array(expected_date_range, dtype='datetime64[ns]')
+
+        np.testing.assert_array_equal(actual, expected)
+
+    def test_processing(self):
+        '''
+        note that this is just testing that it doesn't blow up,
+        since it's mostly a visual test.
+        '''
+        dates = pd.date_range(
+                '2025-01-09T12:00', self.nd.end_date,
+            freq='h', inclusive='left', tz='UTC'
+        )
+        base_path = 'tests/naqfcdata/data/noaa-nws-naqfc-pds-pm25/'
+        file = 'aqm.t12z.ave_1hr_pm25_bc.20250109.227.grib2'
+        dim = 40
+
+        actual = self.nd._process_grib(
+            base_path + file, dates, self.nd.extent, dim, self.nd.product
+        )
+        self.assertEqual(len(actual), 18)
+        self.assertEqual(actual[0].shape, (dim, dim))
+

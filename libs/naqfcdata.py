@@ -8,6 +8,10 @@ import os
 import bisect
 from tqdm import tqdm
 import numpy as np
+import rioxarray
+from pyproj import CRS, Transformer
+import cartopy.crs as ccrs
+import cv2
 
 class NAQFCData:
     def __init__(
@@ -44,6 +48,7 @@ class NAQFCData:
             self.product = cache_data['product']
             return
 
+        # mapping of the product to its model name in the bucket
         models = {
             'pm25' : 'aqm',
             'o3' : 'aqm',
@@ -51,6 +56,7 @@ class NAQFCData:
             'smoke' : 'smoke'
         }
 
+        # initialization times of the models, in UTC
         model_init_times = {
             'aqm' : ['06', '12'],
             'dust' : ['06', '12'],
@@ -69,6 +75,7 @@ class NAQFCData:
         local_path = self._validate_local_path(local_path, self.product)
         save_path = self._validate_save_path(save_path)
 
+        # get the datetimes
         start_dt = pd.to_datetime(start_date, utc=True)
         end_dt = pd.to_datetime(end_date, utc=True)
         dates = pd.date_range(
@@ -77,32 +84,23 @@ class NAQFCData:
 
         # find all files 
         sorted_paths = self._get_file_paths(
-            self._s3,
-            models,
-            model_init_times,
-            self.product,
-            start_dt,
-            end_dt
+            self._s3, models, model_init_times, self.product, start_dt, end_dt
         )
 
         # download
         self._download(s3=self._s3, sources=sorted_paths, destination=local_path)
 
         # TODO process
-
-        # get local files
         sorted_local_files = [
             os.path.join(local_path, os.path.basename(path))
             for path in sorted_paths
         ]
-        # crack the file open
-        # read 6 hours for 06, 18 hours for 12
-        # for each hour, process (reproject, resize)
 
-        '''
-        # does not like with open() for some reason, some io buffer subscripting error
-        ds = xr.load_dataset('/home/mgraca/Workspace/hrrr-smoke-viz/tests/naqfcdata/data/aqm.t06z.ave_1hr_pm25_bc.20240514.227.grib2', engine='cfgrib')
-        '''
+        for file in tqdm(sorted_local_files) if self.VERBOSE < 2 else sorted_local_files:
+            processed_batch = self._process_grib(file, dates, self.extent, dim, self.product)
+
+        # join the arrays
+        ####
 
         self.data = np.full((dim, dim), np.nan)
 
@@ -427,3 +425,124 @@ class NAQFCData:
             print('✅ Complete!\n')
 
         return
+
+    ### NOTE: Processing helpers
+    def _get_dates(self, ds, available_dates):
+        '''
+        Combs through the Dataset to find the valid dates to pull
+        Assumptions:
+            - For models that initialize on 06 and 12, we'll pull
+                07->12 and 13->06
+            - For models that initialize on 03, we'll pull 24 hours
+
+        Furthermore, we use the dates we want to get the intersection 
+            between the dates in the Dataset and the dates we're looking
+            for.
+
+        Returns the dates we're searching for as a numpy array.
+        '''
+        init_hr = pd.Timestamp(ds.time.values).hour
+        look_ahead = -1
+        if init_hr == 6:
+            look_ahead = 6
+        elif init_hr == 12:
+            look_ahead = 18
+        elif init_hr == 3:
+            look_ahead = 24
+        else:
+            raise ValueError('Initialization hour must be 06, 12, or 03')
+
+        ds_dates = pd.to_datetime(ds.valid_time.values[:look_ahead])
+        dates_to_pull = set(available_dates.tz_localize(None)) & set(ds_dates)
+
+        return np.array(sorted(list(dates_to_pull)), dtype='datetime64[ns]')
+
+    def _reproject(self, ds_product):
+        '''
+        Given an xarray Dataset in Lambert Conformal Conical projection, 
+            convert to equirectangular projection and coordinates.
+
+        Reprojects on a given data variable, e.g. pmtf.
+        '''
+        ds = ds_product
+        ds = ds.rio.set_spatial_dims(x_dim='x', y_dim='y', inplace=False)
+        
+        # set lcc crs
+        crs_lcc = CRS.from_dict({
+            'proj' : 'lcc',
+            'lat_1' : ds.GRIB_Latin1InDegrees,
+            'lat_2' : ds.GRIB_Latin2InDegrees,
+            'lat_0' : ds.GRIB_LaDInDegrees,
+            'lon_0' : ds.GRIB_LoVInDegrees,
+            'x_0' : 0.0,
+            'y_0' : 0.0,
+            'a' : 6371229.0,
+            'b' : 6371229.0,
+            'units' : 'm',
+            'no_defs' : True
+        })
+        ds = ds.rio.write_crs(crs_lcc, inplace=False)
+        
+        # project first grid point
+        lat_first = ds.GRIB_latitudeOfFirstGridPointInDegrees
+        lon_first = ds.GRIB_longitudeOfFirstGridPointInDegrees
+        to_lcc = Transformer.from_crs("EPSG:4326", crs_lcc, always_xy=True)
+        x0_center, y0_center = to_lcc.transform(lon_first, lat_first)
+        
+        # build x/y coordinate arrays
+        Dx, Dy = ds.GRIB_DxInMetres, ds.GRIB_DyInMetres
+        Nx, Ny = ds.GRIB_Nx, ds.GRIB_Ny
+        
+        x = x0_center + np.arange(Nx) * Dx
+        y = y0_center + np.arange(Ny) * Dy
+        
+        # attach coords
+        ds = ds.assign_coords(x=("x", x), y=("y", y))
+        
+        # reproject
+        m_per_degree_of_lat = 111320.0 # earth circumference (m) / 360 (deg)
+        mid_lat_of_conus = np.deg2rad(35.0)
+        lat_res = Dy / m_per_degree_of_lat
+        lon_res = Dx / (m_per_degree_of_lat * np.cos(mid_lat_of_conus))
+        
+        ds_out = ds.rio.reproject(
+            dst_crs='EPSG:4326',
+            resolution=(lon_res, lat_res)
+            
+        ).rename({"y": "lat", "x": "lon"})
+        
+        return ds_out
+
+    def _process_grib(self, file_path, dates, extent, dim, product):
+        '''
+        Processes a given grib file under the following pipeline:
+            1. Open
+            2. Extract valid times of the model + required dates
+            3. Reproject
+            4. Align extent
+            5. Resize
+
+        Returns a list of numpy arrays, each array being a timestep.
+        '''
+        # name of the data variable in the grib file
+        grib_name = {
+            'pm25' : 'pmtf',
+            'o3' : NotImplementedError(),
+            'dust' : NotImplementedError(),
+            'smoke' : NotImplementedError(),
+        }
+
+        lon_min, lon_max, lat_min, lat_max = extent
+
+        ds = xr.load_dataset(file_path, engine='cfgrib')
+        ds = ds.where(
+            ds.valid_time.isin(self._get_dates(ds, dates)), drop=True
+        )
+        ds = self._reproject(ds[grib_name[product]])
+        ds = ds.sel(
+            lon=slice(lon_min, lon_max),
+            lat=slice(lat_max, lat_min)
+        )
+        resized_data = [cv2.resize(data, (dim, dim)) for data in ds.data]
+
+        return resized_data
