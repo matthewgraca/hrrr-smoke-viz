@@ -143,3 +143,18 @@ class TestNAQFCData(unittest.TestCase):
         ])
         actual = set(os.listdir(self.nd.local_path))
         self.assertTrue(expected.issubset(actual))
+
+    def test_backfilling(self):
+        expected = (
+            pd.to_datetime('2025-01-09 00:00:00+00:00'),
+            1,
+            pd.to_datetime('2025-01-16 00:59:00+00:00'),
+            0
+        )
+        actual = self.nd._backfill_order(
+            self.models,
+            self.nd.product,
+            pd.to_datetime(self.nd.start_date, utc=True),
+            pd.to_datetime(self.nd.end_date, utc=True)
+        )
+        self.assertEqual(expected, actual)

@@ -68,7 +68,6 @@ class NAQFCData:
             start_dt,
             end_dt
         )
-        #print('\n'.join(sorted_paths))
 
         # download
         self._download(s3=self._s3, sources=sorted_paths, destination=self.local_path)
@@ -202,6 +201,93 @@ class NAQFCData:
         sorted by file name but by the actual paths too!
         '''
         # backfilling logic DO NOT PEER INTO THE ABYSS
+        start_dt, fwd_steps, end_dt, back_steps = self._backfill_order(
+            models, product, start_dt, end_dt
+        )
+
+        filename_form = {
+            'pm25' : 'ave_1hr_pm25_bc',
+            'o3' : 'ave_1hr_o3_bc',
+            # saving dev time here to get core pm2.5 product running
+            'dust' : NotImplementedError('Dust product not fully supported yet.'),
+            'smoke' : NotImplementedError('Smoke product not fully supported yet.')
+        }
+
+        # bucket/model/CS
+        paths = [
+            # only supports conus for simplicity
+            s3.ls(path + '/CS')
+            for path in self._find_model_directories(s3, model=models[product])
+        ]
+
+        # bucket/model/CS/dates
+        flattened_paths = [item for sublist in paths for item in sublist]
+        model_dates = [
+            os.path.basename(os.path.normpath(model_date))
+            for model_date in flattened_paths
+        ]
+
+        start_idx = bisect.bisect_left(model_dates, start_dt.strftime('%Y%m%d'))
+        end_idx = bisect.bisect_right(model_dates, end_dt.strftime('%Y%m%d'))
+        paths = flattened_paths[start_idx : end_idx]
+
+        # bucket/model/CS/dates/init_hour
+        paths = [
+            f'{path}/' + init_hr
+            for path in paths 
+            for init_hr in model_init_times[models[product]]
+        ]
+
+        # bucket/model/CS/dates/init_hour/file.grib2
+        paths = [
+            f
+            for path in paths
+            for f in s3.ls(path)
+            if filename_form[product] in os.path.basename(f)
+        ]
+
+        return paths[fwd_steps : len(paths) + back_steps]
+
+    def _download(self, s3, sources, destination):
+        if self.VERBOSE < 2:
+            print('Downloading files from the NAQFC bucket...')
+
+        for src in (tqdm(sources) if self.VERBOSE < 2 else sources):
+            file = os.path.basename(src)
+            dst = os.path.join(destination, file)
+            if os.path.exists(dst):
+                if self.VERBOSE < 1:
+                    tqdm.write(
+                        f'Local copy of {file} found, skipping download.'
+                    )
+            else:
+                s3.get_file(src, dst)
+
+        return
+
+    def _backfill_order(self, models, product, start_dt, end_dt):
+        '''
+        Given a start and end time, we may need to use the model initialized
+            at a prior date.
+
+        For PM2.5:
+            e.g. at 2025-01-01, 00UTC, we'd need to pull from the previous
+                day's model, 2024-12-31 initialized at 12UTC
+
+        Same with the end date; if the end date is 2025-01-01 07UTC, then
+            we pull from the given date, but only the 06 initialized model,
+            not the 12 init model.
+
+        The returned values:
+            start_dt, which is the start date of the model to pull from
+            end_dt, which is the end date of the model to pull from
+            backfill_start_steps, which hour's model to pull from to start
+                - i.e. if starting at the same date and stepping forward 1,
+                you're saying you want 12
+            backfill_end_steps, which hour's model to pull from to end
+                - i.e. if starting at the previous day and stepping back 0,
+                you're saying you want 12
+        '''
         model_backfill_hours = {
             'aqm' : (6, 12),
             'dust' : (6, 12),
@@ -240,64 +326,4 @@ class NAQFCData:
             else end_dt
         )
 
-        filename_form = {
-            'pm25' : 'ave_1hr_pm25_bc',
-            'o3' : 'ave_1hr_o3_bc',
-            # saving dev time here to get core pm2.5 product running
-            'dust' : NotImplementedError('Dust product not fully supported yet.'),
-            'smoke' : NotImplementedError('Smoke product not fully supported yet.')
-        }
-
-        # bucket/model/CS
-        paths = [
-            # only supports conus for simplicity
-            s3.ls(path + '/CS')
-            for path in self._find_model_directories(s3, model=models[product])
-        ]
-
-        # bucket/model/CS/dates
-        flattened_paths = [item for sublist in paths for item in sublist]
-        model_dates = [
-            os.path.basename(os.path.normpath(model_date))
-            for model_date in flattened_paths
-        ]
-
-        start_idx = bisect.bisect_left(model_dates, start_dt.strftime('%Y%m%d'))
-
-        end_idx = bisect.bisect_right(model_dates, end_dt.strftime('%Y%m%d'))
-
-        paths = flattened_paths[start_idx : end_idx]
-
-        # bucket/model/CS/dates/init_hour
-        paths = [
-            f'{path}/' + init_hr
-            for path in paths 
-            for init_hr in model_init_times[models[product]]
-        ]
-
-        # bucket/model/CS/dates/init_hour/file.grib2
-        paths = [
-            f
-            for path in paths
-            for f in s3.ls(path)
-            if filename_form[product] in os.path.basename(f)
-        ]
-
-        return paths[backfill_start_steps : len(paths) + backfill_end_steps]
-
-    def _download(self, s3, sources, destination):
-        if self.VERBOSE < 2:
-            print('Downloading GRIB files from the NAQFC bucket...')
-
-        for src in (tqdm(sources) if self.VERBOSE < 2 else sources):
-            file = os.path.basename(src)
-            dst = os.path.join(destination, file)
-            if os.path.exists(dst):
-                if self.VERBOSE < 1:
-                    tqdm.write(
-                        f'Local copy of {file} found, skipping download.'
-                    )
-            else:
-                s3.get_file(src, dst)
-
-        return
+        return start_dt, backfill_start_steps, end_dt, backfill_end_steps
