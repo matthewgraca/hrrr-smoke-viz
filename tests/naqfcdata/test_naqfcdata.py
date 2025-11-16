@@ -5,10 +5,14 @@ import os
 import numpy as np
 import xarray as xr
 
+# NOTE these tests will have you download about 2GB of data, so strap in.
+# it's recommended you turn verbose->0 so you can keep track of progess.
+VERBOSE = 2
 class TestNAQFCData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.local_path = 'tests/naqfcdata/data/'
+        cls.dim = 40
 
         cls.models = {
             'pm25' : 'aqm',
@@ -28,6 +32,8 @@ class TestNAQFCData(unittest.TestCase):
             end_date="2025-01-17 00:59",
             local_path=cls.local_path,
             save_path='tests/naqfcdata/data/',
+            dim=cls.dim,
+            verbose=VERBOSE
         )
 
     @classmethod
@@ -35,6 +41,8 @@ class TestNAQFCData(unittest.TestCase):
         del cls.nd
         del cls.models
         del cls.model_init_times
+        del cls.dim
+        del cls.local_path
 
     # NOTE: Tests for searching for models in the bucket
     def test_can_find_aqm_model(self):
@@ -92,7 +100,8 @@ class TestNAQFCData(unittest.TestCase):
             start_date="2024-05-10 00:00",
             end_date="2024-05-17 00:59",
             local_path='tests/naqfcdata/data',
-            save_path='tests/naqfcdata/data'
+            save_path='tests/naqfcdata/data',
+            verbose=VERBOSE
         )
 
         models = {
@@ -221,11 +230,18 @@ class TestNAQFCData(unittest.TestCase):
         )
         base_path = 'tests/naqfcdata/data/noaa-nws-naqfc-pds-pm25/'
         file = 'aqm.t12z.ave_1hr_pm25_bc.20250109.227.grib2'
-        dim = 40
 
         actual = self.nd._process_grib(
-            base_path + file, dates, self.nd.extent, dim, self.nd.product
+            base_path + file, dates, self.nd.extent, self.dim, self.nd.product
         )
         self.assertEqual(len(actual), 18)
-        self.assertEqual(actual[0].shape, (dim, dim))
+        self.assertEqual(actual[0].shape, (self.dim, self.dim))
+
+    def test_final_data_shape(self):
+        dates = pd.date_range(
+            self.nd.start_date, self.nd.end_date,
+            freq='h', inclusive='left', tz='UTC'
+        )
+
+        self.assertEqual(self.nd.data.shape, (len(dates), self.dim, self.dim))
 

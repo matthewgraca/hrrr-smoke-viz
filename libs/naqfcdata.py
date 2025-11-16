@@ -35,6 +35,7 @@ class NAQFCData:
         '''
         self.VERBOSE = verbose if verbose in {0, 1, 2} else 0
 
+        # load from cache
         if load_numpy:
             if save_path is None:
                 raise ValueError(
@@ -82,27 +83,28 @@ class NAQFCData:
             start_date, end_date, freq='h', inclusive='left', tz='UTC'
         )
 
-        # find all files 
-        sorted_paths = self._get_file_paths(
+        # find all files in the bucket
+        sorted_remote_files = self._get_file_paths(
             self._s3, models, model_init_times, self.product, start_dt, end_dt
         )
 
         # download
-        self._download(s3=self._s3, sources=sorted_paths, destination=local_path)
+        self._download(
+            s3=self._s3, sources=sorted_remote_files, destination=local_path
+        )
 
-        # TODO process
+        # gather local files
         sorted_local_files = [
             os.path.join(local_path, os.path.basename(path))
-            for path in sorted_paths
+            for path in sorted_remote_files
         ]
 
-        for file in tqdm(sorted_local_files) if self.VERBOSE < 2 else sorted_local_files:
-            processed_batch = self._process_grib(file, dates, self.extent, dim, self.product)
+        # process the batches 
+        batched_data = self._process_files(
+            sorted_local_files, dates, self.extent, dim, self.product
+        )
 
-        # join the arrays
-        ####
-
-        self.data = np.full((dim, dim), np.nan)
+        self.data = np.concatenate(batched_data)
 
         self._save_numpy_to_cache(
             cache_path=save_path,
@@ -112,6 +114,8 @@ class NAQFCData:
             extent=self.extent,
             product=self.product
         )
+
+        return
 
     ### NOTE: Validation helpers
 
@@ -162,7 +166,7 @@ class NAQFCData:
         to create as few files and directories under the hood as possible.
         '''
         if save_path is None:
-            raise ValueError('Provide a save path.')
+            raise ValueError('Provide a save path for the grib data.')
         if not os.path.exists(save_path):
             raise ValueError(
                 f'Invalid save directory. '
@@ -174,6 +178,9 @@ class NAQFCData:
             f'noaa-nws-naqfc-pds-{product}'
         )
         os.makedirs(name=final_save_path, exist_ok=True)
+
+        if self.VERBOSE == 0:
+            print(f'➡️  GRIB files will be downloaded to {final_save_path}')
 
         return final_save_path
 
@@ -292,7 +299,7 @@ class NAQFCData:
 
     def _download(self, s3, sources, destination):
         if self.VERBOSE < 2:
-            print('Downloading files from the NAQFC bucket...')
+            print('🪣 Downloading files from the NAQFC bucket...')
 
         for src in (tqdm(sources) if self.VERBOSE < 2 else sources):
             file = os.path.basename(src)
@@ -546,3 +553,11 @@ class NAQFCData:
         resized_data = [cv2.resize(data, (dim, dim)) for data in ds.data]
 
         return resized_data
+
+    def _process_files(self, files, dates, extent, dim, product):
+        if self.VERBOSE < 2:
+            print(f'👷 Processing batches; reprojecting and resizing data.')
+        return [
+            self._process_grib(file, dates, extent, dim, product)
+            for file in (tqdm(files) if self.VERBOSE < 2 else files)
+        ]
