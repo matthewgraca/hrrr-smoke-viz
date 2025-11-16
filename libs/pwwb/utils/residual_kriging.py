@@ -54,7 +54,7 @@ class ResidualKriging:
                 self.dim,
             )
             for sensor_frame, model_frame in (
-                tqdm(zip(sensor_frames, model_frames))
+                tqdm(zip(sensor_frames, model_frames), total=len(sensor_frames))
                 if self.VERBOSE < 2 else zip(sensor_frames, model_frames)
             )
         ]
