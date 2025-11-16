@@ -4,7 +4,6 @@ channels:
   - https://repo.anaconda.com/pkgs/r
 dependencies:
   - python==3.12.2
-  - conda-forge::tensorflow
   - conda-forge::herbie-data
   - conda-forge::wgrib2
   - conda-forge::opencv
@@ -22,4 +21,7 @@ dependencies:
   - conda-forge::goes2go
   - conda-forge::pydot
   - conda-forge::rioxarray
+  - conda-forge::tensorflow-gpu
+  - conda-forge::adjusttext
+  - conda-forge::scikit-gstat
 prefix: /home/mgraca/miniconda3/envs/hrrrenv
