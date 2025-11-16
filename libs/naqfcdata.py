@@ -100,11 +100,14 @@ class NAQFCData:
         ]
 
         # process the batches 
-        batched_data = self._process_files(
+        date_to_data = self._process_files(
             sorted_local_files, dates, self.extent, dim, self.product
         )
 
-        self.data = np.concatenate(batched_data)
+        # peel frames from dates and save it
+        self.data = np.array([
+            date_to_data[date] for date in sorted(date_to_data.keys())
+        ])
 
         self._save_numpy_to_cache(
             cache_path=save_path,
@@ -262,6 +265,9 @@ class NAQFCData:
             'smoke' : NotImplementedError('Smoke product not fully supported yet.')
         }
 
+        if self.VERBOSE == 0:
+            print('🔎 Searching for files in the bucket...')
+
         # bucket/model/CS
         paths = [
             # only supports conus for simplicity
@@ -290,14 +296,22 @@ class NAQFCData:
         # bucket/model/CS/dates/init_hour/file.grib2
         paths = [
             f
-            for path in paths
+            for path in (tqdm(paths) if self.VERBOSE < 2 else paths)
             for f in s3.ls(path)
             if filename_form[product] in os.path.basename(f)
         ]
 
         return paths[fwd_steps : len(paths) + back_steps]
 
-    def _download(self, s3, sources, destination):
+    def _download(self, s3, sources, destination, size=1e+7):
+        '''
+        Downloads the data.
+
+        Simple integrity checks to trigger redownload:
+            - Is the downloaded file more than 10MB large?
+
+        Currently just throws an error if it fails after redownload.
+        '''
         if self.VERBOSE < 2:
             print('🪣 Downloading files from the NAQFC bucket...')
 
@@ -310,7 +324,17 @@ class NAQFCData:
                         f'Local copy of {file} found, skipping download.'
                     )
             else:
-                s3.get_file(src, dst)
+                retries = 0
+                success = False
+                while retries < 3 and not success:
+                    s3.get_file(src, dst)
+                    if os.path.getsize(dst) < size:
+                        tqdm.write(f'{dst} is empty/corrupted, retrying download.')
+                        retries += 1
+                    else:
+                        success = True
+                if retries == 3:
+                    tqdm.write(f'{dst} failed after {retries} retries.')
 
         return
 
@@ -400,7 +424,8 @@ class NAQFCData:
             )
 
         if self.VERBOSE == 0: print(f'✅ Completed!\n')
-        return
+
+        return cached_data
 
     def _save_numpy_to_cache(
         self, cache_path, data, start_date, end_date, extent, product
@@ -529,6 +554,11 @@ class NAQFCData:
             4. Align extent
             5. Resize
 
+        If a grib file is corrupted, then arrays of 0 will be returned.
+            We choose this over nan because the assumption is that this
+            will be ran with Residual Kriging in mind; having zeros would
+            ensure the actual result is just regular kriging.
+
         Returns a list of numpy arrays, each array being a timestep.
         '''
         # name of the data variable in the grib file
@@ -541,7 +571,12 @@ class NAQFCData:
 
         lon_min, lon_max, lat_min, lat_max = extent
 
-        ds = xr.load_dataset(file_path, engine='cfgrib')
+        try:
+            ds = xr.load_dataset(file_path, engine='cfgrib', decode_timedelta=True)
+        except (FileNotFoundError, EOFError) as e:
+            tqdm.write(f'Empty/corrupted GRIB file on {file_path}: {e}.')
+            return {}
+
         ds = ds.where(
             ds.valid_time.isin(self._get_dates(ds, dates)), drop=True
         )
@@ -550,14 +585,27 @@ class NAQFCData:
             lon=slice(lon_min, lon_max),
             lat=slice(lat_max, lat_min)
         )
-        resized_data = [cv2.resize(data, (dim, dim)) for data in ds.data]
+
+        resized_data = {
+            pd.to_datetime(ds.valid_time[i].item(), utc=True) : cv2.resize(ds.data[i], (dim, dim))
+            for i in range(len(ds))
+        }
 
         return resized_data
 
     def _process_files(self, files, dates, extent, dim, product):
+        date_to_data = {d : None for d in dates}
+
         if self.VERBOSE < 2:
             print(f'👷 Processing batches; reprojecting and resizing data.')
-        return [
-            self._process_grib(file, dates, extent, dim, product)
-            for file in (tqdm(files) if self.VERBOSE < 2 else files)
-        ]
+
+        for file in (tqdm(files) if self.VERBOSE < 2 else files):
+            date_to_data.update(self._process_grib(file, dates, extent, dim, product))
+
+        # impute dates without a matching set of data with zeros
+        for k in date_to_data.keys():
+            if date_to_data[k] is None:
+                tqdm.write(f'⚡ {k} found empty; imputed with zero frame.')
+                date_to_data[k] = np.zeros((dim, dim))
+
+        return date_to_data
