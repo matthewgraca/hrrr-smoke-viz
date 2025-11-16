@@ -127,10 +127,20 @@ class OpenAQData:
             df_measurements, dim, self.sensor_locations 
         )
 
-        if self.VERBOSE < 2: print("🐻 Performing IDW interpolation...")
-        interpolated_grids = idw.interpolate_frames(ground_site_grids)
+        if self.VERBOSE < 2:
+            print(
+                "🐻 Performing IDW interpolation..."
+                if use_interpolation
+                else "IDW interpolation disabled, returning ground site grids."
+            )
 
-        self.data = interpolated_grids
+        grids = (
+            idw.interpolate_frames(ground_site_grids)
+            if use_interpolation
+            else ground_site_grids
+        )
+
+        self.data = grids 
 
         self._save_numpy_to_cache(
             cache_path=(
