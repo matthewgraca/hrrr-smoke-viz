@@ -12,7 +12,7 @@ from tqdm import tqdm
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from scipy.interpolate import NearestNDInterpolator
+from scipy.interpolate import griddata
 
 class GOESData:
     def __init__(
@@ -56,6 +56,8 @@ class GOESData:
         """
         # validate parameters
         if save_cache or load_cache:
+            if cache_path is None:
+                raise ValueError('Please offer a cache path.')
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             self._validate_cache_path(save_cache, load_cache, cache_path)
 
@@ -220,18 +222,35 @@ class GOESData:
         1. Subregions dataset
         2. Resizes to given dimensions
         3. Interpolation/imputation of bad data
+            - Currently uses bilinear interpolation
         """
-        def nearest_neighbor_interpolate(data):
-            mask = np.where(~np.isnan(data))
-            nn_interp = NearestNDInterpolator(np.transpose(mask), data[mask])
-            interpolated_data = nn_interp(*np.indices(data.shape))
+        def bilinear_interpolate(data):
+            m, n = data.shape
+            yy, xx = np.mgrid[0:m, 0:n]
+            mask = ~np.isnan(data)
 
-            return interpolated_data
+            real_points = np.column_stack((xx[mask], yy[mask]))
+            real_values = data[mask]
+            interpolated = griddata(
+                real_points, real_values, (xx, yy), method='linear'
+            )
+
+            # bilinear fails for nan edges; fallback to nearest in such cases
+            gaps = np.isnan(interpolated)
+            if np.any(gaps):
+                interpolated[gaps] = griddata(
+                    real_points,
+                    real_values,
+                    (xx[gaps], yy[gaps]),
+                    method='nearest'
+                )
+
+            return interpolated
 
         gridded_data = self._subregion(ds, extent).data
         gridded_data = cv2.resize(gridded_data, (dim, dim))
         gridded_data = (
-            nearest_neighbor_interpolate(gridded_data)
+            bilinear_interpolate(gridded_data)
             if self._data_meets_nonnan_threshold(gridded_data, 0.20)
             else self._use_prev_frame(self.data, dim, date, verbose)
         )
