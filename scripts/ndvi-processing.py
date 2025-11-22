@@ -11,6 +11,7 @@ params = {
     'dim' : 40,
     'start_date' : '2023-08-02',
     'end_date' : '2025-08-02',
+    'save_path': ''
 }
 
 print(f'These are the parameters. Press ENTER if these look good, else Ctrl+c out of here and change them in the script.')
@@ -50,3 +51,7 @@ for date in dates.keys():
 res = [doy_to_frame[ydoy] for ydoy in dates.values()]
 res = np.stack(res, axis=0)
 print(res.shape)
+
+save_path = os.path.join(params['save_path']), 'ndvi_processed.npy')
+print(f'Saved to {save_path}')
+np.save(save_path, res)
