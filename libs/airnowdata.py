@@ -151,9 +151,9 @@ class AirNowData:
             print(
                 "Removing sensors with low uptime, imputing "
                 "invalid sensor data, imputing non-reporting sensors, imputing "
-                "outliers, and fillings all gaps with forward/backward fill"
+                "outliers"
             )
-        list_df = self._process_dataframe(airnow_df, start_date, end_date)
+        list_df = self._process_dataframe(airnow_df, start_date, end_date, extent)
  
         if verbose < 1:
             print("Plotting sensor data onto grid...")
@@ -506,7 +506,7 @@ class AirNowData:
             print(f"Error processing AirNow data: {e}")
             return []
 
-    def _process_dataframe(self, airnow_df, start_date, end_date, min_uptime=0.25, zscore=3):
+    def _process_dataframe(self, airnow_df, start_date, end_date, extent, min_uptime=0.25, zscore=3):
         '''
         Performs several data cleaning methods, then returns a list of dataframes grouped by UTC
         '''
@@ -553,12 +553,29 @@ class AirNowData:
                 .transform(lambda s: s.ffill().bfill())
             )
             return df
+        
+        def remove_sensors_out_of_extent(df, extent):
+            '''
+            We don't intentionally ingest out-of-range data. This is meant 
+                for the scenario when we subset our extent and we don't want 
+                to perform a reingest.
+            '''
+            min_lon, max_lon, min_lat, max_lat = extent
+            out_of_extent = (
+                (df['Latitude'] > max_lat) | 
+                (df['Latitude'] < min_lat) | 
+                (df['Longitude'] > max_lon) | 
+                (df['Longitude'] < min_lon)
+            )
+
+            return df[~out_of_extent].reset_index(drop=True)
 
         original_data = airnow_df.copy()
         filtered_data = remove_underreporting_sensors(original_data, min_uptime)
         filtered_data = impute_invalid_values_with_nan(filtered_data)
         filtered_data = generate_samples_from_time(filtered_data, start_date, end_date)
         filtered_data = impute_outliers_with_nan(filtered_data, zscore)
+        filtered_data = remove_sensors_out_of_extent(filtered_data, extent)
         #filtered_data = impute_nans_with_fbfill(filtered_data)
 
         return [group for name, group in filtered_data.groupby('UTC')]
