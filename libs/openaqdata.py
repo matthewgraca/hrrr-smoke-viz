@@ -1180,6 +1180,40 @@ class OpenAQData:
                 print(list(df['locations']), '\n')
 
             return trimmed_measurements, trimmed_locations
+
+        def drop_sensors_outside_extent(df_measurements, df_locations, extent):
+            '''
+            We don't intentionally ingest out-of-range data. This is meant 
+                for the scenario when we subset our extent and we don't want 
+                to perform a reingest.
+            '''
+            if self.VERBOSE == 0:
+                print(
+                    '✂️  Pruning sensors that sit outside the '
+                    'defined extent...'
+                )
+            
+            min_lon, max_lon, min_lat, max_lat = extent
+            out_of_extent = (
+                (df_locations['latitude'] > max_lat) | 
+                (df_locations['latitude'] < min_lat) | 
+                (df_locations['longitude'] > max_lon) | 
+                (df_locations['longitude'] < min_lon)
+            )
+
+            trimmed_locations = df_locations[~out_of_extent]
+            trimmed_measurements = df_measurements.drop(
+                df_locations[out_of_extent]['locations'], axis=1
+            )
+            print(trimmed_locations)
+            print(trimmed_measurements)
+
+            if self.VERBOSE == 0:
+                print('Sensors dropped due to exceeding defined extent:')
+                print(list(df_locations[out_of_extent]['locations']), '\n')
+
+            return trimmed_measurements, trimmed_locations
+
         #### end helpers
 
         pd.set_option('display.precision', 1)
@@ -1194,6 +1228,7 @@ class OpenAQData:
                 f" - Filtering sensors not in the whitelist: {whitelist}\n"
                 f" - Removing sensors with <{min_uptime * 100:.2f}% uptime\n"
                 f"{nowcast_msg}"
+                f" - Removing sensors outside of the defined extent\n"
                 #f" - Imputing dead sensors and outliers (zscore={max_zscore}) "
                 #f"with a forward + backward fill\n"
                 f"Current statistics:\n{df_measurements.describe()}\n"
@@ -1207,6 +1242,9 @@ class OpenAQData:
         )
         filtered_df, filtered_loc = remove_underreporting_sensors(
             filtered_df, filtered_loc, min_uptime
+        )
+        filtered_df, filtered_loc = drop_sensors_outside_extent(
+            filtered_df, filtered_loc, extent
         )
 
         filtered_loc = pd.merge(
