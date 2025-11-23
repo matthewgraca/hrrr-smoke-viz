@@ -13,6 +13,12 @@ from pyproj import CRS, Transformer
 import cartopy.crs as ccrs
 import cv2
 
+# cfgrib can get too loud with their tracebacks and internal handling
+import logging
+logging.getLogger("cfgrib").setLevel(logging.CRITICAL)
+logging.getLogger("cfgrib").propagate = False
+
+
 class NAQFCData:
     def __init__(
         self,
