@@ -1,4 +1,4 @@
-from goes2go.data import goes_timerange
+from goes2go.data import goes_timerange, goes_nearesttime
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -21,6 +21,7 @@ class GOESData:
         end_date="2025-01-10 00:59",
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
+        hourly_mean=True,   # use either hourly mean or observation closest to hour. 4x speed, but high chance of bad frames.
         save_dir=None,      # where nc4 files should be saved to
         cache_path=None,    # location where to save or load cache data
         load_cache=False,   # determines if data should be loaded from cache_dir
@@ -67,7 +68,7 @@ class GOESData:
             return
 
         if not pre_downloaded:
-            self._download_dataset(start_date, end_date, save_dir, verbose)
+            self._download_dataset(start_date, end_date, save_dir, hourly_mean, verbose)
 
         # define for one-time calculation of reprojected spatial resolution
         res_x, res_y = None, None
@@ -80,11 +81,13 @@ class GOESData:
                 prog_bar.set_description(self._retrieve_data_str(date))
                 start, end = date, date + pd.Timedelta(minutes=59, seconds=59)
                 ds = self._ingest_dataset(
-                    start, end, save_dir, verbose, load=True
+                    start, end, save_dir, verbose, hourly_mean, downloaded=True
                 )
                 # process dataset -> gridded data
                 prog_bar.set_description(self._process_data_str(date))
-                ds, res_x, res_y = self._process_ds(ds, extent, res_x, res_y)
+                ds, res_x, res_y = self._process_ds(
+                    ds, extent, hourly_mean, res_x, res_y
+                )
                 gridded_data = self._ds_to_gridded_data(
                     ds, extent, dim, date, verbose
                 )
@@ -168,7 +171,8 @@ class GOESData:
         end_date, 
         save_dir, 
         verbose, 
-        load,    # load as dataset or not. toggle off if only downloading.
+        hourly_mean,
+        downloaded
     ):
         """
         Ingests the GOES data; expects a date range, not one timestamp.
@@ -179,22 +183,36 @@ class GOESData:
             the given time range.
         """
         default_kwargs = {
-            'start' : start_date,
-            'end' : end_date,
             'satellite': 'goes18',
             'product': 'ABI-L2-AODC',
-            'return_as': 'xarray' if load else 'filelist',
-            'max_cpus': None,
+            'return_as': 'xarray' if downloaded else 'filelist',
             'verbose' : False,
             'ignore_missing' : False,
+            'download' : False if downloaded else True,
         }
         if save_dir is not None:
             default_kwargs['save_dir'] = save_dir
 
+        goes_timerange_kwargs = {
+            'start' : start_date,
+            'end' : end_date,
+            'max_cpus': None,
+        } | default_kwargs
+
+        goes_nearesttime_kwargs = {
+            # grab nearest obs -15 minutes from the hour of interest
+            'attime' : end_date - pd.Timedelta(minutes=10),
+            'within' : pd.Timedelta(minutes=10),
+        } | default_kwargs
+
         f = io.StringIO()
         try:
             with redirect_stdout(f):
-                ds = goes_timerange(**default_kwargs)
+                ds = (
+                    goes_timerange(**goes_timerange_kwargs)
+                    if hourly_mean
+                    else goes_nearesttime(**goes_nearesttime_kwargs)
+                )
 
             if verbose: tqdm.write(f.getvalue())
         except FileNotFoundError:
@@ -207,8 +225,13 @@ class GOESData:
             )
 
             with redirect_stdout(f):
-                default_kwargs['return_as'] = 'filelist' 
-                df = goes_timerange(**default_kwargs)
+                goes_nearesttime_kwargs['return_as'] = 'filelist' 
+                goes_nearesttime_kwargs['download'] = True 
+                ds = (
+                    goes_timerange(**goes_timerange_kwargs)
+                    if hourly_mean
+                    else goes_nearesttime(**goes_nearesttime_kwargs)
+                )
                 ds = self._as_xarray(df, **default_kwargs)
 
             if verbose: tqdm.write(f"🍾  Reread success!")
@@ -257,7 +280,7 @@ class GOESData:
         
         return gridded_data
 
-    def _process_ds(self, ds, extent, res_x, res_y):
+    def _process_ds(self, ds, extent, hourly_mean, res_x, res_y):
         """
         Aliases the pipeline of converting the raw dataset into a dataset 
             that can be directly converted to gridded data
@@ -269,7 +292,7 @@ class GOESData:
             res_x and res_y are not None, they pass through; else they 
             are computed and returned.
         """
-        ds = self._compute_high_quality_mean_aod(ds)
+        ds = self._compute_high_quality_mean_aod(ds, hourly_mean)
         ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
         return ds, res_x, res_y
 
@@ -363,7 +386,7 @@ class GOESData:
 
         return ds
 
-    def _download_dataset(self, start_date, end_date, save_dir, verbose):
+    def _download_dataset(self, start_date, end_date, save_dir, hourly_mean, verbose):
         """
         Strictly responsible for downloading the dataset
         This is different from ingest in that it tracks the ingest itself
@@ -381,7 +404,8 @@ class GOESData:
                     end_date=date + pd.Timedelta(minutes=59, seconds=59), 
                     save_dir=save_dir,
                     verbose=verbose,
-                    load=False
+                    hourly_mean=hourly_mean,
+                    downloaded=False
                 )
             except FileNotFoundError:
                 # file not found in aws; just ignore since this is just ingest 
@@ -414,10 +438,11 @@ class GOESData:
 
         return subset
 
-    def _compute_high_quality_mean_aod(self, ds):
+    def _compute_high_quality_mean_aod(self, ds, hourly_mean):
         """
         Calculates mean AOD, and returns a Dataset with the added mean data
-        Expects dataset with time component (e.g. (t, x, y)).
+        Expects dataset with time component (e.g. (t, x, y)) if hourly mean
+            is true.
 
         What is meant by "Quality AOD"?
             • High Quality AOD is most accurate but is missing part of the 
@@ -437,7 +462,10 @@ class GOESData:
         high, medium, low, no_retrieval = 0, 1, 2, 3
         quality_aod = ds['AOD'].where(ds['DQF'] <= medium)
         temp_ds = ds.assign(
-            AOD_mean=quality_aod.mean(dim='t', skipna=True)
+            AOD_mean=(
+                quality_aod.mean(dim='t', skipna=True)
+                if hourly_mean else quality_aod
+            )
         )
 
         return temp_ds
