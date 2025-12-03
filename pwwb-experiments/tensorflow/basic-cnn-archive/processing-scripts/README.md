@@ -37,6 +37,14 @@ Assumes the files you have on-hand are stored like so. The only folder that need
 ```
 
 Contents:
-- l1: direct data from the drive.
-- l2: l1 data processed into (time, h, w) for each channel.
-- l3: l2 data split, scaled, windowed, ready for training, combining all channels.
+- `l1/`: direct data from the drive.
+- `l2/`: l1 data processed into (time, h, w) for each channel.
+- `l3/`: l2 data split, scaled, windowed, ready for training, combining all channels.
+- `channels.json`: mapping of channel name to its channel index. That way you can write `X_train[..., channel['airnow_pm25']]` to get the AirNow channel. 
+- `std_scaler.bin`: the standard scaler used to scale the training data for the airnow channel.
+
+Current limitations:
+- Did very limited validation; which is why I keep two scripts so you can manually inspect output before commiting to the second level of processing.
+- Lot of stuff is hardcoded because we don't really have a consistent npz format. Would love for something like:
+    - `arr['data'].keys()` to contain the actual data across ALL files so we can dynamically read it without needing hard coding.
+    - For single channel data, we have it stored directly in 'data', and for multi-channel it's a free for all.

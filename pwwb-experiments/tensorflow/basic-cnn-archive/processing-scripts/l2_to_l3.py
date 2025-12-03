@@ -3,14 +3,20 @@
 # TODO not sure if it should be one massive file or if we should keep it split by channel
 import os
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
-L2_SAVE_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/final_input_data/2025-11-21/l2')
-L3_SAVE_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/final_input_data/2025-11-21/l3')
+DATA_PATH = os.path.join(
+    BASE_PATH,
+    'pwwb-experiments/tensorflow/basic-cnn-archive/processing-scripts'
+)
+L2_SAVE_PATH = os.path.join(DATA_PATH, 'l2')
+L3_SAVE_PATH = os.path.join(DATA_PATH, 'l3')
 
 import sys
 sys.path.append(BASE_PATH)
 from libs.pwwb.utils.dataset import *
 
 import numpy as np
+import joblib
+import json
 
 def process(file, target_file):
     print(f'Processing {file}:')
@@ -29,7 +35,10 @@ def process(file, target_file):
         ):
             raise ValueError('Targets offset.')
 
-        X_train, X_valid, X_test = std_scale(X_train, X_valid, X_test)
+        X_train, X_valid, X_test = std_scale(
+            X_train, X_valid, X_test,
+            save=True, save_path=os.path.join(DATA_PATH, 'std_scale.bin')
+        )
         np.save(os.path.join(L3_SAVE_PATH, 'Y_train.npy'), Y_train)
         np.save(os.path.join(L3_SAVE_PATH, 'Y_valid.npy'), Y_valid)
         np.save(os.path.join(L3_SAVE_PATH, 'Y_test.npy'), Y_test)
@@ -49,15 +58,30 @@ def process(file, target_file):
 X_train = []
 X_valid = []
 X_test = []
-for f in os.listdir(L2_SAVE_PATH):
+channels = {}
+for i, f in enumerate(os.listdir(L2_SAVE_PATH)):
     train, valid, test = process(
         os.path.join(L2_SAVE_PATH, f),
         os.path.join(L2_SAVE_PATH, 'airnow_pm25.npy')
     )
+
     X_train.append(train)
     X_valid.append(valid)
     X_test.append(test)
 
+    channel_name = os.path.splitext(os.path.basename(f))[0]
+    channels[channel_name] = i
+
+print('Saving channel indices:')
+for k, v in channels.items():
+    print(f'{k} : {v}')
+print()
+
+json_file = os.path.join(DATA_PATH, 'channels.json')
+with open(json_file, 'w') as f:
+    json.dump(channels, f)
+
+print('Saving training/validation/test data:')
 X_train = np.stack(X_train, axis=-1)
 np.save(os.path.join(L3_SAVE_PATH, 'X_train.npy'), X_train)
 print(X_train.shape)

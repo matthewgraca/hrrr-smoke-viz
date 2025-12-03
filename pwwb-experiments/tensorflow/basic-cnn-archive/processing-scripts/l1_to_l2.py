@@ -1,7 +1,11 @@
 import os
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
-L2_SAVE_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/final_input_data/2025-11-21/l2')
-L1_SAVE_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/final_input_data/2025-11-21/l1')
+DATA_PATH = os.path.join(
+    BASE_PATH,
+    'pwwb-experiments/tensorflow/basic-cnn-archive/processing-scripts'
+)
+L1_SAVE_PATH = os.path.join(DATA_PATH, 'l1')
+L2_SAVE_PATH = os.path.join(DATA_PATH, 'l2')
 
 import sys
 sys.path.append(BASE_PATH)
@@ -77,11 +81,12 @@ print(data.shape)
 np.save(os.path.join(L2_SAVE_PATH, 'ndvi.npy'), data)
 print()
 
-# extracting wind
+# extracting hrrr products 
 print('Extracting data and pulling apart channels from hrrr')
-wind = np.load(os.path.join(L1_SAVE_PATH, 'hrrr_wind_2years_new_extent.npz'))
-for k in wind.keys():
-    data = wind[k]
+sfc = np.load(os.path.join(L1_SAVE_PATH, 'hrrr_surface_2years_40x40.npz'))
+# all keys: ['u_wind', 'v_wind', 'wind_speed', 'temp_2m', 'pbl_height', 'precip_rate', 'timestamps', 'extent', 'grid_size', 'variables']
+for k in ['u_wind', 'v_wind', 'wind_speed', 'temp_2m', 'pbl_height', 'precip_rate']:
+    data = sfc[k]
     print(data.shape)
     np.save(os.path.join(L2_SAVE_PATH, f'hrrr_{k}.npy'), data)
 print()
