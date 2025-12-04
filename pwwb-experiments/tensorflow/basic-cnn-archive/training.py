@@ -9,10 +9,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from itertools import product
 from sklearn.metrics import root_mean_squared_error
+import json
+from tqdm import tqdm
+import joblib
 
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
-DATA_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/basic-cnn-archive/training-data')
-RESULTS_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/basic-cnn-archive/results')
+EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/basic-cnn-archive')
+DATA_PATH = os.path.join(EXPERIMENT_PATH, 'processing-scripts/l3')
+RESULTS_PATH = os.path.join(EXPERIMENT_PATH, 'results')
 # hardcoded since we already processed AirNowData
 SENSORS = {
     'Reseda' : (8, 3),
@@ -23,7 +27,10 @@ SENSORS = {
     'Anaheim' : (27, 29),
     'Glendora - Laurel' : (10, 33)
 }
-AIRNOW_CHANNEL = 11 # NOTE i hate this hardcoding
+
+json_file = os.path.join(EXPERIMENT_PATH, 'processing-scripts/channels.json')
+with open(json_file, 'r') as f:
+    CHANNELS = json.load(f) 
 
 class TextColor:
     HEADER = '\033[95m'
@@ -45,8 +52,15 @@ class TrainingPipeline():
         print('Loading default parameters:')
         print(f'\tPath of the training data: {DATA_PATH}')
         print(f'\tPath of the results: {RESULTS_PATH}\n')
+
         print(f'Airnow sensor locations in use ({len(SENSORS)}):')
         for k, v in SENSORS.items():
+            print(f'\t{k} : {v}')
+        print()
+
+        print(f'Channels in use: ({len(CHANNELS)}):')
+        print('Channel name : Channel index')
+        for k, v in CHANNELS.items():
             print(f'\t{k} : {v}')
         print()
 
@@ -66,9 +80,13 @@ class TrainingPipeline():
         )
         print()
 
+        print(f'{TextColor.BLUE}Beginning Autoregressive Inference{TextColor.ENDC}')
+        self._autoregress(model, X_test, Y_test, horizon=24)
+
         print(f'{TextColor.BLUE}Beginning Inference{TextColor.ENDC}')
-        y_pred = self._evaluate(model, SENSORS, dim, X_test, Y_test)
-        print()
+        y_pred = model.predict(X_test)
+        res = self._evaluate(SENSORS, dim, Y_test, y_pred)
+        print(res)
 
         print(f'{TextColor.BLUE}Saving results{TextColor.ENDC}')
         self._plot_loss_curves(history)
@@ -108,16 +126,12 @@ class TrainingPipeline():
 
         return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
 
-    def _evaluate(self, model, sensors, dim, X_test, Y_test):
-        Y_pred = model.predict(X_test)
-
+    def _evaluate(self, sensors, dim, Y_test, y_pred):
         # note that this is the same nhood loss as the training. so sensor location + nhood + background 
         # are accounted for; this is not just a raw nhood loss only.
-        nhood_loss = self.NHoodLoss(sensors, dim)(Y_test, Y_pred).numpy()
-        print(f'Neighborhood loss: {nhood_loss}')
-        sensor_loss = self.SensorLoss(sensors)(Y_test, Y_pred).numpy()
-        print(f'Direct sensor loss: {sensor_loss}')
-        return Y_pred
+        nhood_loss = self.NHoodLoss(sensors, dim)(Y_test, y_pred).numpy()
+        sensor_loss = self.SensorLoss(sensors)(Y_test, y_pred).numpy()
+        return {'nhood_loss' : nhood_loss, 'sensor_loss' : sensor_loss}
         
         '''
         frame_metrics = {}
@@ -148,6 +162,159 @@ class TrainingPipeline():
             'frame_metrics': frame_metrics
         }
         '''
+
+    def _autoregress(self, model, X_test, Y_test, horizon=24):
+        def create_next_sample(X_prev, X_next, y_pred):
+            '''
+            Forecast/ffill channels are hardcoded!
+
+            X_prev = previous sample (40, 40, 17)
+            X_next = future sample (40, 40, 17)
+            y_pred = prediction made (40, 40)
+            '''
+            ffill_channels = [
+                'goes_aod',
+                'openaq_pm25',
+                'tempo_no2',
+                'elevation',
+                'ndvi'
+            ]
+            fcast_channels = [
+                'hrrr_pbl_height',
+                'hrrr_precip_rate',
+                'temporal_encoding_hour_sin',
+                'hrrr_wind_speed',
+                'hrrr_temp_2m',
+                'naqfc_pm25',
+                'hrrr_v_wind',
+                'temporal_encoding_month_sin',
+                'hrrr_u_wind',
+                'temporal_encoding_month_cos',
+                'temporal_encoding_hour_cos',
+            ]
+            X = X_prev.copy()
+            for c in fcast_channels:
+                X[..., CHANNELS[c]] = X_next[..., CHANNELS[c]]
+
+            std_scaler = joblib.load(
+                os.path.join(EXPERIMENT_PATH, 'processing-scripts/std_scale.bin')
+            )
+            X[..., CHANNELS['airnow_pm25']] = (
+                std_scaler
+                .transform(y_pred.reshape(-1, 1))
+                .reshape(y_pred.shape)
+            )
+
+            return X
+
+        sample_nhood_loss = []
+        sample_sensor_loss = []
+        for i in tqdm(range(X_test.shape[0] - horizon)):
+            X = X_test[i]
+            nhood_loss = []
+            sensor_loss = []
+            sample_y = []
+            sample_x = []
+            sample_actual = []
+            for j in range(horizon):
+                y_pred = model.predict(np.expand_dims(X, axis=0), batch_size=1, verbose=0)
+                X = create_next_sample(X, X_test[i+j+1], y_pred)
+                res = self._evaluate(SENSORS, 40, Y_test[i+j], y_pred)
+
+                sample_x.append(Y_test[i+j-1])
+                sample_y.append(np.squeeze(y_pred))
+                sample_actual.append(Y_test[i+j])
+
+                nhood_loss.append(res['nhood_loss'])
+                sensor_loss.append(res['sensor_loss'])
+
+            sample_nhood_loss.append(nhood_loss)
+            sample_sensor_loss.append(sensor_loss)
+
+        # plot losses over frames
+        sensor_loss_by_frame = np.mean(np.array(sample_sensor_loss), axis=0)
+        nhood_loss_by_frame = np.mean(np.array(sample_nhood_loss), axis=0)
+
+        plt.bar(np.arange(0, len(sensor_loss_by_frame)), sensor_loss_by_frame)
+        plt.title('Sensor loss by frame')
+        plt.xlabel('Frame')
+        plt.ylabel('MAE')
+        plt.savefig(os.path.join(RESULTS_PATH, 'sensor_loss_bar.png'))
+        plt.close()
+
+        plt.bar(np.arange(0, len(nhood_loss_by_frame)), nhood_loss_by_frame)
+        plt.title('Neighborhood loss by frame')
+        plt.xlabel('Frame')
+        plt.ylabel('MAE')
+        plt.savefig(os.path.join(RESULTS_PATH, 'nhood_loss_bar.png'))
+        plt.close()
+
+        # sample plotting
+        sample_y = np.array(sample_y)
+        sample_x = np.array(sample_x)
+        sample_actual = np.array(sample_actual)
+
+        # horizontal plot
+        ncols = 24
+        fig, axes = plt.subplots(nrows=3, ncols=ncols, figsize=(56, 8))
+        for c in range(ncols):
+            vmax = np.nanmax([sample_x, sample_y, sample_actual])
+            vmin = np.nanmin([sample_x, sample_y, sample_actual])
+
+            axes[0, c].imshow(sample_x[c], vmin=vmin, vmax=vmax)
+            axes[0, c].set_xticks([])
+            axes[0, c].set_yticks([])
+
+            axes[1, c].imshow(sample_actual[c], vmin=vmin, vmax=vmax)
+            axes[1, c].set_xticks([])
+            axes[1, c].set_yticks([])
+
+            im = axes[2, c].imshow(sample_y[c], vmin=vmin, vmax=vmax)
+            axes[2, c].set_xticks([])
+            axes[2, c].set_yticks([])
+
+            fig.colorbar(im, ax=axes[:, c], orientation='horizontal', fraction=0.046, pad=0.04)
+
+        axes[0, 0].set_title(f'frame {0}')
+        axes[1, 0].set_title(f'frame {0}')
+        axes[2, 0].set_title(f'frame {0}')
+
+        fig.text(0.11, 0.775, 'Test Input', rotation=90, va='center', ha='center', fontsize=14)
+        fig.text(0.11, 0.525, 'Test Target', rotation=90, va='center', ha='center', fontsize=14)
+        fig.text(0.11, 0.275, 'Prediction', rotation=90, va='center', ha='center', fontsize=14)
+
+        plt.savefig(os.path.join(RESULTS_PATH, 'horizontal_sample.png'))
+
+        # vertical plot
+        nrows = 24
+        fig, axes = plt.subplots(nrows=nrows, ncols=3, figsize=(8, 50))
+        for r in range(nrows):
+            vmax = np.nanmax([sample_x, sample_y, sample_actual])
+            vmin = np.nanmin([sample_x, sample_y, sample_actual])
+
+            axes[r, 0].imshow(sample_x[r], vmin=vmin, vmax=vmax)
+            axes[r, 0].set_xticks([])
+            axes[r, 0].set_yticks([])
+            axes[r, 0].set_title(f'frame {r}')
+
+            axes[r, 1].imshow(sample_actual[r], vmin=vmin, vmax=vmax)
+            axes[r, 1].set_xticks([])
+            axes[r, 1].set_yticks([])
+            axes[r, 1].set_title(f'frame {r}')
+
+            im = axes[r, 2].imshow(sample_y[r], vmin=vmin, vmax=vmax)
+            axes[r, 2].set_xticks([])
+            axes[r, 2].set_yticks([])
+            axes[r, 2].set_title(f'frame {r}')
+
+            fig.colorbar(im, ax=axes[r, :], orientation='vertical', fraction=0.015, pad=0.04)
+            
+        axes[0, 0].set_title(f'Test Input \nframe {0}')
+        axes[0, 1].set_title(f'Test Target \nframe {0}')
+        axes[0, 2].set_title(f'Prediction \nframe {0}')
+        plt.savefig(os.path.join(RESULTS_PATH, 'vertical_sample.png'))
+
+        return
 
     ### NOTE visualizations (things that will be saved to results/)
 
@@ -234,7 +401,7 @@ class TrainingPipeline():
 
         def call(self, y_true, y_pred):
             errors = [
-                tf.abs(tf.subtract(y_true[:, x, y], y_pred[:, x, y]))
+                tf.abs(tf.subtract(y_true[..., x, y], y_pred[..., x, y]))
                 for x, y in self.sensors
             ]
             return tf.reduce_mean(tf.stack(errors, axis=-1))
@@ -339,7 +506,7 @@ class TrainingPipeline():
 
 def main():
     TrainingPipeline(
-        epochs=10,
+        epochs=100,
         batch_size=64,
     )
 
