@@ -12,6 +12,7 @@ from sklearn.metrics import root_mean_squared_error
 import json
 from tqdm import tqdm
 import joblib
+import sys
 
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
 EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/basic-cnn-archive')
@@ -27,6 +28,7 @@ SENSORS = {
     'Anaheim' : (27, 29),
     'Glendora - Laurel' : (10, 33)
 }
+CHANNELS = None
 
 json_file = os.path.join(EXPERIMENT_PATH, 'processing-scripts/channels.json')
 with open(json_file, 'r') as f:
@@ -68,7 +70,10 @@ class TrainingPipeline():
         dim = X_train.shape[1]
         input_shape = X_train.shape[1:]
 
-        model = self._base_model(input_shape)
+        #model = self._base_model(input_shape)
+        model = self._aux_loss_model(input_shape, passthru_channels=['naqfc_pm25'])
+        # TODO remove
+        sys.exit(0)
 
         print(f'{TextColor.BLUE}Beginning Training{TextColor.ENDC}')
         history = model.fit(
@@ -393,6 +398,63 @@ class TrainingPipeline():
         print()
 
         return model
+
+    def _aux_loss_model(self, input_shape, passthru_channels=['naqfc_pm25']):
+        from keras.models import Model
+        from keras import Sequential
+        from keras.layers import Conv2D, Input, Reshape, Concatenate, Lambda
+        from keras.optimizers import Adam
+        from keras.utils import plot_model
+
+        def conv_block(name):
+            model = Sequential(name=name)
+            model.add(Conv2D(filters=15, kernel_size=(3, 3), activation='relu', padding='same'))
+            model.add(Conv2D(filters=30, kernel_size=(3, 3), activation='relu', padding='same'))
+            model.add(Conv2D(filters=15, kernel_size=(3, 3), activation='relu', padding='same'))
+            model.add(Conv2D(filters=1, kernel_size=(3, 3), activation='relu', padding='same'))
+            return model
+
+        input_layer = Input(shape=input_shape)
+        passthru = Lambda(
+            function=lambda x: tf.concat([input_layer[..., CHANNELS[c]] for c in passthru_channels], axis=-1),
+            output_shape=(input_shape[0], input_shape[1], len(passthru_channels)),
+            name='passthru'
+        )(input_layer)
+        conv_layers = conv_block(name='conv_block')(input_layer)
+        output = Concatenate(axis=-1, name='output_layer')([conv_layers, passthru])
+        #output = Reshape((input_shape[0], input_shape[1]))(x)
+
+        model = Model(input_layer, output)
+        '''
+        model.compile(
+            loss=self.NHoodLoss(
+                sensors=SENSORS,
+                dim=input_shape[1],
+                #source_weight,
+                #nhood_weight,
+                #r
+            ),
+            optimizer=Adam()
+        )
+        '''
+        model.summary()
+        plot_model(
+            model=model,
+            to_file=os.path.join(RESULTS_PATH, 'model.png'),
+            show_shapes=True,
+            show_layer_names=True
+        )
+        plot_model(
+            model=model,
+            to_file=os.path.join(RESULTS_PATH, 'model_nested.png'),
+            show_shapes=True,
+            show_layer_names=True,
+            expand_nested=True
+        )
+        print()
+
+        return model
+        
 
     class SensorLoss(tf.keras.losses.Loss):
         def __init__(self, sensors):
