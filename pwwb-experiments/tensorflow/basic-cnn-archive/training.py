@@ -67,13 +67,21 @@ class TrainingPipeline():
         print()
 
         X_train, X_valid, X_test, Y_train, Y_valid, Y_test = self._load_data(DATA_PATH)
+
+        # toggle for quick test
+        '''
+        X_test = X_test[0:25]
+        Y_test = Y_test[0:25]
+        '''
+
         dim = X_train.shape[1]
         input_shape = X_train.shape[1:]
 
         #model = self._base_model(input_shape)
         model = self._aux_loss_model(input_shape, passthru_channels=['naqfc_pm25'])
-        # TODO remove
-        sys.exit(0)
+        # TODO use raw instead of nowcast
+        # TODO use forecast instead of current for naqfc
+        #sys.exit(0)
 
         print(f'{TextColor.BLUE}Beginning Training{TextColor.ENDC}')
         history = model.fit(
@@ -134,6 +142,7 @@ class TrainingPipeline():
     def _evaluate(self, sensors, dim, Y_test, y_pred):
         # note that this is the same nhood loss as the training. so sensor location + nhood + background 
         # are accounted for; this is not just a raw nhood loss only.
+        y_pred = y_pred if len(np.squeeze(y_pred).shape) == 2 else y_pred[..., 0]
         nhood_loss = self.NHoodLoss(sensors, dim)(Y_test, y_pred).numpy()
         sensor_loss = self.SensorLoss(sensors)(Y_test, y_pred).numpy()
         return {'nhood_loss' : nhood_loss, 'sensor_loss' : sensor_loss}
@@ -176,6 +185,7 @@ class TrainingPipeline():
             X_prev = previous sample (40, 40, 17)
             X_next = future sample (40, 40, 17)
             y_pred = prediction made (40, 40)
+                - unless it's aux loss, which is (40, 40, n)
             '''
             ffill_channels = [
                 'goes_aod',
@@ -197,6 +207,7 @@ class TrainingPipeline():
                 'temporal_encoding_month_cos',
                 'temporal_encoding_hour_cos',
             ]
+            y_pred = y_pred if len(y_pred.shape) == 2 else y_pred[..., 0]
             X = X_prev.copy()
             for c in fcast_channels:
                 X[..., CHANNELS[c]] = X_next[..., CHANNELS[c]]
@@ -223,6 +234,7 @@ class TrainingPipeline():
             sample_actual = []
             for j in range(horizon):
                 y_pred = model.predict(np.expand_dims(X, axis=0), batch_size=1, verbose=0)
+                y_pred = y_pred if len(np.squeeze(y_pred).shape) == 2 else y_pred[..., 0]
                 X = create_next_sample(X, X_test[i+j+1], y_pred)
                 res = self._evaluate(SENSORS, 40, Y_test[i+j], y_pred)
 
@@ -325,6 +337,7 @@ class TrainingPipeline():
 
     def _plot_predictions(self, X_test, Y_test, y_pred, save_path=RESULTS_PATH):
         np.random.seed(42)
+        y_pred = y_pred if len(y_pred.shape) == 3 else y_pred[..., 0]
         fig, axes = plt.subplots(nrows=3, ncols=5, figsize=(12, 8))
 
         # not directly plotting X_test since scaling affects visualization
@@ -408,21 +421,35 @@ class TrainingPipeline():
 
         def conv_block(name):
             model = Sequential(name=name)
-            model.add(Conv2D(filters=15, kernel_size=(3, 3), activation='relu', padding='same'))
-            model.add(Conv2D(filters=30, kernel_size=(3, 3), activation='relu', padding='same'))
-            model.add(Conv2D(filters=15, kernel_size=(3, 3), activation='relu', padding='same'))
-            model.add(Conv2D(filters=1, kernel_size=(3, 3), activation='relu', padding='same'))
+            conv2d_kwargs = {
+                'kernel_size': (3, 3),
+                'activation': 'relu',
+                'padding':'same'
+            }
+            model.add(Conv2D(filters=15, **conv2d_kwargs))
+            model.add(Conv2D(filters=30, **conv2d_kwargs))
+            model.add(Conv2D(filters=15, **conv2d_kwargs))
+            model.add(Conv2D(filters=1, **conv2d_kwargs))
             return model
+        
+        class PassthruLayer(keras.Layer):
+            def call(self, x):
+                return tf.concat(
+                    [tf.expand_dims(x[..., CHANNELS[c]], axis=-1) for c in passthru_channels],
+                    axis=-1
+                )
 
         input_layer = Input(shape=input_shape)
+        '''
         passthru = Lambda(
             function=lambda x: tf.concat([input_layer[..., CHANNELS[c]] for c in passthru_channels], axis=-1),
             output_shape=(input_shape[0], input_shape[1], len(passthru_channels)),
             name='passthru'
         )(input_layer)
+        '''
+        passthru = PassthruLayer()(input_layer)
         conv_layers = conv_block(name='conv_block')(input_layer)
         output = Concatenate(axis=-1, name='output_layer')([conv_layers, passthru])
-        #output = Reshape((input_shape[0], input_shape[1]))(x)
 
         model = Model(input_layer, output)
         '''
@@ -437,20 +464,19 @@ class TrainingPipeline():
             optimizer=Adam()
         )
         '''
+        model.compile(
+            loss=self.AuxLoss(),
+            optimizer=Adam()
+        )
         model.summary()
-        plot_model(
-            model=model,
-            to_file=os.path.join(RESULTS_PATH, 'model.png'),
-            show_shapes=True,
-            show_layer_names=True
-        )
-        plot_model(
-            model=model,
-            to_file=os.path.join(RESULTS_PATH, 'model_nested.png'),
-            show_shapes=True,
-            show_layer_names=True,
-            expand_nested=True
-        )
+
+        plot_model_kwargs = {
+            'model': model,
+            'show_shapes': True,
+            'show_layer_names': True
+        }
+        plot_model(**plot_model_kwargs, to_file=os.path.join(RESULTS_PATH, 'model.png'))
+        plot_model(**plot_model_kwargs, expand_nested=True, to_file=os.path.join(RESULTS_PATH, 'model_nested.png'))
         print()
 
         return model
@@ -564,6 +590,26 @@ class TrainingPipeline():
         def get_config(self):
             config = super().get_config()
             config.update({'sensors': self.sensors})
+            return config
+
+    # channel order is order of concatenation
+    class AuxLoss(tf.keras.losses.Loss):
+        def __init__(self):
+            super().__init__()
+
+        def call(self, y_true, y_pred):
+            airnow_true = y_true
+            airnow_pred = y_pred[..., 0]
+            # y_pred contains the passthru channels, so the pred actually contains some true channels
+            naqfc_true = y_pred[..., 1]
+            w = 0.3
+            return tf.reduce_mean(
+                tf.abs(airnow_true - airnow_pred) + 
+                w * tf.abs(naqfc_true - airnow_pred)
+            )
+
+        def get_config(self):
+            config = super().get_config()
             return config
 
 def main():
