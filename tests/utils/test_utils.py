@@ -109,8 +109,7 @@ class TestUtilsIDW(unittest.TestCase):
             x=x, y=y,
             sensor_coords=all_sensor_locs,
             elevation_grid=self.idw.elevation,
-            neighbors=4
-        ).keys())
+            ).keys())[:4]
         expected = [
             self.air_sens_loc['Los Angeles - N. Main Street'],
             self.air_sens_loc['North Holywood'],
@@ -128,8 +127,7 @@ class TestUtilsIDW(unittest.TestCase):
             x=x, y=y,
             sensor_coords=all_sensor_locs,
             elevation_grid=self.idw.elevation,
-            neighbors=4
-        ).keys())
+            ).keys())[:4]
 
         expected = [
             self.air_sens_loc['Glendora - Laurel'],
@@ -148,8 +146,7 @@ class TestUtilsIDW(unittest.TestCase):
             x=x, y=y,
             sensor_coords=all_sensor_locs,
             elevation_grid=self.idw.elevation,
-            neighbors=4
-        ).keys())
+            ).keys())[:4]
 
         expected = [
             self.air_sens_loc['Simi Valley - Cochran Street'],
@@ -159,6 +156,12 @@ class TestUtilsIDW(unittest.TestCase):
         ]
 
         self.assertEqual(actual, expected)
+
+    def test_no_neighbors_returns_nan(self):
+        actual = self.idw._idw_interpolate(
+            np.full((40, 40), np.nan), {(3, 4): 5}, 2.0, 5
+        )
+        self.assertTrue(np.isnan(actual))
 
 class TestPWWBPyDataset(unittest.TestCase):
     def test_sequence_length_matches_data_batches(self):

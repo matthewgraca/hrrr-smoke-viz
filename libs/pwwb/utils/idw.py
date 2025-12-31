@@ -276,6 +276,7 @@ class IDW:
             - Takes from nearest reporting neighbors; meaning even if your
                 closest 10 neighbors are nan, it'll pull from the next 10
                 reporting sensors thereafter.
+            - If every neighbor is nan, the result will be nan.
         """
         X, Y = zip(*closest_coords_and_dists.keys())
         raw_values = unInter[X, Y]
@@ -284,9 +285,10 @@ class IDW:
         values = raw_values[np.where(~np.isnan(raw_values))][:neighbors]
         distances = raw_dists[np.where(~np.isnan(raw_values))][:neighbors]
 
-        estimate = sum(values / distances**p) / sum(1 / distances**p)
-
-        return estimate
+        return (
+            np.nan if len(distances) == 0
+            else sum(values / distances**p) / sum(1 / distances**p)
+        )
 
     def _interpolate_frame(
         self,
