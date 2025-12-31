@@ -50,16 +50,16 @@ class TestOpenAQData(unittest.TestCase):
 
     def test_sensor_locations_are_pulled(self):
         expected = {
-            'Rowan ES (6425)': (32, 3),
-            'Garfield HS/Monterey CHS (8677)': (32, 9),
-            'Harrison ES (4438)': (25, 3),
-            'Sierra Park ES (6753)': (18, 7),
-            'Annandale ES (2151)': (5, 3),
-            'Multnomah St ES (5425)': (21, 2),
-            'Sierra Vista ES (6767)': (14, 9),
-            'El Sereno ES (3562)': (15, 5),
-            'San Pascual ES (6493)': (8, 6),
-            'UltimateReality': (3, 20)
+            'Rowan ES (6425)': (32, 2),
+            'Garfield HS/Monterey CHS (8677)': (32, 8),
+            'Harrison ES (4438)': (25, 2),
+            'Sierra Park ES (6753)': (18, 6),
+            'Annandale ES (2151)': (5, 2),
+            'Multnomah St ES (5425)': (21, 1),
+            'Sierra Vista ES (6767)': (14, 8),
+            'El Sereno ES (3562)': (15, 4),
+            'San Pascual ES (6493)': (8, 5),
+            'UltimateReality': (3, 19)
         }
 
         df_locations = pd.read_csv(
@@ -71,7 +71,7 @@ class TestOpenAQData(unittest.TestCase):
                 df_locations=df_locations,
                 dim=self.dim,
                 extent=self.aq.extent
-        )
+        ).set_index('locations')['x, y'].to_dict()
 
         self.assertEqual(expected, actual)
 
@@ -88,11 +88,11 @@ class TestOpenAQData(unittest.TestCase):
         grid = self.aq._preprocess_ground_sites(
             data=values,
             dim=self.dim,
-            locations_on_grid=self.aq._get_sensor_locations_on_grid(
+            locations_on_grid=list(self.aq._get_sensor_locations_on_grid(
                 df_locations=df_locations,
                 dim=self.dim,
                 extent=self.aq.extent
-            ).values()
+            )['x, y'])
         )
         actual = len(np.where(~np.isnan(grid))[0])
 
@@ -132,10 +132,12 @@ class TestOpenAQData(unittest.TestCase):
         np.testing.assert_allclose(np.array(actual_1), np.array(actual_2))
 
     def test_sensor_values_get_merged_on_the_same_location(self):
-        actual_locs, actual_vals = self.aq._merge_values_in_the_same_location(
+        actual_loc_to_vals = self.aq._merge_values_in_the_same_location(
             data=[1, 3, 4, 5, 6, 7, 8],
             locations_on_grid=[(0, 0), (1, 0), (3, 5), (4, 5), (0, 8), (0, 1), (0, 0)],
         )
+        actual_vals = list(actual_loc_to_vals.values())
+        actual_locs = list(actual_loc_to_vals.keys())
         expected_vals = np.array([4.5, 3, 4, 5, 6, 7])
         expected_locs = [(0, 0), (1, 0), (3, 5), (4, 5), (0, 8), (0, 1)]
 
@@ -143,10 +145,12 @@ class TestOpenAQData(unittest.TestCase):
         np.testing.assert_allclose(actual_locs, expected_locs)
 
     def test_sensor_values_merged_on_the_same_location_ignores_nan(self):
-        actual_locs, actual_vals = self.aq._merge_values_in_the_same_location(
+        actual_loc_to_vals = self.aq._merge_values_in_the_same_location(
             data=[1, 3, 4, 5, 6, 7, np.nan],
             locations_on_grid=[(0, 0), (1, 0), (3, 5), (4, 5), (0, 8), (0, 1), (0, 0)],
         )
+        actual_vals = list(actual_loc_to_vals.values())
+        actual_locs = list(actual_loc_to_vals.keys())
         expected_vals = np.array([1, 3, 4, 5, 6, 7])
         expected_locs = [(0, 0), (1, 0), (3, 5), (4, 5), (0, 8), (0, 1)]
 
