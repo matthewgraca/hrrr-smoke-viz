@@ -1089,6 +1089,7 @@ class OpenAQData:
         extent,
         min_uptime=0.75,
         max_zscore=3,
+        max_pm25=300,
         whitelist=set(['AirNow', 'Clarity'])
     ):
         #### start helpers
@@ -1137,11 +1138,14 @@ class OpenAQData:
             return filtered_df, filtered_loc 
 
         # replace outliers (zscore > 3) with nan
-        def impute_outliers_with_nan(df, max_zscore):
+        # if values > max_pm25 survive, cut those out too
+        def impute_outliers_with_nan(df, max_zscore, max_pm25):
             temp_df = df.copy()
             for col in temp_df.columns:
                 zscore = (temp_df[col] - temp_df[col].mean()) / temp_df[col].std()
                 temp_df[col] = temp_df[col].mask(np.abs(zscore) > max_zscore)
+
+            temp_df = temp_df.mask(temp_df >= max_pm25)
             return temp_df
 
         # replace all nans with a forward and back fill
@@ -1269,7 +1273,7 @@ class OpenAQData:
             if self.is_nowcast
             else filtered_df.iloc[12:].reset_index(drop=True)
         '''
-        filtered_df = impute_outliers_with_nan(filtered_df, max_zscore)
+        filtered_df = impute_outliers_with_nan(filtered_df, max_zscore, max_pm25)
         #filtered_df = impute_nans_with_fbfill(filtered_df)
         filtered_df, filtered_loc = drop_sensors_colliding_with_reference_monitors(
             filtered_df, filtered_loc

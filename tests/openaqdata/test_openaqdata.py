@@ -28,6 +28,7 @@ class TestOpenAQData(unittest.TestCase):
             verbose=2,          
         )
         cls.dim = dim
+        cls.extent = extent
         cls.save_dir = save_dir
     
     @classmethod
@@ -176,3 +177,25 @@ class TestOpenAQData(unittest.TestCase):
         expected = np.squeeze(nowcast_df.values[12:])
 
         np.testing.assert_allclose(actual, expected, atol=0.1)
+
+    def test_outlier_removal_scheme(self):
+        df_locations = pd.read_csv(
+            f'{self.save_dir}/locations_summary.csv',
+            index_col='Unnamed: 0'
+        )
+        df_measurements = pd.read_csv(
+            f'{self.save_dir}/measurements_summary.csv',
+            index_col='Unnamed: 0'
+        )
+        max_test_value = 10 
+        actual_measurements, actual_loc = self.aq._preprocess_dataframes(
+            df_measurements,
+            df_locations,
+            self.dim,
+            self.extent,
+            max_pm25=max_test_value
+        )
+        vals = actual_measurements.to_numpy()
+        nonnan_vals = vals[~np.isnan(vals)]
+
+        self.assertTrue((nonnan_vals <= max_test_value).all())
