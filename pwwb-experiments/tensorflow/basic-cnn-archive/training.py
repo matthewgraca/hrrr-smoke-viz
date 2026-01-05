@@ -68,17 +68,15 @@ class TrainingPipeline():
 
         X_train, X_valid, X_test, Y_train, Y_valid, Y_test = self._load_data(DATA_PATH)
 
-        # toggle for quick test
-        '''
+        # NOTE toggle for quick test
         X_test = X_test[0:25]
         Y_test = Y_test[0:25]
-        '''
 
         dim = X_train.shape[1]
         input_shape = X_train.shape[1:]
 
         #model = self._base_model(input_shape)
-        model = self._aux_loss_model(input_shape, passthru_channels=['naqfc_pm25'])
+        model = self._aux_loss_model(input_shape, passthru_channels=['naqfc_pm25', '30_day_lookback'])
         # TODO use raw instead of nowcast
         # TODO use forecast instead of current for naqfc
         #sys.exit(0)
@@ -142,10 +140,11 @@ class TrainingPipeline():
     def _evaluate(self, sensors, dim, Y_test, y_pred):
         # note that this is the same nhood loss as the training. so sensor location + nhood + background 
         # are accounted for; this is not just a raw nhood loss only.
-        y_pred = y_pred if len(np.squeeze(y_pred).shape) == 2 else y_pred[..., 0]
+        y_pred = np.squeeze(y_pred) if len(np.squeeze(y_pred).shape) == 2 else y_pred[..., 0]
         nhood_loss = self.NHoodLoss(sensors, dim)(Y_test, y_pred).numpy()
         sensor_loss = self.SensorLoss(sensors)(Y_test, y_pred).numpy()
-        return {'nhood_loss' : nhood_loss, 'sensor_loss' : sensor_loss}
+        grid_loss = np.mean(np.abs(Y_test - y_pred))
+        return {'nhood_loss' : nhood_loss, 'sensor_loss' : sensor_loss, 'frame_loss' : grid_loss}
         
         '''
         frame_metrics = {}
@@ -225,10 +224,12 @@ class TrainingPipeline():
 
         sample_nhood_loss = []
         sample_sensor_loss = []
+        sample_grid_loss = []
         for i in tqdm(range(X_test.shape[0] - horizon)):
             X = X_test[i]
             nhood_loss = []
             sensor_loss = []
+            grid_loss = []
             sample_y = []
             sample_x = []
             sample_actual = []
@@ -244,13 +245,16 @@ class TrainingPipeline():
 
                 nhood_loss.append(res['nhood_loss'])
                 sensor_loss.append(res['sensor_loss'])
+                grid_loss.append(res['frame_loss'])
 
             sample_nhood_loss.append(nhood_loss)
             sample_sensor_loss.append(sensor_loss)
+            sample_grid_loss.append(grid_loss)
 
         # plot losses over frames
         sensor_loss_by_frame = np.mean(np.array(sample_sensor_loss), axis=0)
         nhood_loss_by_frame = np.mean(np.array(sample_nhood_loss), axis=0)
+        grid_loss_by_frame = np.mean(np.array(sample_grid_loss), axis=0)
 
         plt.bar(np.arange(0, len(sensor_loss_by_frame)), sensor_loss_by_frame)
         plt.title('Sensor loss by frame')
@@ -266,43 +270,76 @@ class TrainingPipeline():
         plt.savefig(os.path.join(RESULTS_PATH, 'nhood_loss_bar.png'))
         plt.close()
 
-        # sample plotting
+        plt.bar(np.arange(0, len(grid_loss_by_frame)), grid_loss_by_frame)
+        plt.title('Grid loss by frame')
+        plt.xlabel('Frame')
+        plt.ylabel('MAE')
+        plt.savefig(os.path.join(RESULTS_PATH, 'grid_loss_bar.png'))
+        plt.close()
+
+        # sample plotting (plots the last sample)
         sample_y = np.array(sample_y)
         sample_x = np.array(sample_x)
         sample_actual = np.array(sample_actual)
 
-        # horizontal plot
-        ncols = 24
-        fig, axes = plt.subplots(nrows=3, ncols=ncols, figsize=(56, 8))
-        for c in range(ncols):
-            vmax = np.nanmax([sample_x, sample_y, sample_actual])
-            vmin = np.nanmin([sample_x, sample_y, sample_actual])
+        # need to load unscaled data
+        naqfc = np.load(os.path.join(EXPERIMENT_PATH, 'processing-scripts/l2/naqfc_pm25.npy'))
+        lookback = np.load(os.path.join(EXPERIMENT_PATH, 'processing-scripts/l2/30_day_lookback.npy'))
+        # mystical indexing allowed since X_test makes up the last porition of all the data
+        naqfc_sample = naqfc[-len(X_test) + i - horizon : -len(X_test) + i]
+        lookback_sample = lookback[-len(X_test) + i - horizon : -len(X_test) + i]
 
-            axes[0, c].imshow(sample_x[c], vmin=vmin, vmax=vmax)
+        # horizontal plot
+        ncols = horizon 
+        all_samples = [sample_x, sample_y, sample_actual, naqfc_sample, lookback_sample] 
+        vmax = np.nanmax(all_samples)
+        vmin = np.nanmin(all_samples)
+        fig, axes = plt.subplots(nrows=len(all_samples), ncols=ncols, figsize=(56, 14))
+        for c in range(ncols):
+            # autoregression only has one real frame: the first one. the other inputs are last frame's output
+            # input
+            axes[0, c].imshow(sample_x[c] if c == 0 else sample_y[c-1], vmin=vmin, vmax=vmax)
             axes[0, c].set_xticks([])
             axes[0, c].set_yticks([])
 
+            # target
             axes[1, c].imshow(sample_actual[c], vmin=vmin, vmax=vmax)
             axes[1, c].set_xticks([])
             axes[1, c].set_yticks([])
 
+            # prediction
             im = axes[2, c].imshow(sample_y[c], vmin=vmin, vmax=vmax)
             axes[2, c].set_xticks([])
             axes[2, c].set_yticks([])
 
+            # naqfc
+            im = axes[3, c].imshow(naqfc_sample[c], vmin=vmin, vmax=vmax)
+            axes[3, c].set_xticks([])
+            axes[3, c].set_yticks([])
+
+            # 30-day average
+            im = axes[4, c].imshow(lookback_sample[c], vmin=vmin, vmax=vmax)
+            axes[4, c].set_xticks([])
+            axes[4, c].set_yticks([])
+
             fig.colorbar(im, ax=axes[:, c], orientation='horizontal', fraction=0.046, pad=0.04)
 
+        '''
         axes[0, 0].set_title(f'frame {0}')
         axes[1, 0].set_title(f'frame {0}')
         axes[2, 0].set_title(f'frame {0}')
+        '''
 
-        fig.text(0.11, 0.775, 'Test Input', rotation=90, va='center', ha='center', fontsize=14)
-        fig.text(0.11, 0.525, 'Test Target', rotation=90, va='center', ha='center', fontsize=14)
-        fig.text(0.11, 0.275, 'Prediction', rotation=90, va='center', ha='center', fontsize=14)
+        fig.text(0.12, 0.8125, 'Test Input', rotation=90, va='center', ha='center', fontsize=14)
+        fig.text(0.12, 0.6625, 'Test Target', rotation=90, va='center', ha='center', fontsize=14)
+        fig.text(0.12, 0.525, 'Prediction', rotation=90, va='center', ha='center', fontsize=14)
+        fig.text(0.12, 0.375, 'NAQFC \n(pred-aligned)', rotation=90, va='center', ha='center', fontsize=14)
+        fig.text(0.12, 0.225, '30-day Lookback \n(pred-aligned)', rotation=90, va='center', ha='center', fontsize=14)
 
         plt.savefig(os.path.join(RESULTS_PATH, 'horizontal_sample.png'))
 
         # vertical plot
+        '''
         nrows = 24
         fig, axes = plt.subplots(nrows=nrows, ncols=3, figsize=(8, 50))
         for r in range(nrows):
@@ -330,6 +367,7 @@ class TrainingPipeline():
         axes[0, 1].set_title(f'Test Target \nframe {0}')
         axes[0, 2].set_title(f'Prediction \nframe {0}')
         plt.savefig(os.path.join(RESULTS_PATH, 'vertical_sample.png'))
+        '''
 
         return
 
@@ -412,7 +450,7 @@ class TrainingPipeline():
 
         return model
 
-    def _aux_loss_model(self, input_shape, passthru_channels=['naqfc_pm25']):
+    def _aux_loss_model(self, input_shape, passthru_channels=['naqfc_pm25', '30_day_lookback']):
         from keras.models import Model
         from keras import Sequential
         from keras.layers import Conv2D, Input, Reshape, Concatenate, Lambda
@@ -440,30 +478,11 @@ class TrainingPipeline():
                 )
 
         input_layer = Input(shape=input_shape)
-        '''
-        passthru = Lambda(
-            function=lambda x: tf.concat([input_layer[..., CHANNELS[c]] for c in passthru_channels], axis=-1),
-            output_shape=(input_shape[0], input_shape[1], len(passthru_channels)),
-            name='passthru'
-        )(input_layer)
-        '''
         passthru = PassthruLayer()(input_layer)
         conv_layers = conv_block(name='conv_block')(input_layer)
         output = Concatenate(axis=-1, name='output_layer')([conv_layers, passthru])
 
         model = Model(input_layer, output)
-        '''
-        model.compile(
-            loss=self.NHoodLoss(
-                sensors=SENSORS,
-                dim=input_shape[1],
-                #source_weight,
-                #nhood_weight,
-                #r
-            ),
-            optimizer=Adam()
-        )
-        '''
         model.compile(
             loss=self.AuxLoss(),
             optimizer=Adam()
@@ -602,10 +621,12 @@ class TrainingPipeline():
             airnow_pred = y_pred[..., 0]
             # y_pred contains the passthru channels, so the pred actually contains some true channels
             naqfc_true = y_pred[..., 1]
+            lookback_true = y_pred[..., 2]
             w = 0.3
             return tf.reduce_mean(
                 tf.abs(airnow_true - airnow_pred) + 
-                w * tf.abs(naqfc_true - airnow_pred)
+                w * tf.abs(naqfc_true - airnow_pred) +
+                w * tf.abs(lookback_true - airnow_pred)
             )
 
         def get_config(self):
@@ -614,7 +635,7 @@ class TrainingPipeline():
 
 def main():
     TrainingPipeline(
-        epochs=100,
+        epochs=5,
         batch_size=64,
     )
 
