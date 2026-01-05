@@ -145,7 +145,7 @@ def sliding_window_forecast(data, frames, forecast_horizon, sequence_stride=1):
 
 def load_airnow_data(cache_dir):
     """Load AirNow PM2.5 data."""
-    airnow_path = "../../../../clean/hrrr-smoke-viz/data/airnow_processed-verify.npz"
+    airnow_path = f"{cache_dir}/airnow_processed.npz"
     if os.path.exists(airnow_path):
         print(f"    Loading AirNow PM2.5 data from {airnow_path}...")
         loaded = np.load(airnow_path, allow_pickle=True)
@@ -393,7 +393,7 @@ def preprocess_70_15_15_split(frames_per_sample=24,
     print("       + Hourly Climatology (30-day rolling average by hour)")
     print("="*80)
 
-    cache_dir = "data/shared/new_extent_cache"
+    cache_dir = "/home/mgraca/Workspace/hrrr-smoke-viz/pwwb-experiments/tensorflow/runback/data"
     channels = [
         ('airnow_pm25', 'AirNow_PM25', True, False, False),
         ('airnow_hourly_clim', 'AirNow_Hourly_Clim', True, False, False),
@@ -413,26 +413,26 @@ def preprocess_70_15_15_split(frames_per_sample=24,
         ('temporal_5', 'Temporal_Hour_Cos', False, True, False),
         ('goes', 'GOES', True, False, False),
         ('tempo', 'TEMPO', True, False, False),
-
-        ('naqfc_pm25', 'NAQFC_PM25_Forecast', True, False, True),
-        ('hrrr_wind_u', 'HRRR_Wind_U_Forecast', True, False, True),
-        ('hrrr_wind_v', 'HRRR_Wind_V_Forecast', True, False, True),
-        ('hrrr_wind_speed', 'HRRR_Wind_Speed_Forecast', True, False, True),
-        ('hrrr_temp_2m', 'HRRR_Temp_2m_Forecast', True, False, True),
-        ('hrrr_pbl_height', 'HRRR_PBL_Height_Forecast', True, False, True),
-        ('hrrr_precip_rate', 'HRRR_Precip_Rate_Forecast', True, False, True),
-        ('airnow_hourly_clim', 'AirNow_Hourly_Clim_Forecast', True, False, True),
-        ('temporal_0', 'Temporal_Month_Sin_Forecast', False, True, True),
-        ('temporal_1', 'Temporal_Month_Cos_Forecast', False, True, True),
-        ('temporal_4', 'Temporal_Hour_Sin_Forecast', False, True, True),
-        ('temporal_5', 'Temporal_Hour_Cos_Forecast', False, True, True),
     ]
-    
+    '''
+    ('naqfc_pm25', 'NAQFC_PM25_Forecast', True, False, True),
+    ('hrrr_wind_u', 'HRRR_Wind_U_Forecast', True, False, True),
+    ('hrrr_wind_v', 'HRRR_Wind_V_Forecast', True, False, True),
+    ('hrrr_wind_speed', 'HRRR_Wind_Speed_Forecast', True, False, True),
+    ('hrrr_temp_2m', 'HRRR_Temp_2m_Forecast', True, False, True),
+    ('hrrr_pbl_height', 'HRRR_PBL_Height_Forecast', True, False, True),
+    ('hrrr_precip_rate', 'HRRR_Precip_Rate_Forecast', True, False, True),
+    ('airnow_hourly_clim', 'AirNow_Hourly_Clim_Forecast', True, False, True),
+    ('temporal_0', 'Temporal_Month_Sin_Forecast', False, True, True),
+    ('temporal_1', 'Temporal_Month_Cos_Forecast', False, True, True),
+    ('temporal_4', 'Temporal_Hour_Sin_Forecast', False, True, True),
+    ('temporal_5', 'Temporal_Hour_Cos_Forecast', False, True, True),
+    '''
+
     n_channels = len(channels)
     channel_names_list = [ch[1] for ch in channels]
     
-    cache_id = f"{frames_per_sample}in_{forecast_horizon}out_70_15_15_split_forecast_{target_source}_new_extent_fixed_nan"
-    output_cache_dir = f"{cache_dir}/preprocessed_cache/{cache_id}"
+    output_cache_dir = f"{cache_dir}/preprocessed_cache"
     os.makedirs(output_cache_dir, exist_ok=True)
 
     npy_dir = f"{output_cache_dir}/npy_files"
@@ -829,10 +829,6 @@ def main():
   
     print("\n" + "="*80)
     print("✓ ALL PREPROCESSING COMPLETE!")
-    print("="*80)
-    print("\nGenerated caches:")
-    print("  1. AirNow target:  24in_24out_70_15_15_split_forecast_airnow_new_extent_fixed_nan_fixed_openAQ")
-
 
 if __name__ == "__main__":
     main()
