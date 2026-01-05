@@ -69,8 +69,10 @@ class TrainingPipeline():
         X_train, X_valid, X_test, Y_train, Y_valid, Y_test = self._load_data(DATA_PATH)
 
         # NOTE toggle for quick test
+        '''
         X_test = X_test[0:25]
         Y_test = Y_test[0:25]
+        '''
 
         dim = X_train.shape[1]
         input_shape = X_train.shape[1:]
@@ -635,7 +637,7 @@ class TrainingPipeline():
 
 def main():
     TrainingPipeline(
-        epochs=5,
+        epochs=100,
         batch_size=64,
     )
 
