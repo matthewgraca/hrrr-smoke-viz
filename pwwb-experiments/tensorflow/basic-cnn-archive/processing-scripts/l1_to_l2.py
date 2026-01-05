@@ -70,6 +70,9 @@ print()
 # naqfc pull out data from npz
 print('Extracting data from naqfc')
 data = np.load(os.path.join(L1_SAVE_PATH, 'naqfc_pm25_processed.npz'))['data']
+# NOTE shift by one hour
+print('Warning: shifting by 1...')
+data = np.concatenate([np.expand_dims(data[0], axis=0), data[:-1]], axis=0)
 print(data.shape)
 np.save(os.path.join(L2_SAVE_PATH, 'naqfc_pm25.npy'), data)
 print()
@@ -91,9 +94,45 @@ for k in ['u_wind', 'v_wind', 'wind_speed', 'temp_2m', 'pbl_height', 'precip_rat
     np.save(os.path.join(L2_SAVE_PATH, f'hrrr_{k}.npy'), data)
 print()
 
-# extracting airnow
+# extracting airnow and 30 day average
 print('Extracting data from airnow')
 data = np.load(os.path.join(L1_SAVE_PATH, 'airnow_processed.npz'))['data']
 print(data.shape)
 np.save(os.path.join(L2_SAVE_PATH, 'airnow_pm25.npy'), data)
+print()
+
+print('Generating 30-day lookback data')
+def n_day_lookback_avg_of(n, idx, frames):
+    '''
+    Caveat: produces empty list if there is no previous frame to lookback
+
+    Results in the first 24 frames being truncated.
+    '''
+    i = 0
+    prev_day_idx = idx - 24
+    n_days_frames = []
+    while i < n and prev_day_idx >= 0:
+        n_days_frames.append(frames[prev_day_idx])
+        prev_day_idx -= 24
+        i += 1
+
+    return (
+        np.mean(np.array(n_days_frames), axis=0)
+        if len(n_days_frames) != 0
+        else np.array([])
+    )
+res = []
+for i in range(data.shape[0]):
+    arr = n_day_lookback_avg_of(30, i, data)
+    if len(arr != 0):
+        res.append(arr)
+res = np.array(res)
+# backfill missing first 24 frames 
+bfill = np.tile(res[0][np.newaxis, :, :], (24, 1, 1))
+res = np.concatenate([bfill, res], axis=0)
+# NOTE shift forward by 1 hour
+print('Warning: shifting by 1...')
+res = np.concatenate([np.expand_dims(res[0], axis=0), res[:-1]], axis=0)
+print(res.shape)
+np.save(os.path.join(L2_SAVE_PATH, '30_day_lookback.npy'), res)
 print()
