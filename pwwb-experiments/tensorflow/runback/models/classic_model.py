@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # training parameters
-EPOCHS = 100 
+EPOCHS = 100
 BATCH_SIZE = 64
 
 # dataset parameters
@@ -94,6 +94,8 @@ history = model.fit(
     validation_data=valid_ds,
     epochs=EPOCHS
 )
+
+model.save(os.path.join(RESULTS_PATH, 'classic_model.keras'))
 
 def plot_loss(history, save_dir):
     plt.figure(figsize=(10, 6))
