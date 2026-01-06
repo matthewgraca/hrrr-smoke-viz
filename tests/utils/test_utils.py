@@ -165,10 +165,7 @@ class TestUtilsIDW(unittest.TestCase):
 
 class TestPWWBPyDataset(unittest.TestCase):
     def test_sequence_length_matches_data_batches(self):
-        X_paths = [
-            "tests/utils/data/dummy_channel_1.npy",
-            "tests/utils/data/dummy_channel_2.npy"
-        ]
+        X_paths = "tests/utils/data/dummy_channel_1.npy"
         y_path = "tests/utils/data/dummy_label.npy"
         batch_size = 4
         generator = PWWBPyDataset(X_paths, y_path, batch_size)
@@ -179,18 +176,6 @@ class TestPWWBPyDataset(unittest.TestCase):
 
         msg = f"Sequence length doesn't match batched data size."
         self.assertEqual(expected, actual, msg)
-
-    def test_assert_raised_when_channels_dont_match(self):
-        X_paths = [
-            "tests/utils/data/dummy_channel_1.npy",
-            "tests/utils/data/dummy_channel_2.npy",
-            "tests/utils/data/dummy_channel_3.npy"
-        ]
-        y_path = "tests/utils/data/dummy_label.npy"
-        batch_size = 4
-
-        with self.assertRaises(AssertionError):
-            PWWBPyDataset(X_paths, y_path, batch_size)
 
 class TestResidualKriging(unittest.TestCase):
     ''' Unfortunately you just have to vibe check by looking at the frames '''

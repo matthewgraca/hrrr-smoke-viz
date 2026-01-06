@@ -8,6 +8,7 @@ File contents:
 '''
 
 from keras.utils import PyDataset
+import math
 from keras.utils import timeseries_dataset_from_array
 import numpy as np
 import pandas as pd
@@ -17,61 +18,52 @@ import os
 from sklearn.preprocessing import StandardScaler
 
 class PWWBPyDataset(PyDataset):
-    def __init__(self, X_paths, y_path, batch_size, **kwargs):
-        '''
-        The sequence reads the numpy files (each file is a channel) 
-        lazily; when it comes time to train using the batch, it is then
-        evaluated.
-
-        The data flows from disk to RAM to GPU VRAM in batches.
-
-        Usage:
-        # preprocess and save np files...
-
-        # initialize generator
-        channel_paths = ['c1.npy', 'c2.npy', ... ] 
-        label_path = ['label.npy']
-        batch_size = 4
-        generator = PWWBPyDataset(
-            channel_paths, label_path, batch_size,  
-            workers=8, use_multiprocessing=True
-        )
-        model.fit(generator, ...) 
-        '''
-        super().__init__(**kwargs)
-        # lazy load the np arrays
-        self.channels = [np.load(path, mmap_mode='r') for path in X_paths]
-        self.labels = np.load(y_path, mmap_mode='r')
-        self.batch_size = batch_size
-
-        for channel in self.channels:
-            assert len(channel) == len(self.labels), \
-                "All channels and labels need the same number of samples."
+    def __init__(
+        self, x_path: str, y_path: str, batch_size: int, shuffle: bool = False
+    ):
+        self.X, self.Y = self._validate_datasets(x_path, y_path)
+        self.batch_size = self._validate_batch_size(batch_size)
+        self.shuffle = shuffle
+        self.indices = np.arange(len(self.X))
+        self.on_epoch_end()
 
     def __len__(self):
-        '''
-        Number of batches
-        '''
-        return math.ceil(len(self.labels) / self.batch_size)
+        # gets number of batches in the dataset
+        return math.ceil(len(self.X) / self.batch_size)
 
-    def __getitem__(self, index):
-        '''
-        Each item is a completely loaded batch.
+    def __getitem__(self, idx):
+        # python silently clamps if stop_idx overflows; no need for bounds checking
+        start_idx = idx * self.batch_size
+        stop_idx = (idx + 1) * self.batch_size
+        batch_idxs = self.indices[start_idx : stop_idx]
+        
+        X_batch = self.X[batch_idxs]
+        Y_batch = self.Y[batch_idxs]
 
-        e.g. 
-        - channel 1 and channel 2, from indices 1:32, are loaded and stacked
-        - the label for this batch is also returned
-        '''
-        # last batch may be smaller if total items aren't cleanly divisible by batch size
-        start = index * self.batch_size
-        end = min(start + self.batch_size, len(self.labels))
+        return X_batch, Y_batch
 
-        # load each channel
-        channel_batch = [channel[start:end] for channel in self.channels]
-        x = np.stack(channel_batch, axis=-1)
-        y = self.labels[start:end]
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.indices)
 
-        return x, y
+    # NOTE: validation methods
+    def _validate_batch_size(self, batch_size):
+        if batch_size <= 0:
+            raise ValueError('batch_size must be > 0')
+        return batch_size
+    
+    def _validate_datasets(self, x_path, y_path):
+        X = np.load(x_path, mmap_mode='r')
+        Y = np.load(y_path, mmap_mode='r')
+
+        if len(X) != len(Y):
+            raise ValueError(
+                f'X and Y must share the same number of samples '
+                f'({len(X)} != {len(Y)}'
+            )
+
+        return X, Y
+        
 
 # NOTE Utility functions for messing with datasets
 
