@@ -1,8 +1,0 @@
-# data subject to preprocessing script
-preprocessed_cache/
-
-# raw data that has not passed through the preprocessing script yet
-raw_data/
-
-# results
-results/
