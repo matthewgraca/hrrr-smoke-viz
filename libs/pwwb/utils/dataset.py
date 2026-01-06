@@ -19,9 +19,16 @@ from sklearn.preprocessing import StandardScaler
 
 class PWWBPyDataset(PyDataset):
     def __init__(
-        self, x_path: str, y_path: str, batch_size: int, shuffle: bool = False
+        self,
+        x_path: str,
+        y_path: str,
+        batch_size: int,
+        shuffle: bool = False,
+        **kwargs
     ):
+        super().__init__(**kwargs)
         self.X, self.Y = self._validate_datasets(x_path, y_path)
+        self.input_shape = self.X.shape[1:]
         self.batch_size = self._validate_batch_size(batch_size)
         self.shuffle = shuffle
         self.indices = np.arange(len(self.X))
