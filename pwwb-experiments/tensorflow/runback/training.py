@@ -30,7 +30,7 @@ tf.keras.backend.set_image_data_format('channels_last')
 
 import sys
 
-EXPERIMENT_NAME = 'test_experiment' if args.test else MODEL_NAME + '_model' + LOSS_NAME + '_loss'
+EXPERIMENT_NAME = 'test_experiment' if args.test else MODEL_NAME + '_model_' + LOSS_NAME + '_loss'
 
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
 EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/runback')
