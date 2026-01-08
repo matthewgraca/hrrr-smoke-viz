@@ -20,11 +20,11 @@ if not os.path.exists(RESULTS_PATH):
 from libs.results_visualizer import *
 
 # things you need to use plot_training_history
-if os.path.exists(os.path.join(RESULTS_PATH, 'history.pkl')):
-    with open(os.path.join(RESULTS_PATH, 'history.pkl'), 'rb') as f:
-        history = pickle.load(f)
+#if os.path.exists(os.path.join(RESULTS_PATH, 'history.pkl')):
+with open(os.path.join(RESULTS_PATH, 'history.pkl'), 'rb') as f:
+    history = pickle.load(f)
 
-    plot_training_history(history, os.path.join(RESULTS_PATH, 'loss_curves.png'), CONFIG_NAME)
+plot_training_history(history, os.path.join(RESULTS_PATH, 'loss_curves.png'), args.config_name)
 
 # things you need to use plot_sample
 with open(os.path.join(DATA_PATH, 'metadata.pkl'), 'rb') as f:
