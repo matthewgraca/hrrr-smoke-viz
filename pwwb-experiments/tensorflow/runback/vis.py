@@ -2,24 +2,22 @@ import os
 import sys
 import pickle
 import numpy as np
+import argparse
 
-# config name should be the folder (just the folder, not entire path!) that contains the results of your experiment
-# in turn, it should contain metadata.pkl, scalers.pkl, y_pred.npy
-# this is where we save the viz to, as well.
-CONFIG_NAME = sys.argv[1] if len(sys.argv) == 2 else None
-if CONFIG_NAME == None:
-    raise ValueError('Pass in a config name')
-valid_configs = set(['classic_model', 'two_path_model'])
-if CONFIG_NAME not in valid_configs:
-    raise ValueError(f'Pass in a valid config name, or add it to the set: {valid_configs}')
+parser = argparse.ArgumentParser(description='Driver code for the results visualizer')
+parser.add_argument('config_name', help='the folder containing the results of the experiment, with metadata.pkl, scalers.pkl, and y_pred.npy')
+args = parser.parse_args()
 
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
 EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/runback')
-RESULTS_PATH = os.path.join(EXPERIMENT_PATH, f'results/{CONFIG_NAME}') 
+RESULTS_PATH = os.path.join(EXPERIMENT_PATH, f'results/{args.config_name}') 
 DATA_PATH = os.path.join(EXPERIMENT_PATH, 'preprocessed_cache')
 sys.path.append(BASE_PATH)
 
-from scripts.vizfunctions import *
+if not os.path.exists(RESULTS_PATH):
+    raise ValueError(f"results path on {RESULTS_PATH} not found")
+
+from libs.results_visualizer import *
 
 # things you need to use plot_training_history
 if os.path.exists(os.path.join(RESULTS_PATH, 'history.pkl')):
