@@ -6,17 +6,15 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from numpy.lib.format import open_memmap
 
-
-SENSOR_LOCATIONS = [
-    (8, 3),
-    (8, 11),
-    (15, 16),
-    (23, 17),
-    (29, 19),
-    (27, 29),
-    (10, 33),
-]
-
+SENSORS = {
+    'Reseda': (8, 3),
+    'North Holywood': (8, 11),
+    'LA - N. Main Street': (15, 16),
+    'Compton': (23, 17),
+    'Long Beach Signal Hill': (29, 19),
+    'Anaheim': (27, 29),
+    'Glendora - Laurel': (10, 33),
+}
 
 # def sliding_window(data, frames, sequence_stride=1, compute_targets=False,
 #                    forecast_horizon=24):
@@ -393,7 +391,6 @@ def preprocess_70_15_15_split(frames_per_sample=24,
     print("       + Hourly Climatology (30-day rolling average by hour)")
     print("="*80)
 
-    cache_dir = "/home/mgraca/Workspace/hrrr-smoke-viz/pwwb-experiments/tensorflow/runback/data"
     channels = [
         ('airnow_pm25', 'AirNow_PM25', True, False, False),
         ('airnow_hourly_clim', 'AirNow_Hourly_Clim', True, False, False),
@@ -432,7 +429,8 @@ def preprocess_70_15_15_split(frames_per_sample=24,
     n_channels = len(channels)
     channel_names_list = [ch[1] for ch in channels]
     
-    output_cache_dir = f"{cache_dir}/preprocessed_cache"
+    cache_dir = "/home/mgraca/Workspace/hrrr-smoke-viz/pwwb-experiments/tensorflow/runback/raw_data"
+    output_cache_dir = f"/home/mgraca/Workspace/hrrr-smoke-viz/pwwb-experiments/tensorflow/runback/preprocessed_cache"
     os.makedirs(output_cache_dir, exist_ok=True)
 
     npy_dir = f"{output_cache_dir}/npy_files"
@@ -739,7 +737,7 @@ def preprocess_70_15_15_split(frames_per_sample=24,
     gc.collect()
 
     print("\nUsing verified sensor locations...")
-    print(f"  Total sensors: {len(SENSOR_LOCATIONS)}")
+    print(f"  Total sensors: {len(SENSORS)}")
 
     print("\nSaving to NPY cache...")
 
@@ -757,8 +755,7 @@ def preprocess_70_15_15_split(frames_per_sample=24,
         pickle.dump(scalers, f)
 
     metadata_to_save = {
-        'n_sensors': len(SENSOR_LOCATIONS),
-        'sensor_locations': SENSOR_LOCATIONS,
+        'sensors': SENSORS,
         'channel_names': channel_names_list,
         'n_channels': n_channels,
         'observed_channels': [ch[1] for ch in channels if not ch[4]],
@@ -798,7 +795,7 @@ def preprocess_70_15_15_split(frames_per_sample=24,
     print(f"  Target source: {target_name}")
     print(f"  Observed channels ({len(observed_channels)}): {', '.join(observed_channels)}")
     print(f"  Forecast channels ({len(forecast_channels)}):  {', '.join(forecast_channels)}")
-    print(f"  Sensor locations: {len(SENSOR_LOCATIONS)}")
+    print(f"  Sensor locations: {len(SENSORS)}")
     print(f"\nCache saved to: {output_cache_dir}")
 
     return npy_dir, scalers_file, metadata_file
