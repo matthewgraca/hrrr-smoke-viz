@@ -3,18 +3,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-
-SENSORS = {
-    'Reseda': (8, 3),
-    'North Holywood': (8, 11),
-    'LA - N. Main Street': (15, 16),
-    'Compton': (23, 17),
-    'Long Beach Signal Hill': (29, 19),
-    'Anaheim': (27, 29),
-    'Glendora - Laurel': (10, 33),
-}
-
-
 def plot_training_history(history, save_path, config_name):
     fig, ax = plt.subplots(figsize=(10, 6))
     
@@ -42,17 +30,28 @@ def plot_training_history(history, save_path, config_name):
     plt.close()
 
 
-def plot_sample(pred, true, save_path, title):
+def plot_sample_without_x(pred, true, save_path, title):
+    '''
+    Args:
+        pred: predictions
+        true: ground truth
+        save_path: where you want to save it
+        title: just the name of the plot
+
+    The expectation is that something like (frames, h, w) is supported. If 
+        there is a hanging channel index of 1, it'll be automatically squeezed 
+        out.
+    '''
     n_frames = pred.shape[0]
     
     fig = plt.figure(figsize=(1.5*n_frames, 5))
     gs = GridSpec(3, n_frames+1, width_ratios=[1]*n_frames + [0.05], hspace=0.15, wspace=0.1)
-    
-    if pred.ndim == 4:
-        pred, true = pred[..., 0], true[..., 0]
+
+    pred = np.squeeze(pred)
+    true = np.squeeze(true)
     
     error = pred - true
-    vmin, vmax = min(np.min(pred), np.min(true)), max(np.max(pred), np.max(true))
+    vmin, vmax = min(np.min(true), np.min(pred)), max(np.max(true), np.max(pred))
     max_err = np.max(np.abs(error))
     
     for frame in range(n_frames):
@@ -73,17 +72,92 @@ def plot_sample(pred, true, save_path, title):
         im_err = ax.imshow(error[frame], cmap='RdBu_r', vmin=-max_err, vmax=max_err)
         ax.axis('off')
         if frame == 0:
-            ax.text(-0.2, 0.5, 'Error', transform=ax.transAxes, fontweight='bold', va='center', ha='right')
+            ax.text(-0.2, 0.5, 'Raw Error', transform=ax.transAxes, fontweight='bold', va='center', ha='right')
     
     fig.colorbar(im, cax=fig.add_subplot(gs[0:2, -1]), label='PM2.5')
-    fig.colorbar(im_err, cax=fig.add_subplot(gs[2, -1]), label='Error')
+    fig.colorbar(im_err, cax=fig.add_subplot(gs[2, -1]), label='Raw Error')
     
     fig.suptitle(title, fontweight='bold')
     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
 
+def plot_sample_with_x(x, pred, true, save_path, title):
+    '''
+    Args:
+        x: some input channel; usually airnow
+        pred: predictions
+        true: ground truth
+        save_path: where you want to save it
+        title: just the name of the plot
 
-def plot_sensor_timeseries(Y_pred, Y_true, save_path, start_idx=0, n_samples=1):
+    The expectation is that something like (frames, h, w) is supported. If 
+        there is a hanging channel index of 1, it'll be automatically squeezed 
+        out.
+    '''
+    n_frames = pred.shape[0]
+    
+    fig = plt.figure(figsize=(1.5*n_frames, 5))
+    gs = GridSpec(4, n_frames+1, width_ratios=[1]*n_frames + [0.05], hspace=0.35, wspace=0.1)
+
+    x = np.squeeze(x)
+    pred = np.squeeze(pred)
+    true = np.squeeze(true)
+    
+    error = pred - true
+    vmin, vmax = min(np.min(x), np.min(pred), np.min(true)), max(np.max(x), np.max(pred), np.max(true))
+    max_err = np.max(np.abs(error))
+    
+    for frame in range(n_frames):
+        ax = fig.add_subplot(gs[0, frame])
+        im = ax.imshow(x[frame], cmap='viridis', vmin=vmin, vmax=vmax)
+        ax.set_title(f't-{n_frames-frame-1}' if n_frames - frame - 1 > 0 else 't')
+        ax.axis('off')
+        if frame == 0:
+            ax.text(-0.2, 0.5, 'X', transform=ax.transAxes, fontweight='bold', va='center', ha='right')
+
+        ax = fig.add_subplot(gs[1, frame])
+        im = ax.imshow(pred[frame], cmap='viridis', vmin=vmin, vmax=vmax)
+        ax.set_title(f't+{frame+1}')
+        ax.axis('off')
+        if frame == 0:
+            ax.text(-0.2, 0.5, 'Pred', transform=ax.transAxes, fontweight='bold', va='center', ha='right')
+        
+        ax = fig.add_subplot(gs[2, frame])
+        ax.imshow(true[frame], cmap='viridis', vmin=vmin, vmax=vmax)
+        ax.axis('off')
+        if frame == 0:
+            ax.text(-0.2, 0.5, 'Truth', transform=ax.transAxes, fontweight='bold', va='center', ha='right')
+        
+        ax = fig.add_subplot(gs[3, frame])
+        im_err = ax.imshow(error[frame], cmap='RdBu_r', vmin=-max_err, vmax=max_err)
+        ax.axis('off')
+        if frame == 0:
+            ax.text(-0.2, 0.5, 'Raw Error', transform=ax.transAxes, fontweight='bold', va='center', ha='right')
+    
+    fig.colorbar(im, cax=fig.add_subplot(gs[0:3, -1]), label='PM2.5')
+    fig.colorbar(im_err, cax=fig.add_subplot(gs[3, -1]), label='Raw Error')
+    
+    fig.suptitle(title, fontweight='bold')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+
+def plot_sample(x, pred, true, save_path, title):
+    if x is None:
+        plot_sample_without_x(pred, true, save_path, title)
+    else:
+        plot_sample_with_x(x, pred, true, save_path, title)
+
+def plot_sensor_timeseries(Y_pred, Y_true, save_path, sensors, start_idx=0, n_samples=1):
+    '''
+    Args:
+        Y_pred: predictions
+        Y_true: ground truth
+        save_path: where you want to save the figs
+        sensors: dictionary, of the form {'sensor name' : (x, y)}
+        start_idx:
+        n_samples:
+    '''
+    # NOTE not sure what were plotting exactly; one sample of 24? First frame prediction of 24 samples?
     if n_samples is None:
         n_samples = len(Y_pred) - start_idx
     
@@ -102,10 +176,10 @@ def plot_sensor_timeseries(Y_pred, Y_true, save_path, start_idx=0, n_samples=1):
     n_hours = pred.shape[0]
     hours = np.arange(1, n_hours + 1)
     
-    n_sensors = len(SENSORS)
+    n_sensors = len(sensors)
     fig, axes = plt.subplots(n_sensors, 1, figsize=(max(14, n_hours * 0.15), 2.5 * n_sensors), sharex=True)
     
-    for idx, (name, (r, c)) in enumerate(SENSORS.items()):
+    for idx, (name, (r, c)) in enumerate(sensors.items()):
         ax = axes[idx]
         
         pred_vals = pred[:, r, c]
@@ -129,38 +203,40 @@ def plot_sensor_timeseries(Y_pred, Y_true, save_path, start_idx=0, n_samples=1):
     plt.close()
 
 
-def save_sensor_timeseries(Y_pred, Y_true, save_dir):
+def save_sensor_timeseries(Y_pred, Y_true, save_dir, sensors):
     os.makedirs(save_dir, exist_ok=True)
     
     n_samples = len(Y_pred)
     
     idx = np.random.randint(0, n_samples)
-    plot_sensor_timeseries(Y_pred, Y_true, f"{save_dir}/ts_24h.png", start_idx=idx, n_samples=1)
+    plot_sensor_timeseries(Y_pred, Y_true, f"{save_dir}/ts_24h.png", sensors, start_idx=idx, n_samples=1)
     
     if n_samples >= 7:
         idx = np.random.randint(0, n_samples - 7)
-        plot_sensor_timeseries(Y_pred, Y_true, f"{save_dir}/ts_1week.png", start_idx=idx, n_samples=7)
+        plot_sensor_timeseries(Y_pred, Y_true, f"{save_dir}/ts_1week.png", sensors, start_idx=idx, n_samples=7)
     
     if n_samples >= 30:
         idx = np.random.randint(0, n_samples - 30)
-        plot_sensor_timeseries(Y_pred, Y_true, f"{save_dir}/ts_1month.png", start_idx=idx, n_samples=30)
+        plot_sensor_timeseries(Y_pred, Y_true, f"{save_dir}/ts_1month.png", sensors, start_idx=idx, n_samples=30)
     
-    plot_sensor_timeseries(Y_pred, Y_true, f"{save_dir}/ts_full.png", start_idx=0, n_samples=None)
+    # TODO fig size probably gets too big -- 9306 -> like an 800 foot long plot lmao
+    #plot_sensor_timeseries(Y_pred, Y_true, f"{save_dir}/ts_full.png", sensors, start_idx=0, n_samples=None)
 
 
 def save_best_worst_samples(Y_pred, Y_test, save_dir, n_samples=10):
     os.makedirs(f"{save_dir}/best_samples", exist_ok=True)
     os.makedirs(f"{save_dir}/worst_samples", exist_ok=True)
     
-    sample_rmse = np.array([np.sqrt(np.mean((Y_pred[i] - Y_test[i])**2)) for i in range(len(Y_pred))])
+    rmse = lambda pred, true: np.sqrt(np.mean((pred - true)**2))
+    sample_rmse = np.array([rmse(p, t) for p, t in zip(Y_pred, Y_test)])
     sorted_idx = np.argsort(sample_rmse)
     
     for rank, idx in enumerate(sorted_idx[:n_samples], 1):
-        plot_sample(Y_pred[idx], Y_test[idx],
+        plot_sample(None, Y_pred[idx], Y_test[idx],
                    f"{save_dir}/best_samples/best_{rank:02d}.png",
                    f"Best #{rank} (RMSE: {sample_rmse[idx]:.2f})")
     
     for rank, idx in enumerate(sorted_idx[-n_samples:][::-1], 1):
-        plot_sample(Y_pred[idx], Y_test[idx],
+        plot_sample(None, Y_pred[idx], Y_test[idx],
                    f"{save_dir}/worst_samples/worst_{rank:02d}.png",
                    f"Worst #{rank} (RMSE: {sample_rmse[idx]:.2f})")
