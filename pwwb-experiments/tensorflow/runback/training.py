@@ -1,3 +1,26 @@
+import argparse
+
+valid_models = set(['classic', 'two_path'])
+valid_losses = set(['grid', 'nhood'])
+
+parser = argparse.ArgumentParser(description='Training script (you will need to edit paths in the script!)')
+parser.add_argument('model', help=f'the model to train: {valid_models}')
+parser.add_argument('loss', help=f'the loss function to use: {valid_losses}')
+parser.add_argument('-t', '--test', action='store_true', help='triggers a test instead of a full run (saved in test_experiment, epochs set to 1)')
+args = parser.parse_args()
+
+# training parameters
+EPOCHS = 100 if not args.test else 1
+BATCH_SIZE = 64
+
+MODEL_NAME = args.model
+if MODEL_NAME not in valid_models:
+    raise ValueError(f'Invalid model. Pick from: {valid_models}')
+
+LOSS_NAME = args.loss
+if LOSS_NAME not in valid_losses:
+    raise ValueError(f'Invalid loss. Pick from: {valid_losses}')
+
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -7,10 +30,7 @@ tf.keras.backend.set_image_data_format('channels_last')
 
 import sys
 
-EXPERIMENT_NAME = sys.argv[1] if len(sys.argv) == 2 else None
-valid_experiments = ['classic_model', 'two_path_model']
-if EXPERIMENT_NAME == None:
-    raise ValueError(f'Pass in the name of the experiment as an arg. Valid experiments: {valid_experiments}')
+EXPERIMENT_NAME = 'test_experiment' if args.test else MODEL_NAME + '_model' + LOSS_NAME + '_loss'
 
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
 EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/runback')
@@ -35,10 +55,6 @@ class TextColor:
     ENDC = '\033[0m'  # Resets formatting
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
-
-# training parameters
-EPOCHS = 100
-BATCH_SIZE = 64
 
 # dataset parameters
 WORKERS = 4
@@ -84,20 +100,7 @@ def two_path_model(input_shape, path1_channels, path2_channels):
     from keras.layers import Input, Conv3D, ConvLSTM2D
     from keras.layers import Concatenate
     from keras.models import Model
-
-    @keras.utils.register_keras_serializable(package="Custom")
-    class ChannelSplitLayer(keras.layers.Layer):
-        def __init__(self, channel_idxs, **kwargs):
-            super().__init__(**kwargs)
-            self.idxs = channel_idxs
-
-        def call(self, inputs):
-            return tf.gather(inputs, self.idxs, axis=-1)
-
-        def get_config(self):
-            config = super().get_config()
-            config.update({'channel_idxs' : self.idxs})
-            return config
+    from libs.layers import ChannelSplitLayer
 
     def path_block(x, name):
         x = ConvLSTM2D(filters=20, **CONVLSTM2D_ARGS, name=f'{name}_convlstm_2d_1')(x)
@@ -158,27 +161,38 @@ test_ds = PWWBPyDataset(
 )
 print('\tTest dataset loaded.\n')
 
-if EXPERIMENT_NAME == 'classic_model':
-    model = classic_model(train_ds.input_shape)
-elif EXPERIMENT_NAME == 'two_path_model':
-    path1_channel_names = [
-        'AirNow_PM25', 'AirNow_Hourly_Clim', 'OpenAQ_PM25', 'NAQFC_PM25',
-        'Temporal_Month_Sin', 'Temporal_Month_Cos', 'Temporal_Hour_Sin',
-        'Temporal_Hour_Cos'
-    ]
-    path2_channel_names = [
-        'HRRR_Wind_U', 'HRRR_Wind_V', 'HRRR_Wind_Speed', 'HRRR_Temp_2m',
-        'HRRR_PBL_Height', 'HRRR_Precip_Rate', 'Elevation', 'NDVI', 'GOES', 'TEMPO'
-    ]
-    model = two_path_model(
-        train_ds.input_shape,
-        path1_channels=[channel_to_idx[ch] for ch in path1_channel_names],
-        path2_channels=[channel_to_idx[ch] for ch in path2_channel_names],
-    )
-else:
-    raise ValueError(f'Invalid model choice; pick from : {valid_experiments}')
+input_shape = train_ds.input_shape
+f, h, w, c = input_shape
+match MODEL_NAME:
+    case 'classic':
+        model = classic_model(input_shape)
+    case 'two_path':
+        path1_channel_names = [
+            'AirNow_PM25', 'AirNow_Hourly_Clim', 'OpenAQ_PM25', 'NAQFC_PM25',
+            'Temporal_Month_Sin', 'Temporal_Month_Cos', 'Temporal_Hour_Sin',
+            'Temporal_Hour_Cos'
+        ]
+        path2_channel_names = [
+            'HRRR_Wind_U', 'HRRR_Wind_V', 'HRRR_Wind_Speed', 'HRRR_Temp_2m',
+            'HRRR_PBL_Height', 'HRRR_Precip_Rate', 'Elevation', 'NDVI', 'GOES', 'TEMPO'
+        ]
+        model = two_path_model(
+            input_shape,
+            path1_channels=[channel_to_idx[ch] for ch in path1_channel_names],
+            path2_channels=[channel_to_idx[ch] for ch in path2_channel_names],
+        )
+    case _:
+        raise ValueError(f'Invalid model choice; pick from : {valid_models}')
 
-model.compile(loss='mean_absolute_error', optimizer='adam')
+match LOSS_NAME:
+    case 'grid':
+        model.compile(loss='mean_absolute_error', optimizer='adam')
+    case 'nhood':
+        from libs.loss import NHoodMAE
+        model.compile(loss=NHoodMAE(sensors=metadata['sensors'], dim=h), optimizer='adam')
+    case _:
+        raise ValueError(f'Invalid loss choice; pick from : {valid_losses}')
+
 model.summary()
 print()
 
@@ -193,32 +207,12 @@ print()
 print(f'{TextColor.BLUE}Saving history file... {TextColor.ENDC}', end='')
 with open(os.path.join(RESULTS_PATH, 'history.pkl'), 'wb') as f:
     pickle.dump(history.history, f)
-print(f'{TextColor.GREEN}Complete.{TextColor.ENDC}\n')
+print(f'{TextColor.GREEN}complete.{TextColor.ENDC}\n')
 
 print(f'{TextColor.BLUE}Saving model... {TextColor.ENDC}', end='')
 model.save(os.path.join(RESULTS_PATH, 'model.keras'))
-print(f'{TextColor.GREEN}Complete.{TextColor.ENDC}\n')
+print(f'{TextColor.GREEN}complete.{TextColor.ENDC}\n')
 
-print(f'{TextColor.BLUE}Generating and saving predictions... {TextColor.ENDC}')
+print(f'{TextColor.BLUE}Generating and saving predictions.{TextColor.ENDC}')
 y_pred = model.predict(test_ds)
 np.save(os.path.join(RESULTS_PATH, 'y_pred.npy'), y_pred)
-
-'''
-def plot_loss(history, save_dir):
-    plt.figure(figsize=(10, 6))
-
-    plt.plot(history.history['loss'], label='Training Loss')
-    plt.plot(history.history['val_loss'], label='Validation Loss')
-
-    plt.legend()
-    plt.title(f'\nTraining Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss (MAE)')
-    plt.grid(True, alpha=0.3)
-
-    plt.savefig(os.path.join(save_dir, 'loss_curves.png'))
-
-    return
-
-plot_loss(history, RESULTS_PATH)
-'''
