@@ -376,16 +376,26 @@ def generate_hourly_climatology(pm25_data, window_days=30):
     return climatology
 
 
-def preprocess_70_15_15_split(frames_per_sample=24, 
-                               forecast_horizon=24,
-                               target_source='airnow'):
+def preprocess_dataset_split(
+    frames_per_sample=24, 
+    forecast_horizon=24,
+    target_source='airnow',
+    train_pct=0.75,
+    valid_pct=0.13
+):
     """
-    Preprocess data with 70/15/15 temporal split.
+    Preprocess data with a defined temporal split.
     """
+    train_split = int(train_pct*100)
+    valid_split = int(valid_pct*100)
+    test_split = 100 - train_split - valid_split
     print("\n" + "="*80)
-    print(f"70/15/15 SPLIT PREPROCESSING: {frames_per_sample}h → {forecast_horizon}h")
+    print(
+        f"{train_split}/{valid_split}/{test_split} "
+        "SPLIT PREPROCESSING: {frames_per_sample}h → {forecast_horizon}h"
+    )
     print(f"TARGET SOURCE: {target_source.upper()}")
-    print("Split: 70% Train / 15% Valid / 15% Test")
+    print("Split: {train_split}% Train / {valid_split}% Valid / {test_split}% Test")
     print("Using: AirNow, OpenAQ, HRRR (6 vars), Satellites")
     print("       + Forecast channels: NAQFC, HRRR (time-shifted to target window)")
     print("       + Hourly Climatology (30-day rolling average by hour)")
@@ -429,8 +439,13 @@ def preprocess_70_15_15_split(frames_per_sample=24,
     n_channels = len(channels)
     channel_names_list = [ch[1] for ch in channels]
     
-    cache_dir = "/home/mgraca/Workspace/hrrr-smoke-viz/pwwb-experiments/tensorflow/runback/raw_data"
-    output_cache_dir = f"/home/mgraca/Workspace/hrrr-smoke-viz/pwwb-experiments/tensorflow/runback/preprocessed_cache"
+    # NOTE: change for your use
+    ####
+    base_path = '/home/mgraca/Workspace/hrrr-smoke-viz'
+    experiment_path = os.path.join(base_path, 'pwwb-experiments/tensorflow/autoencoder_archive')
+    cache_dir = os.path.join(experiment_path, "raw_data")
+    output_cache_dir = os.path.join(experiment_path, "preprocessed_cache")
+    ####
     os.makedirs(output_cache_dir, exist_ok=True)
 
     npy_dir = f"{output_cache_dir}/npy_files"
@@ -512,8 +527,6 @@ def preprocess_70_15_15_split(frames_per_sample=24,
     if X_tempo is not None:
         X_tempo = X_tempo[:n_timesteps]
 
-    train_pct = 0.70
-    valid_pct = 0.15
     train_end_idx = int(n_timesteps * train_pct)
     valid_end_idx = int(n_timesteps * (train_pct + valid_pct))
     
@@ -770,7 +783,7 @@ def preprocess_70_15_15_split(frames_per_sample=24,
         'test_timestep_end': n_timesteps,
         'frames_per_sample': frames_per_sample,
         'forecast_horizon': forecast_horizon,
-        'split_type': '70_15_15_temporal',
+        'split_type': f'{train_split}_{valid_split}_{test_split}_temporal',
         'data_source': target_name,
         'start_date': "2023-08-02-00",
         'end_date': "2025-08-02-00",
@@ -779,7 +792,10 @@ def preprocess_70_15_15_split(frames_per_sample=24,
     with open(metadata_file, 'wb') as f:
         pickle.dump(metadata_to_save, f)
 
-    print(f"\n✓ SUCCESS! (70/15/15 split with {target_name} target + Forecast channels + Hourly Climatology)")
+    print(
+        f"\n✓ SUCCESS! ({train_split}/{valid_split}/{test_split} split with "
+        "{target_name} target + Forecast channels + Hourly Climatology)"
+    )
     print(f"  X_train, X_valid, X_test saved under: {npy_dir}")
     print(f"  Y_train, Y_valid, Y_test saved under: {npy_dir}")
     print(f"  Scalers: {scalers_file}")
@@ -803,7 +819,7 @@ def preprocess_70_15_15_split(frames_per_sample=24,
 
 def main():
     print("="*80)
-    print("GENERATING 70/15/15 SPLIT WITH CONFIGURABLE TARGET SOURCE")
+    print("GENERATING DATASET SPLIT WITH CONFIGURABLE TARGET SOURCE")
     print("="*80)
 
     print("\n" + "="*80)
@@ -811,10 +827,12 @@ def main():
     print("="*80)
     
     try:
-        cache_airnow, scalers_airnow, metadata_airnow = preprocess_70_15_15_split(
+        cache_airnow, scalers_airnow, metadata_airnow = preprocess_dataset_split(
             frames_per_sample=24,
             forecast_horizon=24,
-            target_source='airnow'
+            target_source='airnow',
+            train_pct=0.75,
+            valid_pct=0.13
         )
         print("\n✓ AirNow target preprocessing complete!")
         print(f"  Cache: {cache_airnow}")
