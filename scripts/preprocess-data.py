@@ -420,21 +420,20 @@ def preprocess_dataset_split(
         ('temporal_5', 'Temporal_Hour_Cos', False, True, False),
         ('goes', 'GOES', True, False, False),
         ('tempo', 'TEMPO', True, False, False),
+        # forecast channels
+        ('naqfc_pm25', 'NAQFC_PM25_Forecast', True, False, True),
+        ('hrrr_wind_u', 'HRRR_Wind_U_Forecast', True, False, True),
+        ('hrrr_wind_v', 'HRRR_Wind_V_Forecast', True, False, True),
+        ('hrrr_wind_speed', 'HRRR_Wind_Speed_Forecast', True, False, True),
+        ('hrrr_temp_2m', 'HRRR_Temp_2m_Forecast', True, False, True),
+        ('hrrr_pbl_height', 'HRRR_PBL_Height_Forecast', True, False, True),
+        ('hrrr_precip_rate', 'HRRR_Precip_Rate_Forecast', True, False, True),
+        ('airnow_hourly_clim', 'AirNow_Hourly_Clim_Forecast', True, False, True),
+        ('temporal_0', 'Temporal_Month_Sin_Forecast', False, True, True),
+        ('temporal_1', 'Temporal_Month_Cos_Forecast', False, True, True),
+        ('temporal_4', 'Temporal_Hour_Sin_Forecast', False, True, True),
+        ('temporal_5', 'Temporal_Hour_Cos_Forecast', False, True, True),
     ]
-    '''
-    ('naqfc_pm25', 'NAQFC_PM25_Forecast', True, False, True),
-    ('hrrr_wind_u', 'HRRR_Wind_U_Forecast', True, False, True),
-    ('hrrr_wind_v', 'HRRR_Wind_V_Forecast', True, False, True),
-    ('hrrr_wind_speed', 'HRRR_Wind_Speed_Forecast', True, False, True),
-    ('hrrr_temp_2m', 'HRRR_Temp_2m_Forecast', True, False, True),
-    ('hrrr_pbl_height', 'HRRR_PBL_Height_Forecast', True, False, True),
-    ('hrrr_precip_rate', 'HRRR_Precip_Rate_Forecast', True, False, True),
-    ('airnow_hourly_clim', 'AirNow_Hourly_Clim_Forecast', True, False, True),
-    ('temporal_0', 'Temporal_Month_Sin_Forecast', False, True, True),
-    ('temporal_1', 'Temporal_Month_Cos_Forecast', False, True, True),
-    ('temporal_4', 'Temporal_Hour_Sin_Forecast', False, True, True),
-    ('temporal_5', 'Temporal_Hour_Cos_Forecast', False, True, True),
-    '''
 
     n_channels = len(channels)
     channel_names_list = [ch[1] for ch in channels]
