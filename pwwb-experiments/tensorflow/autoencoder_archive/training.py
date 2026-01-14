@@ -1,26 +1,51 @@
 import argparse
 
-valid_models = set(['classic', 'two_path', 'dual_autoencoder'])
-valid_losses = set(['grid', 'nhood'])
+def argparser(valid_models, valid_losses):
+    parser = argparse.ArgumentParser(
+        description='Training script (you will need to manually edit paths in the script!)'
+    )
+    parser.add_argument(
+        'model',
+        help=f'the model to train: {valid_models}'
+    )
+    parser.add_argument(
+        'loss',
+        help=f'the loss function to use: {valid_losses}'
+    )
+    parser.add_argument(
+        '-r', '--results_folder',
+        help=f'the folder that will be used to store results'
+    )
+    parser.add_argument(
+        '-t', '--test', action='store_true',
+        help='only builds and tests the model; does not trigger training'
+    )
 
-parser = argparse.ArgumentParser(description='Training script (you will need to edit paths in the script!)')
-parser.add_argument('model', help=f'the model to train: {valid_models}')
-parser.add_argument('loss', help=f'the loss function to use: {valid_losses}')
-parser.add_argument('-t', '--test', action='store_true', help='triggers a test instead of a full run (saved in test_experiment, epochs set to 1)')
-parser.add_argument('-b', '--build', action='store_true', help='only builds the model; does not trigger training')
-args = parser.parse_args()
+    # validate
+    args = parser.parse_args()
+
+    if not args.test:
+        if args.results_folder is None:
+            raise ValueError(
+                'If not in test mode, a results folder must be specified'
+            )
+
+    if args.model not in valid_models:
+        raise ValueError(f'Invalid model. Pick from: {valid_models}')
+
+    if args.loss not in valid_losses:
+        raise ValueError(f'Invalid loss. Pick from: {valid_losses}')
+
+    return args
+
+args = argparser(
+    valid_models=set(['classic', 'two_path', 'dual_autoencoder']),
+    valid_losses=set(['grid', 'nhood'])
+)
 
 # training parameters
-EPOCHS = 100 if not args.test else 1
+EPOCHS = 100
 BATCH_SIZE = 64
-
-MODEL_NAME = args.model
-if MODEL_NAME not in valid_models:
-    raise ValueError(f'Invalid model. Pick from: {valid_models}')
-
-LOSS_NAME = args.loss
-if LOSS_NAME not in valid_losses:
-    raise ValueError(f'Invalid loss. Pick from: {valid_losses}')
 
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -31,7 +56,13 @@ tf.keras.backend.set_image_data_format('channels_last')
 
 import sys
 
-EXPERIMENT_NAME = 'test_experiment' if args.test else MODEL_NAME + '_model_' + LOSS_NAME + '_loss'
+EXPERIMENT_NAME = (
+    'test_experiment' if args.test
+    else args.model + '_' + args.loss + '_loss' + (
+        '' if args.results_folder is None
+        else '_' + args.results_folder
+    )
+)
 
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
 EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/autoencoder_archive')
@@ -47,6 +78,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pickle
 from tensorflow.keras.utils import plot_model
+from tensorflow.keras.callbacks import EarlyStopping
 
 class TextColor:
     HEADER = '\033[95m'
@@ -104,7 +136,7 @@ print('\tTest dataset loaded.\n')
 
 input_shape = train_ds.input_shape
 f, h, w, c = input_shape
-match MODEL_NAME:
+match args.model:
     case 'classic':
         model = model.classic(input_shape)
     case 'two_path':
@@ -139,9 +171,16 @@ match MODEL_NAME:
             'strides': [2, 2]
         }
 
+        convlstm_reg_config = {
+            'kernel_regularizer': keras.regularizers.l2(3e-4),
+            'recurrent_regularizer': keras.regularizers.l2(3e-4),
+            'dropout': 0.15
+        }
+
         model = model.dual_autoencoder(
             input_shape,
             arch_config=ARCH_5x5,
+            convlstm_reg_config=convlstm_reg_config,
             output_horizon=metadata['forecast_horizon'],
             observed_channels=[
                 metadata['channel_names'].index(ch)
@@ -155,7 +194,7 @@ match MODEL_NAME:
     case _:
         raise ValueError(f'Invalid model choice; pick from : {valid_models}')
 
-match LOSS_NAME:
+match args.loss:
     case 'grid':
         model.compile(loss='mean_absolute_error', optimizer='adam')
     case 'nhood':
@@ -169,22 +208,34 @@ print()
 
 plot_model(
     model, 
-    to_file=os.path.join(RESULTS_PATH, 'model.png'),
+    to_file=os.path.join(RESULTS_PATH, 'model_shapeless.png'),
     show_layer_names=True, 
     expand_nested=True,
-    show_shapes=True,
+    #show_shapes=True,
     rankdir='TB' # TB=vertical, LR=horizontal
 )
-
-if args.build:
+if args.test:
     print(f'{TextColor.BLUE}Build mode activated, skipping training.{TextColor.ENDC}')
+    print(f'{TextColor.BLUE}Testing if a batch of data can pass through...{TextColor.ENDC}', end=' ')
+    y = model(tf.random.uniform((1, *input_shape)))
+    print(f'{TextColor.GREEN}complete.{TextColor.ENDC}\n')
     sys.exit()
 
 print(f'{TextColor.BLUE}Beginning Training{TextColor.ENDC}')
 history = model.fit(
     train_ds,
     validation_data=valid_ds,
-    epochs=EPOCHS
+    epochs=EPOCHS,
+    callbacks=[
+        EarlyStopping(
+            monitor='val_loss',
+            min_delta=0,
+            patience=15,
+            verbose=1,
+            mode='min',
+            restore_best_weights=True
+        )
+    ]
 )
 print()
 
