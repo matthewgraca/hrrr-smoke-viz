@@ -28,8 +28,8 @@ class AirNowData:
         extent=(-118.615, -117.70, 33.60, 34.35),
         airnow_api_key=None,
         save_dir='data/airnow.json',
-        processed_cache_dir='data/airnow_processed-250.npz',
-        dim=40,
+        processed_cache_dir='data/airnow_processed.npz',
+        dim=84,
         use_interpolation=True,
         idw_power=2,
         neighbors=10,
@@ -94,6 +94,12 @@ class AirNowData:
                         f"  - Data shape: {self.data.shape}\n"
                         f"  - Found {len(self.air_sens_loc)} sensor locations"
                     )
+                    print(f"\n--- AirNow Data Summary ---")
+                    print(f"Timesteps: {len(self.data)}")
+                    print(f"Grid size: {self.dim}x{self.dim}")
+                    print(f"Sensors ({len(self.sensor_names)}): {', '.join(sorted(self.sensor_names))}")
+                    print(f"Value range: [{np.nanmin(self.data):.1f}, {np.nanmax(self.data):.1f}]")
+                    print(f"---------------------------\n")
                 return
             except Exception as e:
                 print(f"Error: Couldn't load from cache: {e}. Will reprocess data.")
@@ -205,6 +211,14 @@ class AirNowData:
             self.sensor_names = list(self.air_sens_loc.keys())
         else:
             print("Warning: No air sensor locations found in the data.")
+        
+        if verbose < 1:
+            print(f"\n--- AirNow Data Summary ---")
+            print(f"Timesteps: {len(self.data)}")
+            print(f"Grid size: {self.dim}x{self.dim}")
+            print(f"Sensors ({len(self.sensor_names)}): {', '.join(sorted(self.sensor_names))}")
+            print(f"Value range: [{np.nanmin(self.data):.1f}, {np.nanmax(self.data):.1f}]")
+            print(f"---------------------------\n")
         
         if verbose < 1:
             print(
@@ -500,7 +514,7 @@ class AirNowData:
             print(f"Error processing AirNow data: {e}")
             return []
 
-    def _process_dataframe(self, airnow_df, start_date, end_date, min_uptime=0.25, zscore=3):
+    def _process_dataframe(self, airnow_df, start_date, end_date, min_uptime=0.25):
         '''
         Performs several data cleaning methods, then returns a list of dataframes grouped by UTC.
         
@@ -567,22 +581,6 @@ class AirNowData:
                     print(f"  Hard cap filtering: removed {n_capped} values above {hard_cap}")
             
             return df
-        
-        def remove_sensors_out_of_extent(df, extent):
-            '''
-            We don't intentionally ingest out-of-range data. This is meant 
-                for the scenario when we subset our extent and we don't want 
-                to perform a reingest.
-            '''
-            min_lon, max_lon, min_lat, max_lat = extent
-            out_of_extent = (
-                (df['Latitude'] > max_lat) | 
-                (df['Latitude'] < min_lat) | 
-                (df['Longitude'] > max_lon) | 
-                (df['Longitude'] < min_lon)
-            )
-
-            return df[~out_of_extent].reset_index(drop=True)
 
         def remove_sensors_out_of_extent(df, extent):
             min_lon, max_lon, min_lat, max_lat = extent
@@ -596,11 +594,12 @@ class AirNowData:
 
         original_data = airnow_df.copy()
         filtered_data = remove_underreporting_sensors(original_data, min_uptime)
+        filtered_data = remove_sensors_out_of_extent(filtered_data, self.extent)
         filtered_data = impute_invalid_values_with_nan(filtered_data)
         filtered_data = floor_low_values(filtered_data)
         filtered_data = generate_samples_from_time(filtered_data, start_date, end_date)
-        filtered_data = impute_outliers_with_nan(filtered_data, zscore)
-        filtered_data = impute_nans_with_fbfill(filtered_data)
+        filtered_data = remove_zscore_outliers(filtered_data, self.zscore_threshold)
+        filtered_data = apply_hard_cap(filtered_data, self.hard_cap)
 
         return [group for name, group in filtered_data.groupby('UTC')]
 
