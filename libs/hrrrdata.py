@@ -1,739 +1,404 @@
-from herbie import Herbie, wgrib2
-from pathlib import Path
-from datetime import timedelta
+import os
+import warnings
+warnings.filterwarnings('ignore', category=FutureWarning)
+
+from herbie import Herbie
 import pandas as pd
 import numpy as np
-import xarray as xr
-import cv2
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from requests.exceptions import ConnectionError 
-import subprocess
-from shutil import which
-import os
+from requests.exceptions import ConnectionError
+from scipy.interpolate import griddata
+from tqdm import tqdm
 import gc
-from libs.pwwb.utils.dataset import sliding_window
+
 
 class HRRRData:
     def __init__(
         self,
-        start_date,
-        end_date,
         extent=None, 
-        extent_name='subset_region',
-        product='MASSDEN',
-        frames_per_sample=1,
-        dim=40,
-        sample_setting=1,
-        verbose=False,
-        processed_cache_dir='data/hrrr_processed.npz',
-        chunk_cache_dir='data/hrrr_chunks',
+        extent_name='la_basin',
+        output_dir='data/hrrr',
+        chunk_months=2,
         force_reprocess=False,
-        chunk_months=1
+        verbose=False,
+        max_threads=20
     ):
-        '''
-        Gets the HRRR data.
-        Pipeline:
-            - Use Herbie to download the data as grib files
-            - Use wgrib2 to subregion the grib files
-            - Convert the grib files to xarray, then into numpy as frames
-                - (num_frames, row, col)
-            - Interpolate and add a channel axis to the array of frames
-                - (num_frames, row, col, channel)
-            - Create samples from a sliding window of frames
-                - (samples, frames, row, col, channel)
-
-        Members:
-            data: The complete processed HRRR data
-        '''
+        self.start_date = "2023-08-02-00"
+        self.end_date = "2023-08-03-00"
+        
+        self.extent = extent
+        self.extent_name = extent_name
+        self.output_dir = output_dir
         self.chunk_months = chunk_months
-        self.chunk_cache_dir = chunk_cache_dir
+        self.verbose = verbose
+        self.max_threads = max_threads
+        self.force_reprocess = force_reprocess
         
-        # Store original dates for offset calculation
-        self.original_start_date = start_date
-        self.frames_per_sample = frames_per_sample
+        self.grid_size = 84
         
-        # Create chunk cache directory
-        if chunk_cache_dir is not None:
-            os.makedirs(chunk_cache_dir, exist_ok=True)
+        self.lon_regular = np.linspace(extent[0], extent[1], self.grid_size)
+        self.lat_regular = np.linspace(extent[2], extent[3], self.grid_size)
+        self.lon_grid, self.lat_grid = np.meshgrid(self.lon_regular, self.lat_regular)
         
-        # read from final cache if enabled
-        if processed_cache_dir is not None:
-            os.makedirs(os.path.dirname(processed_cache_dir), exist_ok=True)
-
-            cache_exists = os.path.exists(processed_cache_dir)
-            if not force_reprocess and cache_exists: 
-                print(
-                    f"📖 Loading processed HRRR data from final cache: "
-                    f"{processed_cache_dir}"
-                )
-                try:
-                    # attempt to read from cache
-                    cached_data = np.load(
-                        processed_cache_dir, 
-                        allow_pickle=True
-                    )
-                    self.data = cached_data['data']
-                    cached_start, cached_end = cached_data['date_range']
-                    cached_product = cached_data['product']
-                    cached_extent = cached_data['extent']
-                    cached_sample_setting = cached_data['sample_setting']
-
-                    print(f"🎉 Successfully loaded data from final cache:")
-                    print(
-                        f"  - Data shape    : {self.data.shape}\n"
-                        f"  - Date range    : [{cached_start}, "
-                        f"{cached_end})\n"
-                        f"  - Product used  : {cached_product}\n"
-                        f"  - Extent        : {cached_extent}\n"
-                        f"  - Sample setting: {cached_sample_setting}"
-                    )
-                    return # return early if loading cache is successful
-                except Exception as e:
-                    print(
-                        f"❗ Error loading from final cache: {e}. "
-                        f"Will check for chunk caches or reprocess data.")
-            else:
-                print(
-                    f"🔎 Either final cache is empty, or force_reprocess flag "
-                    f"was raised. Checking for chunk caches..."
-                )
-
-        print(f"🗓️ Processing HRRR data in {chunk_months}-month chunks from {start_date} to {end_date}")
+        self.variables = {
+            'u_wind': {'search': ':UGRD:10 m above ground:', 'var_names': ['u10', 'u', 'UGRD']},
+            'v_wind': {'search': ':VGRD:10 m above ground:', 'var_names': ['v10', 'v', 'VGRD']},
+            'temp_2m': {'search': ':TMP:2 m above ground:', 'var_names': ['t2m', 't', 'TMP', 'tmp']},
+            'pbl_height': {'search': ':HPBL:surface:', 'var_names': ['hpbl', 'HPBL', 'blh']},
+            'precip_rate': {'search': ':PRATE:surface:', 'var_names': ['prate', 'PRATE', 'precip']}
+        }
         
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
+        self.combined_search = '|'.join([v['search'].strip(':') for v in self.variables.values()])
         
-        chunk_info = self._generate_chunk_list(start_dt, end_dt, chunk_months)
+        os.makedirs(output_dir, exist_ok=True)
+        self.chunk_dir = os.path.join(output_dir, 'chunks')
+        os.makedirs(self.chunk_dir, exist_ok=True)
         
-        existing_chunks, missing_chunks = self._check_chunk_cache_status(chunk_info, chunk_cache_dir, force_reprocess)
+        self.final_output = os.path.join(output_dir, f'hrrr_surface_2years_{self.grid_size}x{self.grid_size}.npz')
         
-        if existing_chunks:
-            print(f"📦 Found {len(existing_chunks)} existing cached chunks")
-        if missing_chunks:
-            print(f"⚙️ Need to process {len(missing_chunks)} missing chunks")
-            
-            # Process missing chunks
-            self._process_missing_chunks(
-                missing_chunks, extent, extent_name, product, 
-                frames_per_sample, dim, sample_setting, verbose
-            )
-        else:
-            print("✅ All chunks already cached!")
-
-        print(f"🔗 Loading and combining all {len(chunk_info)} chunks...")
-        self.data = self._load_and_combine_chunks(chunk_info)
-        print(f"🎉 Final combined data shape: {self.data.shape}")
-
-        if processed_cache_dir is None:
-            print("🙅 No final cache directory set. Combined data will not be cached.")
-        else:
-            print(f"💾 Saving final combined data to cache: {processed_cache_dir}")
-            try:
-                np.savez_compressed(
-                    processed_cache_dir,
-                    data=self.data,
-                    date_range=np.array([start_date, end_date]),
-                    product=np.array([product]),
-                    extent=np.array(extent) if extent is not None else np.array([]),
-                    sample_setting=np.array([sample_setting])
-                )
-                print("🎉 Successfully saved final combined data to cache.")
-            except Exception as e:
-                print(f"⚠️  Warning: Could not save final combined data to cache: {e}")
-
-    def _generate_chunk_list(self, start_dt, end_dt, chunk_months):
-        """Generate list of chunk information (start, end, filename)."""
+        if os.path.exists(self.final_output) and not force_reprocess:
+            print(f"Loading existing data from {self.final_output}")
+            self.load_final_data()
+            return
+        
+        print(f"Extracting 2 years of HRRR surface data")
+        print(f"Period: {self.start_date} to {self.end_date}")
+        print(f"Extent: {extent}")
+        print(f"Output grid: {self.grid_size}x{self.grid_size}")
+        print(f"Processing in {chunk_months}-month chunks")
+        
+        self.process_all_chunks()
+        self.combine_chunks()
+        
+    def generate_chunk_periods(self):
         chunks = []
+        start_dt = pd.to_datetime(self.start_date.replace('-', ' '))
+        end_dt = pd.to_datetime(self.end_date.replace('-', ' '))
+        
         current_start = start_dt
         chunk_num = 0
         
         while current_start < end_dt:
             chunk_num += 1
-            current_end = min(
-                current_start + pd.DateOffset(months=chunk_months), 
-                end_dt
-            )
-            
-            chunk_filename = f"chunk_{chunk_num:03d}_{current_start.strftime('%Y%m%d')}_{current_end.strftime('%Y%m%d')}.npz"
+            current_end = min(current_start + pd.DateOffset(months=self.chunk_months), end_dt)
             
             chunks.append({
                 'num': chunk_num,
-                'start': current_start,
-                'end': current_end,
-                'start_str': current_start.strftime('%Y-%m-%d-%H'),
-                'end_str': current_end.strftime('%Y-%m-%d-%H'),
-                'filename': chunk_filename,
-                'is_first_chunk': chunk_num == 1  # Add flag for first chunk
+                'start': current_start.strftime('%Y-%m-%d-%H'),
+                'end': current_end.strftime('%Y-%m-%d-%H'),
+                'filename': f"hrrr_chunk_{chunk_num:03d}_{current_start.strftime('%Y%m')}.npz"
             })
             
             current_start = current_end
             
         return chunks
-
-    def _check_chunk_cache_status(self, chunk_info, chunk_cache_dir, force_reprocess):
-        """Check which chunks exist in cache and which need processing."""
-        existing_chunks = []
-        missing_chunks = []
-        
-        for chunk in chunk_info:
-            chunk_path = os.path.join(chunk_cache_dir, chunk['filename'])
-            
-            if not force_reprocess and os.path.exists(chunk_path):
-                try:
-                    test_load = np.load(chunk_path)
-                    if 'data' in test_load:
-                        existing_chunks.append(chunk)
-                        print(f"✅ Chunk {chunk['num']}: {chunk['filename']} (cached)")
-                    else:
-                        missing_chunks.append(chunk)
-                        print(f"❌ Chunk {chunk['num']}: Invalid cache file, will reprocess")
-                except Exception as e:
-                    missing_chunks.append(chunk)
-                    print(f"❌ Chunk {chunk['num']}: Cache corrupt ({e}), will reprocess")
-            else:
-                missing_chunks.append(chunk)
-                status = "forced reprocess" if force_reprocess else "not cached"
-                print(f"⏳ Chunk {chunk['num']}: {chunk['filename']} ({status})")
-        
-        return existing_chunks, missing_chunks
-
-    def _process_missing_chunks(self, missing_chunks, extent, extent_name, 
-                              product, frames_per_sample, dim, sample_setting, verbose):
-        """Process and cache missing chunks individually."""
-        for chunk in missing_chunks:
-            print(f"\n📦 Processing chunk {chunk['num']}: {chunk['start_str']} to {chunk['end_str']}")
-            
-            try:
-                chunk_data = self._process_chunk(
-                    chunk['start_str'], chunk['end_str'],
-                    extent, extent_name, product, frames_per_sample, 
-                    dim, sample_setting, verbose, chunk['is_first_chunk']
-                )
-                
-                if chunk_data is not None and len(chunk_data) > 0:
-                    chunk_path = os.path.join(self.chunk_cache_dir, chunk['filename'])
-                    np.savez_compressed(
-                        chunk_path,
-                        data=chunk_data,
-                        start_date=chunk['start_str'],
-                        end_date=chunk['end_str'],
-                        chunk_num=chunk['num']
-                    )
-                    print(f"✅ Chunk {chunk['num']} processed and cached: {chunk_data.shape}")
-                else:
-                    print(f"⚠️ Chunk {chunk['num']} returned no data")
-                    
-            except Exception as e:
-                print(f"❌ Error processing chunk {chunk['num']}: {e}")
-                
-            gc.collect()
-
-    def _load_and_combine_chunks(self, chunk_info):
-        """Load all cached chunks and combine them into final dataset."""
-        all_chunks = []
-        
-        for chunk in chunk_info:
-            chunk_path = os.path.join(self.chunk_cache_dir, chunk['filename'])
-            
-            try:
-                print(f"📖 Loading chunk {chunk['num']}: {chunk['filename']}")
-                cached_chunk = np.load(chunk_path)
-                chunk_data = cached_chunk['data']
-                all_chunks.append(chunk_data)
-                print(f"   ✅ Loaded chunk {chunk['num']}: {chunk_data.shape}")
-                
-            except Exception as e:
-                print(f"❌ Error loading chunk {chunk['num']}: {e}")
-                raise ValueError(f"Failed to load required chunk {chunk['num']}. Try reprocessing with force_reprocess=True")
-        
-        if not all_chunks:
-            raise ValueError("No chunks were successfully loaded")
-            
-        # Combine all chunks
-        print("🔗 Combining all chunks...")
-        combined_data = np.concatenate(all_chunks, axis=0)
-        
-        # Clear chunks from memory
-        del all_chunks
-        import gc
-        gc.collect()
-        
-        return combined_data
-
-    def _process_chunk(
-        self, 
-        start_date, 
-        end_date, 
-        extent, 
-        extent_name, 
-        product, 
-        frames_per_sample, 
-        dim, 
-        sample_setting, 
-        verbose,
-        is_first_chunk
-    ):
-        """Process a single chunk of HRRR data."""
-        try:
-            if sample_setting == 1:
-                herbie_ds = self._get_hrrr_data_frame_by_frame(
-                    start_date, end_date, product, verbose
-                )
-                
-                if not herbie_ds:
-                    print(f"No herbie data for chunk {start_date} to {end_date}")
-                    return None
-                    
-                subregion_grib_ds = self._subregion_grib_files(
-                    herbie_ds, extent, extent_name, product
-                )
-                
-                if not subregion_grib_ds:
-                    print(f"No subregion data for chunk {start_date} to {end_date}")
-                    return None
-                    
-                subregion_frames = self._grib_to_np(subregion_grib_ds)
-                
-                if len(subregion_frames) == 0:
-                    print(f"No frames extracted for chunk {start_date} to {end_date}")
-                    return None
-                    
-                preprocessed_frames = self._interpolate_and_add_channel_axis(
-                    subregion_frames, dim
-                )
-                processed_ds, _ = sliding_window(
-                    data=preprocessed_frames,
-                    frames=frames_per_sample
-                )
-
-            elif sample_setting == 2:
-                herbie_ds = self._get_hrrr_data_offset_by_forecast(
-                    start_date, end_date, frames_per_sample, product, verbose, is_first_chunk
-                )
-                
-                if not herbie_ds:
-                    print(f"No herbie data for chunk {start_date} to {end_date}")
-                    return None
-                    
-                subregion_grib_ds = self._subregion_grib_files(
-                    herbie_ds, extent, extent_name, product
-                )
-                
-                if not subregion_grib_ds:
-                    print(f"No subregion data for chunk {start_date} to {end_date}")
-                    return None
-                    
-                subregion_frames = self._grib_to_np(subregion_grib_ds)
-                
-                if len(subregion_frames) == 0:
-                    print(f"No frames extracted for chunk {start_date} to {end_date}")
-                    return None
-                    
-                preprocessed_frames = self._interpolate_and_add_channel_axis(
-                    subregion_frames, dim
-                )
-                processed_ds, _ = sliding_window(
-                    data=preprocessed_frames, 
-                    frames=frames_per_sample, 
-                    sequence_stride=frames_per_sample,
-                )
-            else:
-                msg = (
-                    "Argument \"sample_setting\" must be either:\n",
-                    "1 - frame-by-frame\n",
-                    "2 - offset-by-sample with forecasts\n"
-                )
-                raise ValueError(" ".join(msg))
-
-            return processed_ds
-            
-        except Exception as e:
-            print(f"Error in _process_chunk: {e}")
-            return None
-
-    def _attempt_download(
-        self, 
-        date_range, 
-        product, 
-        forecast_range=[0], 
-        max_threads=20
-    ):
-        '''
-        FastHerbie, but it throws exceptions instead of just logging them.
-        call it furbie, lmk
-        - Will handle reset connection (104), goes for 5 max attempts
-        - Any unhandled exception will throw it up.
-
-        Returns a list of Herbie objects.
-        '''
-
-        n_tasks = len(date_range) * len(forecast_range)
-        n_threads = min(n_tasks, max_threads)
-
-        # multithread locating grib files
-        # will pump out a list of herbie objects
-        herbies = self._multithread_dl_herbie_objects(
-            date_range, 
-            forecast_range, 
-            n_threads
-        )
-
-        # notify user about grib files that can't be found;
-        # not really planning on doing anything about though
-        found_files = [H for H in herbies if H.grib is not None]
-        lost_files = [H for H in herbies if H.grib is None]
-        if len(lost_files) > 0:
-            print(
-                f"⚠️  Could not find the following grib files:\n"
-                f"{lost_files}"
-            )
-
-        # multithread download grib files 
-        outfiles = self._multithread_dl_grib_files(
-            found_files, 
-            product, 
-            n_threads
-        )
-
-        # confirm xarray can read the grib files
-        for H in found_files:
-            self._verify_downloads(H, product)
-
-        return found_files
-
-    def _verify_downloads(self, H, product):
-        """
-        Will attempt to open the grib file with xarray.
-        If it cannot be opened, it will trigger a redownload
-
-        If successful, will continue. If unsuccessful, will 
-        attempt to redownload 5 times until re-raising the error.
-        """
-        success = False
-        attempt = 1
-        max_attempts = 5
-        while not success:
-            try:
-                file = H.get_localFilePath(product)
-                xr.open_dataset(file, engine="cfgrib", decode_timedelta=False)
-                success = True
-            except Exception as e:
-                # primarily meant to catch EOFError, but all errors should
-                if attempt > max_attempts:
-                    print("🚨 Max attempts reached, raising error.")
-                    raise
-
-                print(
-                    f"{e}\n"
-                    f"🤕 File corrupted while downloading; "
-                    f"beginning redownload attempt "
-                    f"{attempt}/{max_attempts}."
-                )
-                self._redownload(H, product, file)
-                attempt += 1
-
-    # NOTE downloading helpers
-    def _multithread_dl_grib_files(self, herbie_data, product, n_threads):
-        with ThreadPoolExecutor(n_threads) as exe:
-            def dl_grib_task(H, product):
-                return self._download_thread(H.download, search=product)
-            futures = [
-                exe.submit(dl_grib_task, H, product) 
-                for H in herbie_data 
-            ]
-        outfiles = [future.result() for future in as_completed(futures)]
-
-        return outfiles
     
-    def _multithread_dl_herbie_objects(
-        self, 
-        date_range, 
-        forecast_range, 
-        n_threads
-    ):
-        '''
-        Finds the remote grib files using Herbie. The Herbie object contains
-        a bunch of metadata regarding the grib file.
-
-        Also, the herbie objects will be sorted by date and forecast time.
-        '''
-        with ThreadPoolExecutor(n_threads) as exe:
-            def herbie_task(date_step, forecast_step):
-                return self._download_thread(
-                    Herbie, date=date_step, fxx=forecast_step
-                )
-            futures = [
-                exe.submit(herbie_task, date_step, forecast_step)
-                for date_step in date_range
-                for forecast_step in forecast_range
-            ]
-        herbies = [future.result() for future in as_completed(futures)]
-        herbies.sort(key=lambda H: H.fxx)
-        herbies.sort(key=lambda H: H.date)
-
-        return herbies
-
-    def _download_thread(self, dl_task, **kwargs):
-        '''
-        The function responsible for performing the download.
-
-        If there are no exceptions, the task to download will be run 
-        Will catch 104: Connection reset, and retry up to 5 times.
-        '''
-        max_attempts = 5
-        delay = 2
-        for attempt in range(2, max_attempts+2):
-            try:
-                return dl_task(**kwargs)
-            except ConnectionError as e:
-                if attempt <= max_attempts:
-                    print(
-                        f"⚠️  Error while downloading: {e}\n"
-                        f"🔧 Attempt number {attempt}/{max_attempts}, "
-                        f"backing off by {delay} seconds."
-                    )
-                    time.sleep(delay)
-                    delay *= 2
-                else:
-                    print(
-                        "❌ Download failed after {max_attempts} attempts!"
-                    )
-                    raise
-            except Exception as e:
-                print(f"Unknown exception: {e}")
-                raise
-        # shouldn't be here. either throws error or returns the task.
-
-    def _get_hrrr_data_frame_by_frame(
-        self, 
-        start_date, 
-        end_date, 
-        product, 
-        verbose
-    ):
-        '''
-        Uses FastHerbie to grab the remote data, and download it; frame by frame.
-
-        Arguments:
-            start_date: The start date of the query, in the form "yyyy-mm-dd-hh"
-            end_date: The end date of the query (exclusive)
-            product: regex of the product to download 
-            verbose: Determines if Herbie objects should be printed
-
-        Returns:
-            The list of Herbie objects of the downloaded data
-        '''
-        end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
-        dates = pd.date_range(start_date, end_date, freq="1h")
-
-        if len(dates) == 0:
-            print(f"No dates in range {start_date} to {end_date}")
-            return []
-
-        FH = self._attempt_download(
-            date_range=dates, 
-            product=product, 
-            forecast_range=[0]
-        )
-
-        if verbose:
-            [print(repr(H)) for H in FH]
-
-        return FH
-
-    def _get_hrrr_data_offset_by_forecast(
-        self, 
-        start_date,
-        end_date,
-        offset,
-        product,
-        verbose,
-        is_first_chunk
-    ):
-        '''
-        Uses FastHerbie to grab the remote data, and download it; offset by the
-        number of frames per sample, and using forecasts.
-
-        Arguments:
-            start_date: The start date of the query, in the form "yyyy-mm-dd-hh"
-            end_date: The end date of the query (exclusive)
-            offset: The number of frames per sample we offset by
-            product: regex of the product to download 
-            verbose: Determines if Herbie objects should be printed
-            is_first_chunk: Whether this is the first chunk being processed
-
-        Returns:
-            The list of Herbie objects of the downloaded data
-
-        '''
-        if is_first_chunk:
-            offset_start_date = pd.to_datetime(start_date) + pd.Timedelta(hours=offset - 1)
-            print(f"🔧 First chunk: applying offset of {offset-1} hours to start date")
-            print(f"   Original start: {start_date}")
-            print(f"   Offset start: {offset_start_date}")
-        else:
-            offset_start_date = pd.to_datetime(start_date)
-            print(f"📦 Subsequent chunk: no offset applied, using original start date: {start_date}")
+    def process_all_chunks(self):
+        chunks = self.generate_chunk_periods()
+        print(f"\nTotal chunks to process: {len(chunks)}")
+        
+        for chunk in tqdm(chunks, desc="Overall progress"):
+            chunk_file = os.path.join(self.chunk_dir, chunk['filename'])
             
-        end_date = pd.to_datetime(end_date) - pd.Timedelta(hours=1)
-        dates = pd.date_range(offset_start_date, end_date, freq="1h")
-
-        if len(dates) == 0:
-            print(f"No dates in range {offset_start_date} to {end_date}")
-            return []
-
-        FH = self._attempt_download(
-            date_range=dates,
-            product=product,
-            forecast_range=[i for i in range(1, offset + 1)]
-        )
-
-        if verbose:
-            [print(repr(H)) for H in FH]
-
-        return FH
-
-    def _subregion_grib_files(self, herbie_data, extent, extent_name, product):
-        '''
-        Takes a list of Herbie objects, and subregions the downloaded grib 
-        files. If there is no defined extent, no changes will be made.
-
-        Arguments:
-            herbie_data: The list containing the Herbie objects
-            extent: The bounding box with the shape: (a, b, c, d):
-                - a: bottom longitude
-                - b: top longitude
-                - c: bottom latitude
-                - d: top latitude
-            extent_name: Desired name of the subregion
-            product: Regex of the product that was downloaded
-
-        Returns:
-            A list of the subregioned grib files
-        '''
-        subregion_grib_files = []
-        for H in herbie_data:
-            attempts = 1
-            max_attempts = 3
-            success = False
-            while not success:
-                try:
-                    file = H.get_localFilePath(product)
-                    idx_file = wgrib2.create_inventory_file(file)
-                    subset_file = (
-                        file if extent is None
-                        else wgrib2.region(file, extent, name=extent_name)
-                    )
-                    subregion_grib_files.append(subset_file)
-                    success = True
-                except subprocess.CalledProcessError as e:
-                    if attempts > max_attempts:
-                        print("🚨 Max attempts reached, raising error.")
-                        raise
-
-                    print(
-                        f"⚠️  Issue found with file {file}.\n"
-                        f"wgrib2 exit code: {e.returncode}, "
-                        f"with error: {e.stderr}\n"
-                        f"Attempt {attempts}/{max_attempts}: "
-                        f"redownload and running subregion."
-                    )
-
-                    self._redownload(H, product, file)
-                    attempts += 1
-                except Exception as e:
-                    print(f"Unknown exception: {e}")
-                    raise
-
-        return subregion_grib_files
-
-    def _redownload(self, H, product, file):
-        '''
-        Helper to subregion(), which will delete the an offending file
-        and use the Herbie object + the product to redownload the file
-        '''
-        p = subprocess.run(
-            f"{which('rm')} {file}",
-            shell=True,
-            capture_output=True,
-            encoding="utf-8",
-            check=True,
-        )
-
-        # if file DNE, notify user (but do nothing about it)
-        if p.returncode != 0:
-            print(f"Warning: {p.stderr}")
-
-        # the issue here is the new file may be different;
-        # idk if redownloading changes the name? it seems that for
-        # the exact same subset, the file doesn't change; that's a relief..
-        self._multithread_dl_grib_files(
-            herbie_data=[H], 
-            product=product, 
-            n_threads=1
-        )
-
-    def _grib_to_np(self, grib_files):
-        '''
-        Converts a list of downloaded grib files into numpy. We assume that
-        there is only one data variable in the grib file.
-
-        Arguments:
-            grib_files: The paths of the grib files being converted
-
-        Returns:
-            A numpy array of the grib files
-        '''
-        np_of_grib = []
-        for file in grib_files:
+            if os.path.exists(chunk_file) and not self.force_reprocess:
+                continue
+            
+            tqdm.write(f"\n{'='*60}")
+            tqdm.write(f"Processing chunk {chunk['num']}/{len(chunks)}")
+            tqdm.write(f"Period: {chunk['start']} to {chunk['end']}")
+            
             try:
-                hrrr_xarr = xr.open_dataset(file, engine="cfgrib", decode_timedelta=False)
-
-                # for now, we'll only accept Datasets with one variable
-                data_vars = [variable for variable in hrrr_xarr.data_vars]
-                if len(data_vars) != 1:
-                    err_msg = (
-                        f"xarray Dataset should have only one data variable."
-                        f"Expected: 'unknown' for 'COLMD' or 'mdens' for 'MASSDEN',"
-                        f"Returned: {hrrr_xarr.data_vars.keys()}"
-                    )
-                    print(f"Warning: {' '.join(err_msg)} for file {file}")
-                    continue
-                variable = data_vars[0]
-
-                # hrrr data comes in (y, x), so it will need to be flipped for (x, y)
-                np_of_grib.append(np.flip(hrrr_xarr[variable].to_numpy(), axis=0))
+                chunk_data, timestamps = self.process_chunk(chunk['start'], chunk['end'])
                 
-                # Close the dataset to free memory
-                hrrr_xarr.close()
+                save_dict = {'timestamps': timestamps, 'start_date': chunk['start'], 'end_date': chunk['end']}
+                save_dict.update(chunk_data)
+                
+                np.savez_compressed(chunk_file, **save_dict)
+                tqdm.write(f"Saved chunk {chunk['num']}: {len(timestamps)} timestamps")
+                
+                del chunk_data
+                gc.collect()
                 
             except Exception as e:
-                print(f"Error processing file {file}: {e}")
+                tqdm.write(f"Error processing chunk {chunk['num']}: {e}")
+                if self.verbose:
+                    import traceback
+                    traceback.print_exc()
                 continue
+    
+    def process_chunk(self, start_date, end_date):
+        end_dt = pd.to_datetime(end_date.replace('-', ' ')) - pd.Timedelta(hours=1)
+        expected_dates = pd.date_range(start_date.replace('-', ' '), end_dt, freq='1h')
+        
+        if len(expected_dates) == 0:
+            raise ValueError(f"No dates in range {start_date} to {end_date}")
+        
+        herbies = self.download_all_variables(expected_dates)
+        tqdm.write(f"Downloaded {len(herbies)}/{len(expected_dates)} timestamps")
+        
+        all_data, successful_dates = self.extract_all_variables(herbies)
+        
+        aligned_data = {}
+        for var_name in self.variables.keys():
+            aligned_data[var_name] = self.align_and_fill(all_data[var_name], successful_dates, expected_dates)
+        
+        aligned_data['wind_speed'] = np.sqrt(aligned_data['u_wind']**2 + aligned_data['v_wind']**2)
+        
+        return aligned_data, expected_dates
+    
+    def download_all_variables(self, dates):
+        n_threads = min(len(dates), self.max_threads)
+        max_attempts = 5
+        
+        successful = []
+        failed = []
+        
+        with ThreadPoolExecutor(n_threads) as exe:
+            def download_task(date):
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        H = Herbie(date=date, fxx=0, verbose=False)
+                        if H.grib is not None:
+                            H.download(search=self.combined_search)
+                            return H
+                        return None
+                    except ConnectionError:
+                        if attempt < max_attempts:
+                            time.sleep(2 ** attempt)
+                            continue
+                        return None
+                    except Exception:
+                        return None
+                return None
+            
+            futures = {exe.submit(download_task, date): date for date in dates}
+            
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading", leave=False):
+                result = future.result()
+                if result is not None:
+                    successful.append(result)
+                else:
+                    failed.append(futures[future])
+        
+        successful.sort(key=lambda H: H.date)
+        
+        if failed and self.verbose:
+            tqdm.write(f"Failed to download {len(failed)} timestamps")
+        
+        return successful
+    
+    def extract_all_variables(self, herbie_list):
+        all_data = {var: [] for var in self.variables.keys()}
+        successful_dates = []
+        
+        for H in tqdm(herbie_list, desc="Extracting", leave=False):
+            try:
+                result = H.xarray(search=self.combined_search, remove_grib=False)
+                
+                if isinstance(result, list):
+                    ds = result[0]
+                    for other_ds in result[1:]:
+                        ds = ds.merge(other_ds, compat='override')
+                else:
+                    ds = result
+                
+                extracted = {}
+                for var_name, var_info in self.variables.items():
+                    found_var = None
+                    for possible_name in var_info['var_names']:
+                        if possible_name in ds:
+                            found_var = possible_name
+                            break
+                    
+                    if found_var is None:
+                        found_var = list(ds.data_vars)[0]
+                    
+                    data_subset, lats_subset, lons_subset = self.subset_and_get_coords(ds, found_var)
+                    data_interp = self.interpolate_to_latlon(data_subset, lats_subset, lons_subset)
+                    extracted[var_name] = data_interp
+                
+                ds.close()
+                
+                for var_name in self.variables.keys():
+                    all_data[var_name].append(extracted[var_name])
+                successful_dates.append(H.date)
+                
+            except Exception as e:
+                if self.verbose:
+                    tqdm.write(f"Failed to extract {H.date}: {e}")
+                continue
+        
+        for var_name in all_data.keys():
+            if len(all_data[var_name]) > 0:
+                all_data[var_name] = np.array(all_data[var_name])
+            else:
+                all_data[var_name] = np.array([]).reshape(0, self.grid_size, self.grid_size)
+        
+        return all_data, successful_dates
+    
+    def subset_and_get_coords(self, ds, var_name):
+        data = ds[var_name].values
+        
+        if data.ndim == 3:
+            data = data[0]
+        
+        if 'latitude' in ds.coords:
+            lats = ds['latitude'].values
+            lons = ds['longitude'].values
+        else:
+            lats = ds['lat'].values
+            lons = ds['lon'].values
+        
+        if lats.ndim == 2:
+            lon_min = 360 + self.extent[0]
+            lon_max = 360 + self.extent[1]
+            
+            lat_mask = (lats >= self.extent[2]) & (lats <= self.extent[3])
+            lon_mask = (lons >= lon_min) & (lons <= lon_max)
+            combined_mask = lat_mask & lon_mask
+            
+            where_result = np.where(combined_mask)
+            if len(where_result[0]) > 0:
+                i_min, i_max = where_result[0].min(), where_result[0].max()
+                j_min, j_max = where_result[1].min(), where_result[1].max()
+                
+                pad = 2
+                i_min = max(0, i_min - pad)
+                i_max = min(data.shape[0] - 1, i_max + pad)
+                j_min = max(0, j_min - pad)
+                j_max = min(data.shape[1] - 1, j_max + pad)
+                
+                data_subset = data[i_min:i_max+1, j_min:j_max+1]
+                lats_subset = lats[i_min:i_max+1, j_min:j_max+1]
+                lons_subset = lons[i_min:i_max+1, j_min:j_max+1] - 360
+                
+                return data_subset, lats_subset, lons_subset
+        
+        return data, lats, lons - 360
+    
+    def interpolate_to_latlon(self, data, lats, lons):
+        points = np.column_stack((lons.flatten(), lats.flatten()))
+        values = data.flatten()
+        
+        valid_mask = ~np.isnan(values)
+        if not np.any(valid_mask):
+            return np.zeros((self.grid_size, self.grid_size))
+        
+        points = points[valid_mask]
+        values = values[valid_mask]
+        
+        try:
+            interpolated = griddata(points, values, (self.lon_grid, self.lat_grid), method='linear')
+            
+            if np.any(np.isnan(interpolated)):
+                interpolated_nn = griddata(points, values, (self.lon_grid, self.lat_grid), method='nearest')
+                interpolated = np.where(np.isnan(interpolated), interpolated_nn, interpolated)
+        except:
+            interpolated = griddata(points, values, (self.lon_grid, self.lat_grid), method='nearest')
+        
+        return np.flip(interpolated, axis=0)
+    
+    def align_and_fill(self, frames, dates, expected_dates):
+        n_times = len(expected_dates)
+        aligned = np.full((n_times, self.grid_size, self.grid_size), np.nan)
+        
+        for frame, date in zip(frames, dates):
+            try:
+                idx = expected_dates.get_loc(date)
+                aligned[idx] = frame
+            except KeyError:
+                continue
+        
+        missing = np.isnan(aligned).all(axis=(1, 2)).sum()
+        if missing > 0:
+            tqdm.write(f"Data gaps: {missing} hours missing, forward filling...")
+        
+        for t in range(n_times):
+            if np.isnan(aligned[t]).all() and t > 0:
+                aligned[t] = aligned[t-1]
+        
+        if np.isnan(aligned[0]).all():
+            for t in range(1, n_times):
+                if not np.isnan(aligned[t]).all():
+                    aligned[0] = aligned[t]
+                    break
+        
+        return aligned
+    
+    def combine_chunks(self):
+        print(f"\nCombining all chunks into final output...")
+        
+        chunks = self.generate_chunk_periods()
+        
+        all_vars = list(self.variables.keys()) + ['wind_speed']
+        all_data = {var: [] for var in all_vars}
+        all_timestamps = []
+        
+        for chunk in tqdm(chunks, desc="Combining chunks"):
+            chunk_file = os.path.join(self.chunk_dir, chunk['filename'])
+            
+            if not os.path.exists(chunk_file):
+                tqdm.write(f"Warning: Missing chunk {chunk['num']}, skipping...")
+                continue
+            
+            data = np.load(chunk_file, allow_pickle=True)
+            
+            for var in all_vars:
+                if var in data:
+                    all_data[var].append(data[var])
+            
+            all_timestamps.extend(data['timestamps'])
+        
+        final_data = {}
+        for var, arrays in all_data.items():
+            if len(arrays) > 0:
+                final_data[var] = np.concatenate(arrays, axis=0)
+        
+        print(f"Saving final dataset to {self.final_output}")
+        
+        save_dict = {
+            'timestamps': all_timestamps,
+            'extent': self.extent,
+            'grid_size': self.grid_size,
+            'variables': list(final_data.keys())
+        }
+        save_dict.update(final_data)
+        
+        np.savez_compressed(self.final_output, **save_dict)
+        
+        print(f"\nComplete!")
+        print(f"Timestamps: {len(all_timestamps)} | Range: {all_timestamps[0]} to {all_timestamps[-1]}")
+        for var, arr in final_data.items():
+            print(f"  {var}: {arr.shape}, [{arr.min():.2f}, {arr.max():.2f}]")
+        
+        self.data = final_data
+        self.timestamps = all_timestamps
+    
+    def load_final_data(self):
+        data = np.load(self.final_output, allow_pickle=True)
+        
+        self.data = {}
+        for key in data.files:
+            if key not in ['timestamps', 'extent', 'grid_size', 'variables']:
+                self.data[key] = data[key]
+        
+        self.timestamps = data['timestamps']
+        
+        print(f"Loaded: {len(self.timestamps)} timestamps")
+        for var, arr in self.data.items():
+            print(f"  {var}: {arr.shape}, [{arr.min():.2f}, {arr.max():.2f}]")
 
-        return np.array(np_of_grib)
 
-    def _interpolate_and_add_channel_axis(self, subregion_ds, dim):
-        ''' 
-        Takes a dataset frames (x, y), interpolates/decimates according to
-        the dimensions, and adds a channel axis.
-
-        Arguments:
-            subregion_ds: The numpy array containing a list of frames
-            dim: The desired dimensions
-
-        Returns:
-            A numpy array of frames
-        '''
-        n_frames = len(subregion_ds)
-        channels = 1
-        frames = np.empty(shape=(n_frames, dim, dim, channels))
-
-        # interpolate and add channel axis
-        for i, frame in enumerate(subregion_ds):
-            new_frame = cv2.resize(frame, (dim, dim))
-            new_frame = np.reshape(new_frame, (dim, dim, channels))
-            frames[i] = new_frame
-
-        return frames
+if __name__ == "__main__":
+    extent = (-118.615, -117.70, 33.60, 34.35)
+    
+    extractor = HRRRData(
+        extent=extent,
+        extent_name='la_basin',
+        output_dir='data/hrrr_surface',
+        chunk_months=2,
+        force_reprocess=True,
+        verbose=True,
+        max_threads=20
+    )
