@@ -28,7 +28,7 @@ class AirNowData:
         extent=(-118.615, -117.70, 33.60, 34.35),
         airnow_api_key=None,
         save_dir='data/airnow.json',
-        processed_cache_dir='data/airnow_processed-250.npz',
+        processed_cache_dir='data/airnow_processed.npz',
         dim=84,
         use_interpolation=True,
         idw_power=2,
