@@ -27,8 +27,8 @@ class NAQFCData:
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
         product='pm25',         # 'pm25' = pm2.5, 'o3' = ozone, 'dust', 'smoke'
-        local_path=None,        # where grib files should be saved to/live in
-        save_path=None,         # where the final numpy file should be saved to
+        local_path=None,        # where grib files should be saved to/live in. saved to folder 'noaa-nws-naqfc-pds-{product}'
+        save_path=None,         # where the final numpy file should be saved to, saved to 'naqfc_{product}_processed.npz'
         load_numpy=False,       # specifies the numpy file should be loaded from cache
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ): 
@@ -202,11 +202,10 @@ class NAQFCData:
         if save_path is None:
             raise ValueError('Provide a save path.')
 
-        dirpath = os.path.dirname(save_path)
-        if not os.path.exists(dirpath):
+        if not os.path.exists(save_path):
             raise ValueError(
                 f'Invalid path to file. '
-                f'Either correct it or create {dirpath}.'
+                f'Either correct it or create the path.'
             )
         return save_path
 
