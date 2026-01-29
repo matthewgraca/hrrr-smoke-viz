@@ -24,19 +24,36 @@ class PWWBPyDataset(PyDataset):
         y_path: str,
         batch_size: int,
         shuffle: bool = False,
+        keep_remainder: bool = False,
         **kwargs
     ):
+        '''
+        Args:
+            x_path: path to the X file, e.g. X_train.npy
+            y_path: path to the target file, e.g. Y_test.npy
+            batch_size: size of the batch
+            shuffle: shuffles the dataset if true
+            keep_remainder: if a bundle of samples is insufficient to make a 
+                full batch, it will still be kept. Otherwise, it will be 
+                excluded. Primarily used when stateful=True, which doesn't 
+                play nice with arbitrary batch sizes.
+        '''
         super().__init__(**kwargs)
         self.X, self.Y = self._validate_datasets(x_path, y_path)
         self.input_shape = self.X.shape[1:]
         self.batch_size = self._validate_batch_size(batch_size)
         self.shuffle = shuffle
+        self.keep_remainder = keep_remainder
         self.indices = np.arange(len(self.X))
         self.on_epoch_end()
 
     def __len__(self):
         # gets number of batches in the dataset
-        return math.ceil(len(self.X) / self.batch_size)
+        return (
+            math.ceil(len(self.X) / self.batch_size)
+            if self.keep_remainder 
+            else len(self.X) // self.batch_size # excludes batches too small 
+        )
 
     def __getitem__(self, idx):
         # python silently clamps if stop_idx overflows; no need for bounds checking
