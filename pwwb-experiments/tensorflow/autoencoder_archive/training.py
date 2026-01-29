@@ -2,7 +2,7 @@ import argparse
 
 def argparser(valid_models, valid_losses):
     parser = argparse.ArgumentParser(
-        description='Training script (you will need to manually edit paths in the script!)'
+        description='training script'
     )
     parser.add_argument(
         'model',
@@ -11,6 +11,10 @@ def argparser(valid_models, valid_losses):
     parser.add_argument(
         'loss',
         help=f'the loss function to use: {valid_losses}'
+    )
+    parser.add_argument(
+        'data',
+        help='location of the data'
     )
     parser.add_argument(
         '-r', '--results_folder',
@@ -39,13 +43,15 @@ def argparser(valid_models, valid_losses):
     return args
 
 args = argparser(
-    valid_models=set(['classic', 'two_path', 'dual_autoencoder']),
-    valid_losses=set(['grid', 'nhood'])
+    valid_models=set(['classic', 'two_path', 'dual_autoencoder', 'stateful_dual_autoencoder', 'stateful_classic']),
+    valid_losses=set(['grid_mae', 'grid_mse', 'nhood'])
 )
+
+stateful = True if (args.model == 'stateful_dual_autoencoder' or args.model == 'stateful_classic') else False
 
 # training parameters
 EPOCHS = 100
-BATCH_SIZE = 64
+BATCH_SIZE = 4 if stateful else 64 
 
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -66,13 +72,13 @@ EXPERIMENT_NAME = (
 
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
 EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/autoencoder_archive')
-DATA_PATH = os.path.join(EXPERIMENT_PATH, 'preprocessed_cache/npy_files')
+DATA_PATH = os.path.join(EXPERIMENT_PATH, f'{args.data}/npy_files')
 RESULTS_PATH = os.path.join(EXPERIMENT_PATH, f'results/{EXPERIMENT_NAME}')
 os.makedirs(RESULTS_PATH, exist_ok=True)
 
 sys.path.append(BASE_PATH)
 from libs.pwwb.utils.dataset import PWWBPyDataset
-import libs.models as model
+import libs.models as local_model
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -101,14 +107,14 @@ with open(os.path.join(EXPERIMENT_PATH, 'preprocessed_cache/metadata.pkl'), 'rb'
     metadata = pickle.load(f)
 channel_to_idx = {ch : i for i, ch in enumerate(metadata['channel_names'])}
 
-
 # load dataset
 print(f'{TextColor.BLUE}Lazy loading datasets...{TextColor.ENDC}')
 train_ds = PWWBPyDataset(
     x_path=os.path.join(DATA_PATH, 'X_train.npy'),
     y_path=os.path.join(DATA_PATH, 'Y_train.npy'),
     batch_size=BATCH_SIZE,
-    shuffle=True,
+    shuffle=False if stateful else True,
+    keep_remainder=False if stateful else True,
     workers=WORKERS,
     use_multiprocessing=USE_MULTIPROCESSING
 )
@@ -119,6 +125,7 @@ valid_ds = PWWBPyDataset(
     y_path=os.path.join(DATA_PATH, 'Y_valid.npy'),
     batch_size=BATCH_SIZE,
     shuffle=False,
+    keep_remainder=False if stateful else True,
     workers=WORKERS,
     use_multiprocessing=USE_MULTIPROCESSING
 )
@@ -129,6 +136,7 @@ test_ds = PWWBPyDataset(
     y_path=os.path.join(DATA_PATH, 'Y_test.npy'),
     batch_size=BATCH_SIZE,
     shuffle=False,
+    keep_remainder=False if stateful else True,
     workers=WORKERS,
     use_multiprocessing=USE_MULTIPROCESSING
 )
@@ -136,9 +144,32 @@ print('\tTest dataset loaded.\n')
 
 input_shape = train_ds.input_shape
 f, h, w, c = input_shape
+
+ARCH_5x5 = {
+    'temporal_filters': [16, 24, 32],
+    'spatial_filters': [32, 48, 64],
+    'bottleneck': 128,
+    'latent_size': 5,
+    'strides': [2, 2, 2]
+}
+
+ARCH_10x10 = {
+    'temporal_filters': [16, 24, 32],
+    'spatial_filters': [32, 48],
+    'bottleneck': 256,
+    'latent_size': 10,
+    'strides': [2, 2]
+}
+
+convlstm_reg_config = {
+    'kernel_regularizer': keras.regularizers.l2(3e-4),
+    'recurrent_regularizer': keras.regularizers.l2(3e-4),
+    'dropout': 0.15
+}
+
 match args.model:
     case 'classic':
-        model = model.classic(input_shape)
+        model = local_model.classic(input_shape)
     case 'two_path':
         path1_channel_names = [
             'AirNow_PM25', 'AirNow_Hourly_Clim', 'OpenAQ_PM25', 'NAQFC_PM25',
@@ -149,35 +180,13 @@ match args.model:
             'HRRR_Wind_U', 'HRRR_Wind_V', 'HRRR_Wind_Speed', 'HRRR_Temp_2m',
             'HRRR_PBL_Height', 'HRRR_Precip_Rate', 'Elevation', 'NDVI', 'GOES', 'TEMPO'
         ]
-        model = model.two_path(
+        model = local_model.two_path(
             input_shape,
             path1_channels=[channel_to_idx[ch] for ch in path1_channel_names],
             path2_channels=[channel_to_idx[ch] for ch in path2_channel_names],
         )
     case 'dual_autoencoder':
-        ARCH_5x5 = {
-            'temporal_filters': [16, 24, 32],
-            'spatial_filters': [32, 48, 64],
-            'bottleneck': 128,
-            'latent_size': 5,
-            'strides': [2, 2, 2]
-        }
-
-        ARCH_10x10 = {
-            'temporal_filters': [16, 24, 32],
-            'spatial_filters': [32, 48],
-            'bottleneck': 256,
-            'latent_size': 10,
-            'strides': [2, 2]
-        }
-
-        convlstm_reg_config = {
-            'kernel_regularizer': keras.regularizers.l2(3e-4),
-            'recurrent_regularizer': keras.regularizers.l2(3e-4),
-            'dropout': 0.15
-        }
-
-        model = model.dual_autoencoder(
+        model = local_model.dual_autoencoder(
             input_shape,
             arch_config=ARCH_5x5,
             convlstm_reg_config=convlstm_reg_config,
@@ -191,12 +200,34 @@ match args.model:
                 for ch in metadata['forecast_channels']
             ]
         )
+    case 'stateful_dual_autoencoder':
+        dual_autoencoder_config = {
+            'input_shape': input_shape,
+            'arch_config': ARCH_5x5,
+            'convlstm_reg_config': convlstm_reg_config,
+            'output_horizon': metadata['forecast_horizon'],
+            'observed_channels': [
+                metadata['channel_names'].index(ch)
+                for ch in metadata['observed_channels']
+            ],
+            'forecast_channels': [
+                metadata['channel_names'].index(ch)
+                for ch in metadata['forecast_channels']
+            ],
+            'stateful': True,
+            'batch_size': BATCH_SIZE
+        }
+        model = local_model.dual_autoencoder(**dual_autoencoder_config)
+    case 'stateful_classic':
+        model = local_model.stateful_classic(input_shape, BATCH_SIZE)
     case _:
-        raise ValueError(f'Invalid model choice; pick from : {valid_models}')
+        raise ValueError(f'Model not implemented.')
 
 match args.loss:
-    case 'grid':
+    case 'grid_mae':
         model.compile(loss='mean_absolute_error', optimizer='adam')
+    case 'grid_mse':
+        model.compile(loss='mean_squared_error', optimizer='adam')
     case 'nhood':
         from libs.loss import NHoodMAE
         model.compile(loss=NHoodMAE(sensors=metadata['sensors'], dim=h), optimizer='adam')
@@ -222,20 +253,31 @@ if args.test:
     sys.exit()
 
 print(f'{TextColor.BLUE}Beginning Training{TextColor.ENDC}')
+
+callbacks = [
+    EarlyStopping(
+        monitor='val_loss',
+        min_delta=0,
+        patience=15,
+        verbose=1,
+        mode='min',
+        restore_best_weights=True
+    )
+]
+
+if stateful:
+    class ResetStatesCallback(keras.callbacks.Callback):
+        def on_epoch_begin(self, epoch, logs):
+            for layer in self.model.layers:
+                if hasattr(layer, 'reset_states'):
+                    layer.reset_states()
+    callbacks.append(ResetStatesCallback())
+
 history = model.fit(
     train_ds,
     validation_data=valid_ds,
     epochs=EPOCHS,
-    callbacks=[
-        EarlyStopping(
-            monitor='val_loss',
-            min_delta=0,
-            patience=15,
-            verbose=1,
-            mode='min',
-            restore_best_weights=True
-        )
-    ]
+    callbacks=callbacks
 )
 print()
 
@@ -249,5 +291,10 @@ model.save(os.path.join(RESULTS_PATH, 'model.keras'))
 print(f'{TextColor.GREEN}complete.{TextColor.ENDC}\n')
 
 print(f'{TextColor.BLUE}Generating and saving predictions.{TextColor.ENDC}')
+if stateful:
+    for layer in model.layers:
+        if hasattr(layer, 'reset_states'):
+            layer.reset_states()
+
 y_pred = model.predict(test_ds)
 np.save(os.path.join(RESULTS_PATH, 'y_pred.npy'), y_pred)
