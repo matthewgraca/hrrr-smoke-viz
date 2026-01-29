@@ -28,6 +28,34 @@ def classic(input_shape):
 
     return model
 
+def stateful_classic(input_shape, batch_size):
+    from keras.models import Sequential
+    from keras.layers import ConvLSTM2D, Conv3D, InputLayer
+    from keras.optimizers import Adam
+
+    # common args in each layer to reduce function call length
+    CONVLSTM2D_ARGS = {
+        'kernel_size': (3, 3),
+        'padding': 'same',
+        'return_sequences': True,
+        'stateful': True
+    }
+
+    CONV3D_ARGS = {
+        'kernel_size': (3, 3, 3),
+        'activation': 'relu',
+        'padding': 'same'    
+    }
+
+    model = Sequential()
+    model.add(InputLayer(shape=input_shape, batch_size=batch_size))
+    model.add(ConvLSTM2D(filters=25, **CONVLSTM2D_ARGS))
+    model.add(ConvLSTM2D(filters=50, **CONVLSTM2D_ARGS))
+    model.add(Conv3D(filters=25, **CONV3D_ARGS))
+    model.add(Conv3D(filters=1, **CONV3D_ARGS))
+
+    return model
+
 def two_path(input_shape, path1_channels, path2_channels):
     # pass in the indices of the channels, not their name!
     from keras.layers import Input, Conv3D, ConvLSTM2D
@@ -81,7 +109,9 @@ def dual_autoencoder(
     convlstm_reg_config,
     output_horizon, 
     observed_channels, 
-    forecast_channels
+    forecast_channels,
+    stateful=False,
+    batch_size=None
 ):
     import tensorflow as tf
     from tensorflow.keras.layers import (
@@ -121,7 +151,8 @@ def dual_autoencoder(
     def arm_block(
         input_shape, 
         filters, 
-        forecast_arm=False
+        forecast_arm,
+        stateful_args
     ):
         '''
         Two return options:
@@ -130,11 +161,11 @@ def dual_autoencoder(
             - forecast_arm true: uses future arm architecture, 
                 no hidden/cell state returned
         '''
-        _b, t, h, w, c = input_shape
+        b, t, h, w, c = input_shape
         prefix = 'fcast' if forecast_arm else 'past'
 
         # block 1
-        inputs = Input(shape=(t, h, w, c), name=f'{prefix}_inputs')
+        inputs = Input(shape=(t, h, w, c), batch_size=b, name=f'{prefix}_inputs')
         x_1 = Conv3D(
             filters=filters[0], 
             kernel_size=(1,1,1),
@@ -146,7 +177,8 @@ def dual_autoencoder(
             kernel_size=(3,3),
             padding='same', 
             return_sequences=True,
-            name=f'{prefix}_lstm1'
+            name=f'{prefix}_lstm1',
+            **stateful_args
         )(x_1)
         x_out = Add(name=f'skip_{prefix}_lstm1')([x_2, x_1])
 
@@ -156,7 +188,8 @@ def dual_autoencoder(
             kernel_size=(3,3),
             padding='same',
             return_sequences=True,
-            name=f'{prefix}_lstm2'
+            name=f'{prefix}_lstm2',
+            **stateful_args
         )(x_out)
         y_2 = Conv3D(
             filters=filters[1],
@@ -178,7 +211,8 @@ def dual_autoencoder(
                 padding='same', 
                 return_sequences=True,
                 return_state=True, 
-                name=f'{prefix}_lstm3'
+                name=f'{prefix}_lstm3',
+                **stateful_args
             )(y_out)
         )
 
@@ -189,8 +223,8 @@ def dual_autoencoder(
         )
 
     def encoder_block(input_shape, t_filters, s_filters, strides, prefix):
-        _b, t, h, w, c = input_shape
-        inputs = Input(shape=(t, h, w, c))
+        b, t, h, w, c = input_shape
+        inputs = Input(shape=(t, h, w, c), batch_size=b)
 
         # temporal compression
         x = Lambda(
@@ -221,8 +255,8 @@ def dual_autoencoder(
 
     def bottleneck_block(input_shape, latent_size, bottleneck, spatial_filters):
         # aka latent space fusion
-        _b, h, w, c = input_shape
-        inputs = Input(shape=(h, w, c), name='fused_encodings')
+        b, h, w, c = input_shape
+        inputs = Input(shape=(h, w, c), batch_size=b, name='fused_encodings')
         
         x = Flatten(name='bn_flat')(inputs)
         x = Dense(bottleneck, activation='relu', name='bn_dense')(x)
@@ -238,7 +272,7 @@ def dual_autoencoder(
     
         return Model(inputs, outputs=x, name='bottleneck')
 
-    def temporal_decoder(input_shapes, in_t, output_horizon, spatial_filters, temporal_filters):
+    def temporal_decoder(input_shapes, in_t, output_horizon, spatial_filters, temporal_filters, stateful_args):
         def create_pos_encoding(x, output_horizon):
             pos = tf.reshape(
                 tensor=tf.range(output_horizon, dtype=tf.float32) / output_horizon,
@@ -254,10 +288,10 @@ def dual_autoencoder(
                 multiples=[1, output_horizon, 1, 1, 1]
             )
     
-        _b, h, w, _c = input_shapes[0]
-        inputs = Input(shape=input_shapes[0][1:])
-        hidden_state = Input(shape=input_shapes[1][1:], name='past_hidden_skip')
-        cell_state = Input(shape=input_shapes[2][1:], name='past_cell_skip')
+        b, h, w, _c = input_shapes[0]
+        inputs = Input(shape=input_shapes[0][1:], batch_size=b)
+        hidden_state = Input(shape=input_shapes[1][1:], batch_size=b, name='past_hidden_skip')
+        cell_state = Input(shape=input_shapes[2][1:], batch_size=b, name='past_cell_skip')
 
         x_1 = Lambda(
             function=lambda t : tile(t, output_horizon),
@@ -276,7 +310,8 @@ def dual_autoencoder(
             kernel_size=(3,3), 
             padding='same', 
             return_sequences=True, 
-            name='dec_lstm1'
+            name='dec_lstm1',
+            **stateful_args
         )(
             y, initial_state=[hidden_state, cell_state]
         )
@@ -287,7 +322,8 @@ def dual_autoencoder(
             kernel_size=(3,3),
             padding='same', 
             return_sequences=True, 
-            name='dec_lstm2'
+            name='dec_lstm2',
+            **stateful_args
         )(y)
         z = Add(name='skip_dec_lstm2')([z, y])
 
@@ -304,7 +340,12 @@ def dual_autoencoder(
     strides = arch_config['strides']
 
     in_t, in_h, in_w, in_c = input_shape 
-    inputs = Input(shape=input_shape)
+    inputs = Input(shape=input_shape, batch_size=batch_size)
+
+    stateful_args = {
+        'stateful': True,
+        #'batch_input_shape': (batch_size, output_horizon, in_h, in_w, in_c)
+    } if stateful else {}
     
     print(f"Input: {input_shape} -> Output: ({output_horizon}, {in_h}, {in_w}, 1)")
     
@@ -313,7 +354,8 @@ def dual_autoencoder(
     past_state, h, c = arm_block(
         input_shape=past_in.shape,
         filters=temporal_filters,
-        forecast_arm=False
+        forecast_arm=False,
+        stateful_args=stateful_args
     )(past_in)
     past_enc, *past_encs = encoder_block(
         past_state.shape, temporal_filters, spatial_filters, strides, 'past'
@@ -324,7 +366,8 @@ def dual_autoencoder(
     fcast_state = arm_block(
         input_shape=fcast_in.shape,
         filters=temporal_filters,
-        forecast_arm=True
+        forecast_arm=True,
+        stateful_args=stateful_args
     )(fcast_in)
     fcast_enc, *fcast_encs = encoder_block(
         fcast_state.shape, temporal_filters, spatial_filters, strides, 'fcast'
@@ -335,7 +378,7 @@ def dual_autoencoder(
     fused = bottleneck_block(fused.shape, latent_size, bottleneck, spatial_filters)(fused)
     
     dec = spatial_decoder(fused, past_encs, fcast_encs, spatial_filters, temporal_filters)
-    x = temporal_decoder([dec.shape, h.shape, c.shape], in_t, output_horizon, spatial_filters, temporal_filters)([dec, h, c])
+    x = temporal_decoder([dec.shape, h.shape, c.shape], in_t, output_horizon, spatial_filters, temporal_filters, stateful_args)([dec, h, c])
 
     output = Conv3D(1, (1,1,1), padding='same', activation='relu', name='output')(x)
     
