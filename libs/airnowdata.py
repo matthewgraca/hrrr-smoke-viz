@@ -592,6 +592,17 @@ class AirNowData:
             )
             return df[~out_of_extent].reset_index(drop=True)
 
+        def filter_low_sensor_timesteps(df, min_reporting=0.3):
+            '''
+            Checks if each frame has the required amount of minimum sensors.
+            Sets sensors to nan otherwise.
+            '''
+            min_sensors = int(min_reporting * df['SiteName'].nunique())
+            valid_counts = df.groupby('UTC')['Value'].transform(lambda x: x.notna().sum())
+            df = df.copy()
+            df.loc[valid_counts <= min_sensors, 'Value'] = np.nan
+            return df
+
         original_data = airnow_df.copy()
         filtered_data = remove_underreporting_sensors(original_data, min_uptime)
         filtered_data = remove_sensors_out_of_extent(filtered_data, self.extent)
@@ -600,6 +611,7 @@ class AirNowData:
         filtered_data = generate_samples_from_time(filtered_data, start_date, end_date)
         filtered_data = remove_zscore_outliers(filtered_data, self.zscore_threshold)
         filtered_data = apply_hard_cap(filtered_data, self.hard_cap)
+        filtered_data = filter_low_sensor_timesteps(filtered_data)
 
         return [group for name, group in filtered_data.groupby('UTC')]
 
