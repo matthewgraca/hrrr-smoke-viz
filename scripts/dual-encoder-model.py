@@ -4,6 +4,9 @@ from tensorflow.keras.layers import (
     Reshape, UpSampling2D, Lambda, concatenate
 )
 from tensorflow.keras.models import Model
+import sys
+sys.path.append('/home/mgraca/Workspace/hrrr-smoke-viz')
+from libs.layers import ChannelSplitLayer
 
 
 ARCH_5x5 = {
@@ -23,7 +26,13 @@ ARCH_10x10 = {
 }
 
 
-def build_model(input_shape, arch_config, output_horizon, n_observed):
+def build_model(
+    input_shape, 
+    arch_config, 
+    output_horizon, 
+    observed_channels, 
+    forecast_channels
+):
     inputs = Input(shape=input_shape)
     height, width = input_shape[1], input_shape[2]
     
@@ -60,8 +69,12 @@ def build_model(input_shape, arch_config, output_horizon, n_observed):
         x = Conv2D(temporal_filters[2], (3,3), padding='same', activation='relu', name=f'dec_d{len(spatial_filters)}')(x)
         return x
     
+    '''
     observed = inputs[:, :, :, :, :n_observed]
     forecast = inputs[:, :, :, :, n_observed:]
+    '''
+    observed = ChannelSplitLayer(observed_channels)(inputs)
+    forecast = ChannelSplitLayer(forecast_channels)(inputs)
     
     past_proj = Conv3D(temporal_filters[0], (1,1,1), padding='same', name='past_proj')(observed)
     past_lstm1 = ConvLSTM2D(temporal_filters[0], (3,3), padding='same', return_sequences=True, name='past_lstm1')(past_proj)
@@ -118,20 +131,47 @@ def build_model(input_shape, arch_config, output_horizon, n_observed):
 if __name__ == "__main__":
     import pickle
     
-    cache_path = 'data/shared/new_extent_cache/preprocessed_cache/24in_24out_no_holidays'
+    #cache_path = 'data/shared/new_extent_cache/preprocessed_cache/24in_24out_no_holidays'
+    import os
+    BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
+    EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/autoencoder_archive')
+    RESULTS_PATH = os.path.join(EXPERIMENT_PATH, 'results') # my idea is the experiments are just numbered, and a json describes the experiment (the ARCH dict)
+    cache_path = os.path.join(EXPERIMENT_PATH, 'preprocessed_cache')
     
     with open(f"{cache_path}/metadata.pkl", 'rb') as f:
         metadata = pickle.load(f)
     
+    observed_channels = [
+        metadata['channel_names'].index(ch)
+        for ch in metadata['observed_channels']
+    ]
+    forecast_channels = [
+        metadata['channel_names'].index(ch)
+        for ch in metadata['forecast_channels']
+    ]
+
+    '''
     n_observed = len(metadata.get('observed_channels', []))
+    print('n_observed', n_observed)
     n_forecast = len(metadata.get('forecast_channels', []))
+    print('n_forecast', n_observed)
     n_channels = n_observed + n_forecast
+    '''
     input_horizon = metadata.get('input_horizon', 24)
     output_horizon = metadata.get('output_horizon', 24)
     
-    input_shape = (input_horizon, 40, 40, n_channels)
+    input_shape = (input_horizon, 40, 40, len(metadata['channel_names']))
     
-    print(f"Observed: {n_observed}, Forecast: {n_forecast}, Total: {n_channels}")
+    #print(f"Observed: {n_observed}, Forecast: {n_forecast}, Total: {n_channels}")
     
-    model = build_model(input_shape, ARCH_5x5, output_horizon, n_observed)
+    model = build_model(
+        input_shape, 
+        ARCH_5x5, 
+        output_horizon, 
+        observed_channels,
+        forecast_channels
+    )
     model.summary()
+
+    from tensorflow.keras.utils import plot_model
+    plot_model(model, to_file=os.path.join(RESULTS_PATH, 'model.png'), show_layer_names=True, expand_nested=False, show_shapes=True)
