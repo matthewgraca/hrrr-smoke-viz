@@ -308,22 +308,9 @@ def load_static_data(data_key, n_timesteps, height, width, cache_dir):
         if os.path.exists(ndvi_path):
             print(f"    Loading NDVI from {ndvi_path}...")
             ndvi = np.load(ndvi_path)
-            if ndvi.ndim == 3:
-                ndvi = ndvi[0]
-            if ndvi.shape != (height, width):
-                import cv2
-                ndvi = cv2.resize(ndvi, (width, height))
-            
             ndvi_min, ndvi_max = ndvi.min(), ndvi.max()
-            print(f"    NDVI raw range: [{ndvi_min:.3f}, {ndvi_max:.3f}]")
-            
-            if ndvi_min >= -1 and ndvi_max <= 1:
-                ndvi = (ndvi + 1) / 2
-            else:
-                ndvi = (ndvi - ndvi_min) / (ndvi_max - ndvi_min + 1e-8)
-            
-            print(f"    NDVI normalized range: [{ndvi.min():.3f}, {ndvi.max():.3f}]")
-            return np.tile(ndvi[np.newaxis, :, :], (n_timesteps, 1, 1))
+            print(f"    NDVI range: [{ndvi_min:.3f}, {ndvi_max:.3f}]")
+            return ndvi
         
         print("    Warning: NDVI file not found, using zeros")
         return np.zeros((n_timesteps, height, width))
@@ -381,7 +368,9 @@ def preprocess_dataset_split(
     forecast_horizon=24,
     target_source='airnow',
     train_pct=0.75,
-    valid_pct=0.13
+    valid_pct=0.13,
+    sequence_stride=1,
+    past_only=False
 ):
     """
     Preprocess data with a defined temporal split.
@@ -401,7 +390,7 @@ def preprocess_dataset_split(
     print("       + Hourly Climatology (30-day rolling average by hour)")
     print("="*80)
 
-    channels = [
+    past_channels = [
         ('airnow_pm25', 'AirNow_PM25', True, False, False),
         ('airnow_hourly_clim', 'AirNow_Hourly_Clim', True, False, False),
         ('openaq_pm25', 'OpenAQ_PM25', True, False, False),
@@ -420,7 +409,8 @@ def preprocess_dataset_split(
         ('temporal_5', 'Temporal_Hour_Cos', False, True, False),
         ('goes', 'GOES', True, False, False),
         ('tempo', 'TEMPO', True, False, False),
-        # forecast channels
+    ]
+    fcast_channels = [
         ('naqfc_pm25', 'NAQFC_PM25_Forecast', True, False, True),
         ('hrrr_wind_u', 'HRRR_Wind_U_Forecast', True, False, True),
         ('hrrr_wind_v', 'HRRR_Wind_V_Forecast', True, False, True),
@@ -434,16 +424,19 @@ def preprocess_dataset_split(
         ('temporal_4', 'Temporal_Hour_Sin_Forecast', False, True, True),
         ('temporal_5', 'Temporal_Hour_Cos_Forecast', False, True, True),
     ]
+    channels = past_channels if past_only else past_channels + fcast_channels
 
     n_channels = len(channels)
     channel_names_list = [ch[1] for ch in channels]
     
     # NOTE: change for your use
+    # save locations
     ####
     base_path = '/home/mgraca/Workspace/hrrr-smoke-viz'
     experiment_path = os.path.join(base_path, 'pwwb-experiments/tensorflow/autoencoder_archive')
     cache_dir = os.path.join(experiment_path, "raw_data")
-    output_cache_dir = os.path.join(experiment_path, "preprocessed_cache")
+    #output_cache_dir = os.path.join(experiment_path, "preprocessed_cache")
+    output_cache_dir = os.path.join(experiment_path, "preprocessed_cache_for_classic")
     ####
     os.makedirs(output_cache_dir, exist_ok=True)
 
@@ -461,6 +454,7 @@ def preprocess_dataset_split(
         print("Delete this folder if you want to reprocess.")
         return npy_dir, scalers_file, metadata_file
 
+    # processing block
     print("\nLoading AirNow PM2.5 data...")
     X_airnow_pm25 = load_airnow_data(cache_dir)
     n_timesteps = X_airnow_pm25.shape[0]
@@ -535,9 +529,9 @@ def preprocess_dataset_split(
     print(f"Test:  [{valid_end_idx}:{n_timesteps}] ({n_timesteps - valid_end_idx} hours)")
 
     def nonneg(n): return max(0, n)
-    n_train_windows = nonneg((train_end_idx - frames_per_sample - forecast_horizon) + 1)
-    n_valid_windows = nonneg(((valid_end_idx - train_end_idx) - frames_per_sample - forecast_horizon) + 1)
-    n_test_windows = nonneg(((n_timesteps - valid_end_idx) - frames_per_sample - forecast_horizon) + 1)
+    n_train_windows = nonneg((train_end_idx - frames_per_sample - forecast_horizon) // sequence_stride + 1)
+    n_valid_windows = nonneg(((valid_end_idx - train_end_idx) - frames_per_sample - forecast_horizon) // sequence_stride + 1)
+    n_test_windows = nonneg(((n_timesteps - valid_end_idx) - frames_per_sample - forecast_horizon) // sequence_stride + 1) 
 
     if min(n_train_windows, n_valid_windows, n_test_windows) <= 0:
         raise ValueError("Not enough timesteps to produce windows")
@@ -633,7 +627,7 @@ def preprocess_dataset_split(
                 return load_channel._airnow_clim_cache
 
             raise ValueError(f"Unknown data_key: {data_key}")
-
+    
     for ch_idx, (data_key, display_name, should_scale, is_temporal, is_forecast) in enumerate(channels):
         print(f"\nProcessing channel {ch_idx+1}/{n_channels}: {display_name}" + 
               (" [FORECAST]" if is_forecast else ""))
@@ -646,10 +640,12 @@ def preprocess_dataset_split(
             
         gc.collect()
 
+        ## Split block
         train_data = data[:train_end_idx]
         valid_data = data[train_end_idx:valid_end_idx]
         test_data = data[valid_end_idx:]
 
+        # scale block
         if should_scale:
             scaler_key = display_name.replace('_Forecast', '')
             
@@ -678,42 +674,52 @@ def preprocess_dataset_split(
         def ensure_4d(a):
             return a if a.ndim == 4 else np.expand_dims(a, -1)
 
+        # generates forecasts after splitting+scale, then windows it. also windows the current data
         if is_forecast:
             print(f"  Creating train forecast windows (t+1 to t+{forecast_horizon})...")
-            train_w = sliding_window_forecast(ensure_4d(train_data), frames_per_sample, 
-                                               forecast_horizon, 1)
+            train_w = sliding_window_forecast(
+                ensure_4d(train_data), frames_per_sample, forecast_horizon, sequence_stride
+            )
             X_train_mmap[..., ch_idx] = train_w[..., 0]
             del train_w
             gc.collect()
 
             print(f"  Creating valid forecast windows...")
-            valid_w = sliding_window_forecast(ensure_4d(valid_data), frames_per_sample,
-                                               forecast_horizon, 1)
+            valid_w = sliding_window_forecast(
+                ensure_4d(valid_data), frames_per_sample, forecast_horizon, sequence_stride
+            )
             X_valid_mmap[..., ch_idx] = valid_w[..., 0]
             del valid_w
             gc.collect()
 
             print(f"  Creating test forecast windows...")
-            test_w = sliding_window_forecast(ensure_4d(test_data), frames_per_sample,
-                                              forecast_horizon, 1)
+            test_w = sliding_window_forecast(
+                ensure_4d(test_data), frames_per_sample, forecast_horizon, sequence_stride
+            )
             X_test_mmap[..., ch_idx] = test_w[..., 0]
             del test_w
             gc.collect()
         else:
             print("  Creating train windows...")
-            train_w, _ = sliding_window(ensure_4d(train_data), frames_per_sample, 1, False, forecast_horizon)
+            train_w, _ = sliding_window(
+                ensure_4d(train_data), frames_per_sample, sequence_stride, False, forecast_horizon
+            )
             X_train_mmap[..., ch_idx] = train_w[..., 0]
             del train_w
             gc.collect()
 
             print("  Creating valid windows...")
-            valid_w, _ = sliding_window(ensure_4d(valid_data), frames_per_sample, 1, False, forecast_horizon)
+            valid_w, _ = sliding_window(
+                ensure_4d(valid_data), frames_per_sample, sequence_stride, False, forecast_horizon
+            )
             X_valid_mmap[..., ch_idx] = valid_w[..., 0]
             del valid_w
             gc.collect()
 
             print("  Creating test windows...")
-            test_w, _ = sliding_window(ensure_4d(test_data), frames_per_sample, 1, False, forecast_horizon)
+            test_w, _ = sliding_window(
+                ensure_4d(test_data), frames_per_sample, sequence_stride, False, forecast_horizon
+            )
             X_test_mmap[..., ch_idx] = test_w[..., 0]
             del test_w
             gc.collect()
@@ -730,19 +736,20 @@ def preprocess_dataset_split(
     del X_airnow_pm25, X_openaq_pm25, X_naqfc_pm25
     gc.collect()
 
+    # window on targets
     print(f"\nCreating targets from unscaled {target_name}...")
 
     _, Y_train = sliding_window(
         ensure_4d(X_target[:train_end_idx]),
-        frames_per_sample, 1, True, forecast_horizon
+        frames_per_sample, sequence_stride, True, forecast_horizon
     )
     _, Y_valid = sliding_window(
         ensure_4d(X_target[train_end_idx:valid_end_idx]),
-        frames_per_sample, 1, True, forecast_horizon
+        frames_per_sample, sequence_stride, True, forecast_horizon
     )
     _, Y_test = sliding_window(
         ensure_4d(X_target[valid_end_idx:]),
-        frames_per_sample, 1, True, forecast_horizon
+        frames_per_sample, sequence_stride, True, forecast_horizon
     )
 
     del X_target
@@ -831,7 +838,9 @@ def main():
             forecast_horizon=24,
             target_source='airnow',
             train_pct=0.75,
-            valid_pct=0.13
+            valid_pct=0.13,
+            sequence_stride=1,
+            past_only=True
         )
         print("\n✓ AirNow target preprocessing complete!")
         print(f"  Cache: {cache_airnow}")
