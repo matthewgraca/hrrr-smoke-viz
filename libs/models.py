@@ -28,34 +28,6 @@ def classic(input_shape):
 
     return model
 
-def stateful_classic(input_shape, batch_size):
-    from keras.models import Sequential
-    from keras.layers import ConvLSTM2D, Conv3D, InputLayer
-    from keras.optimizers import Adam
-
-    # common args in each layer to reduce function call length
-    CONVLSTM2D_ARGS = {
-        'kernel_size': (3, 3),
-        'padding': 'same',
-        'return_sequences': True,
-        'stateful': True
-    }
-
-    CONV3D_ARGS = {
-        'kernel_size': (3, 3, 3),
-        'activation': 'relu',
-        'padding': 'same'    
-    }
-
-    model = Sequential()
-    model.add(InputLayer(shape=input_shape, batch_size=batch_size))
-    model.add(ConvLSTM2D(filters=25, **CONVLSTM2D_ARGS))
-    model.add(ConvLSTM2D(filters=50, **CONVLSTM2D_ARGS))
-    model.add(Conv3D(filters=25, **CONV3D_ARGS))
-    model.add(Conv3D(filters=1, **CONV3D_ARGS))
-
-    return model
-
 def two_path(input_shape, path1_channels, path2_channels):
     # pass in the indices of the channels, not their name!
     from keras.layers import Input, Conv3D, ConvLSTM2D
@@ -110,7 +82,6 @@ def dual_autoencoder(
     output_horizon, 
     observed_channels, 
     forecast_channels,
-    stateful=False,
     batch_size=None
 ):
     import tensorflow as tf
@@ -122,7 +93,7 @@ def dual_autoencoder(
     from tensorflow.keras.models import Model
     from libs.layers import ChannelSplitLayer
 
-    def spatial_decoder(x, past_encs, fcast_encs, spatial_filters, temporal_filters):
+    def spatial_decoder(x, past_encs, fcast_encs, spatial_filters, temporal_filters, strides):
         '''
         Super tough to wrap this in a Model since tf really doesn't like the passing of 
         past_encs and fcast_encs, they'll need to be their own Input, etc.
@@ -130,9 +101,11 @@ def dual_autoencoder(
         If the goal is a cleaner plot_model(), the juice is not worth the squeeze
         '''
         skips = list(zip(reversed(past_encs[:-1]), reversed(fcast_encs[:-1])))
+        rev_strides = list(reversed(strides))
         for i, (past_skip, fcast_skip) in enumerate(skips):
             x = UpSampling2D(
-                size=(2,2), 
+                #size=(2,2),
+                size=(rev_strides[i], rev_strides[i]),
                 interpolation='bilinear', 
                 name=f'dec_up{i+1}'
             )(x)
@@ -152,7 +125,6 @@ def dual_autoencoder(
         input_shape, 
         filters, 
         forecast_arm,
-        stateful_args
     ):
         '''
         Two return options:
@@ -178,7 +150,6 @@ def dual_autoencoder(
             padding='same', 
             return_sequences=True,
             name=f'{prefix}_lstm1',
-            **stateful_args
         )(x_1)
         x_out = Add(name=f'skip_{prefix}_lstm1')([x_2, x_1])
 
@@ -189,7 +160,6 @@ def dual_autoencoder(
             padding='same',
             return_sequences=True,
             name=f'{prefix}_lstm2',
-            **stateful_args
         )(x_out)
         y_2 = Conv3D(
             filters=filters[1],
@@ -212,7 +182,6 @@ def dual_autoencoder(
                 return_sequences=True,
                 return_state=True, 
                 name=f'{prefix}_lstm3',
-                **stateful_args
             )(y_out)
         )
 
@@ -272,7 +241,7 @@ def dual_autoencoder(
     
         return Model(inputs, outputs=x, name='bottleneck')
 
-    def temporal_decoder(input_shapes, in_t, output_horizon, spatial_filters, temporal_filters, stateful_args):
+    def temporal_decoder(input_shapes, in_t, output_horizon, spatial_filters, temporal_filters):
         def create_pos_encoding(x, output_horizon):
             pos = tf.reshape(
                 tensor=tf.range(output_horizon, dtype=tf.float32) / output_horizon,
@@ -311,7 +280,6 @@ def dual_autoencoder(
             padding='same', 
             return_sequences=True, 
             name='dec_lstm1',
-            **stateful_args
         )(
             y, initial_state=[hidden_state, cell_state]
         )
@@ -323,7 +291,6 @@ def dual_autoencoder(
             padding='same', 
             return_sequences=True, 
             name='dec_lstm2',
-            **stateful_args
         )(y)
         z = Add(name='skip_dec_lstm2')([z, y])
 
@@ -342,11 +309,6 @@ def dual_autoencoder(
     in_t, in_h, in_w, in_c = input_shape 
     inputs = Input(shape=input_shape, batch_size=batch_size)
 
-    stateful_args = {
-        'stateful': True,
-        #'batch_input_shape': (batch_size, output_horizon, in_h, in_w, in_c)
-    } if stateful else {}
-    
     print(f"Input: {input_shape} -> Output: ({output_horizon}, {in_h}, {in_w}, 1)")
     
     # past encoder arm
@@ -355,7 +317,6 @@ def dual_autoencoder(
         input_shape=past_in.shape,
         filters=temporal_filters,
         forecast_arm=False,
-        stateful_args=stateful_args
     )(past_in)
     past_enc, *past_encs = encoder_block(
         past_state.shape, temporal_filters, spatial_filters, strides, 'past'
@@ -367,7 +328,6 @@ def dual_autoencoder(
         input_shape=fcast_in.shape,
         filters=temporal_filters,
         forecast_arm=True,
-        stateful_args=stateful_args
     )(fcast_in)
     fcast_enc, *fcast_encs = encoder_block(
         fcast_state.shape, temporal_filters, spatial_filters, strides, 'fcast'
@@ -377,8 +337,8 @@ def dual_autoencoder(
     fused = concatenate([past_encs[-1], fcast_encs[-1]], axis=-1, name='bn_concat')
     fused = bottleneck_block(fused.shape, latent_size, bottleneck, spatial_filters)(fused)
     
-    dec = spatial_decoder(fused, past_encs, fcast_encs, spatial_filters, temporal_filters)
-    x = temporal_decoder([dec.shape, h.shape, c.shape], in_t, output_horizon, spatial_filters, temporal_filters, stateful_args)([dec, h, c])
+    dec = spatial_decoder(fused, past_encs, fcast_encs, spatial_filters, temporal_filters, strides)
+    x = temporal_decoder([dec.shape, h.shape, c.shape], in_t, output_horizon, spatial_filters, temporal_filters)([dec, h, c])
 
     output = Conv3D(1, (1,1,1), padding='same', activation='relu', name='output')(x)
     
