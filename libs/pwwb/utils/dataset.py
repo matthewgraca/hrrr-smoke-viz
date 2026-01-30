@@ -24,7 +24,7 @@ class PWWBPyDataset(PyDataset):
         y_path: str,
         batch_size: int,
         shuffle: bool = False,
-        keep_remainder: bool = False,
+        keep_remainder: bool = True,
         **kwargs
     ):
         '''
