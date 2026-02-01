@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from numpy.lib.format import open_memmap
 
+'''Loaded dynamically now
 SENSORS = {
     'Reseda': (8, 3),
     'North Holywood': (8, 11),
@@ -15,6 +16,7 @@ SENSORS = {
     'Anaheim': (27, 29),
     'Glendora - Laurel': (10, 33),
 }
+'''
 
 # def sliding_window(data, frames, sequence_stride=1, compute_targets=False,
 #                    forecast_horizon=24):
@@ -148,11 +150,12 @@ def load_airnow_data(cache_dir):
         print(f"    Loading AirNow PM2.5 data from {airnow_path}...")
         loaded = np.load(airnow_path, allow_pickle=True)
         if 'data' in loaded:
-            return loaded['data']
+            data = loaded['data']
         elif 'arr_0' in loaded:
-            return loaded['arr_0']
+            data = loaded['arr_0']
         else:
-            return loaded[list(loaded.keys())[0]]
+            data = loaded[list(loaded.keys())[0]]
+        return data, loaded['air_sens_loc'].item()
     else:
         raise FileNotFoundError(f"REQUIRED: AirNow data not found at {airnow_path}")
 
@@ -205,7 +208,7 @@ def load_satellite_data(cache_dir, sat_type='goes'):
             raise FileNotFoundError(f"REQUIRED: GOES data not found at {goes_path}")
 
     elif sat_type == 'tempo':
-        tempo_path = f"{cache_dir}/tempo_l3_no2_20230802_20250802_hourly.npz"
+        tempo_path = f"{cache_dir}/tempo_processed.npz"
         if os.path.exists(tempo_path):
             print(f"    Loading TEMPO satellite data from {tempo_path}...")
             loaded = np.load(tempo_path, allow_pickle=True)
@@ -264,7 +267,7 @@ def generate_temporal_features(n_timesteps, height=40, width=40,
 
 def load_hrrr_data(cache_dir):
     """Load HRRR surface data (wind, temp, PBL, precip)."""
-    hrrr_path = f"{cache_dir}/hrrr_surface_2years_40x40.npz"
+    hrrr_path = f"{cache_dir}/hrrr_processed.npz"
     if os.path.exists(hrrr_path):
         print(f"    Loading HRRR surface data from {hrrr_path}...")
         hrrr_data = np.load(hrrr_path, allow_pickle=True)
@@ -370,21 +373,31 @@ def preprocess_dataset_split(
     train_pct=0.75,
     valid_pct=0.13,
     sequence_stride=1,
-    past_only=False
+    past_only=False,
+    has_test_set=True # determines if a test set will be generated.
 ):
     """
     Preprocess data with a defined temporal split.
     """
-    train_split = int(train_pct*100)
-    valid_split = int(valid_pct*100)
-    test_split = 100 - train_split - valid_split
+    if has_test_set:
+        train_split = int(train_pct*100)
+        valid_split = int(valid_pct*100)
+        test_split = 100 - train_split - valid_split
+    else:
+        print("No test set will be generated; only training and validation.")
+        if not np.isclose(train_pct + valid_pct, 1):
+            raise ValueError("Training and validation percents should sum to 100%")
+        train_split = int(train_pct*100)
+        valid_split = int(valid_pct*100)
+        test_split = 0
+
     print("\n" + "="*80)
     print(
         f"{train_split}/{valid_split}/{test_split} "
-        "SPLIT PREPROCESSING: {frames_per_sample}h → {forecast_horizon}h"
+        f"SPLIT PREPROCESSING: {frames_per_sample}h → {forecast_horizon}h"
     )
     print(f"TARGET SOURCE: {target_source.upper()}")
-    print("Split: {train_split}% Train / {valid_split}% Valid / {test_split}% Test")
+    print(f"Split: {train_split}% Train / {valid_split}% Valid / {test_split}% Test")
     print("Using: AirNow, OpenAQ, HRRR (6 vars), Satellites")
     print("       + Forecast channels: NAQFC, HRRR (time-shifted to target window)")
     print("       + Hourly Climatology (30-day rolling average by hour)")
@@ -434,9 +447,9 @@ def preprocess_dataset_split(
     ####
     base_path = '/home/mgraca/Workspace/hrrr-smoke-viz'
     experiment_path = os.path.join(base_path, 'pwwb-experiments/tensorflow/autoencoder_archive')
-    cache_dir = os.path.join(experiment_path, "raw_data")
-    #output_cache_dir = os.path.join(experiment_path, "preprocessed_cache")
-    output_cache_dir = os.path.join(experiment_path, "preprocessed_cache_for_classic")
+    cache_dir = '/mnt/wildfire/processed-data/2026-01-27'
+    #output_cache_dir = os.path.join(experiment_path, "preprocessed_cache_84x84")
+    output_cache_dir = '/mnt/wildfire/training-data/2026-01-27'
     ####
     os.makedirs(output_cache_dir, exist_ok=True)
 
@@ -444,19 +457,22 @@ def preprocess_dataset_split(
     scalers_file = f"{output_cache_dir}/scalers.pkl"
     metadata_file = f"{output_cache_dir}/metadata.pkl"
 
-    if (os.path.exists(f"{npy_dir}/X_train.npy")
-        and os.path.exists(f"{npy_dir}/X_valid.npy")
-        and os.path.exists(f"{npy_dir}/X_test.npy")
-        and os.path.exists(f"{npy_dir}/Y_train.npy")
-        and os.path.exists(f"{npy_dir}/Y_valid.npy")
-        and os.path.exists(f"{npy_dir}/Y_test.npy")):
+    train_valid_paths = [
+        "{npy_dir}/X_train.npy",
+        "{npy_dir}/X_valid.npy",
+        "{npy_dir}/Y_train.npy",
+        "{npy_dir}/Y_valid.npy",
+    ]
+    test_paths = ["{npy_dir}/X_test.npy", "{npy_dir}/Y_test.npy"]
+    paths_to_check = train_valid_paths + test_paths if has_test_set else train_valid_paths
+    if all([os.path.exists(p) for p in paths_to_check]):
         print(f"\n{target_source.upper()} target cache already exists at: {npy_dir}")
         print("Delete this folder if you want to reprocess.")
         return npy_dir, scalers_file, metadata_file
 
     # processing block
     print("\nLoading AirNow PM2.5 data...")
-    X_airnow_pm25 = load_airnow_data(cache_dir)
+    X_airnow_pm25, SENSORS = load_airnow_data(cache_dir)
     n_timesteps = X_airnow_pm25.shape[0]
     height, width = X_airnow_pm25.shape[1], X_airnow_pm25.shape[2]
     
@@ -533,13 +549,19 @@ def preprocess_dataset_split(
     n_valid_windows = nonneg(((valid_end_idx - train_end_idx) - frames_per_sample - forecast_horizon) // sequence_stride + 1)
     n_test_windows = nonneg(((n_timesteps - valid_end_idx) - frames_per_sample - forecast_horizon) // sequence_stride + 1) 
 
-    if min(n_train_windows, n_valid_windows, n_test_windows) <= 0:
+    #if min(n_train_windows, n_valid_windows, n_test_windows) <= 0:
+    if (
+        n_train_windows <= 0 or
+        n_valid_windows <= 0 or
+        (n_test_windows <= 0 and has_test_set)
+    ):
         raise ValueError("Not enough timesteps to produce windows")
 
     print(f"\nExpected windows:")
     print(f"  Train: {n_train_windows}")
     print(f"  Valid: {n_valid_windows}")
-    print(f"  Test:  {n_test_windows}")
+    if has_test_set:
+        print(f"  Test:  {n_test_windows}")
 
     os.makedirs(npy_dir, exist_ok=True)
 
@@ -549,9 +571,10 @@ def preprocess_dataset_split(
     X_valid_mmap = open_memmap(f"{npy_dir}/X_valid.npy", mode='w+',
                                dtype='float32',
                                shape=(n_valid_windows, frames_per_sample, height, width, n_channels))
-    X_test_mmap = open_memmap(f"{npy_dir}/X_test.npy", mode='w+',
-                              dtype='float32',
-                              shape=(n_test_windows, frames_per_sample, height, width, n_channels))
+    if has_test_set:
+        X_test_mmap = open_memmap(f"{npy_dir}/X_test.npy", mode='w+',
+                                  dtype='float32',
+                                  shape=(n_test_windows, frames_per_sample, height, width, n_channels))
 
     scalers = {}
 
@@ -643,7 +666,7 @@ def preprocess_dataset_split(
         ## Split block
         train_data = data[:train_end_idx]
         valid_data = data[train_end_idx:valid_end_idx]
-        test_data = data[valid_end_idx:]
+        test_data = data[valid_end_idx:] if has_test_set else None
 
         # scale block
         if should_scale:
@@ -662,7 +685,7 @@ def preprocess_dataset_split(
 
             train_data = scaler.transform(train_data.reshape(-1, 1)).reshape(train_data.shape)
             valid_data = scaler.transform(valid_data.reshape(-1, 1)).reshape(valid_data.shape)
-            test_data = scaler.transform(test_data.reshape(-1, 1)).reshape(test_data.shape)
+            test_data = scaler.transform(test_data.reshape(-1, 1)).reshape(test_data.shape) if has_test_set else None
         elif is_temporal:
             print(f"  {display_name} already normalized (sin/cos)")
         else:
@@ -692,13 +715,14 @@ def preprocess_dataset_split(
             del valid_w
             gc.collect()
 
-            print(f"  Creating test forecast windows...")
-            test_w = sliding_window_forecast(
-                ensure_4d(test_data), frames_per_sample, forecast_horizon, sequence_stride
-            )
-            X_test_mmap[..., ch_idx] = test_w[..., 0]
-            del test_w
-            gc.collect()
+            if has_test_set:
+                print(f"  Creating test forecast windows...")
+                test_w = sliding_window_forecast(
+                    ensure_4d(test_data), frames_per_sample, forecast_horizon, sequence_stride
+                )
+                X_test_mmap[..., ch_idx] = test_w[..., 0]
+                del test_w
+                gc.collect()
         else:
             print("  Creating train windows...")
             train_w, _ = sliding_window(
@@ -716,13 +740,14 @@ def preprocess_dataset_split(
             del valid_w
             gc.collect()
 
-            print("  Creating test windows...")
-            test_w, _ = sliding_window(
-                ensure_4d(test_data), frames_per_sample, sequence_stride, False, forecast_horizon
-            )
-            X_test_mmap[..., ch_idx] = test_w[..., 0]
-            del test_w
-            gc.collect()
+            if has_test_set:
+                print("  Creating test windows...")
+                test_w, _ = sliding_window(
+                    ensure_4d(test_data), frames_per_sample, sequence_stride, False, forecast_horizon
+                )
+                X_test_mmap[..., ch_idx] = test_w[..., 0]
+                del test_w
+                gc.collect()
 
         del train_data, valid_data, test_data
         gc.collect()
@@ -747,10 +772,11 @@ def preprocess_dataset_split(
         ensure_4d(X_target[train_end_idx:valid_end_idx]),
         frames_per_sample, sequence_stride, True, forecast_horizon
     )
-    _, Y_test = sliding_window(
-        ensure_4d(X_target[valid_end_idx:]),
-        frames_per_sample, sequence_stride, True, forecast_horizon
-    )
+    if has_test_set:
+        _, Y_test = sliding_window(
+            ensure_4d(X_target[valid_end_idx:]),
+            frames_per_sample, sequence_stride, True, forecast_horizon
+        )
 
     del X_target
     gc.collect()
@@ -762,13 +788,16 @@ def preprocess_dataset_split(
 
     X_train_mmap.flush()
     X_valid_mmap.flush()
-    X_test_mmap.flush()
-    del X_train_mmap, X_valid_mmap, X_test_mmap
+    if has_test_set:
+        X_test_mmap.flush()
+        del X_test_mmap
+    del X_train_mmap, X_valid_mmap
     gc.collect()
 
     np.save(f"{npy_dir}/Y_train.npy", Y_train, allow_pickle=False)
     np.save(f"{npy_dir}/Y_valid.npy", Y_valid, allow_pickle=False)
-    np.save(f"{npy_dir}/Y_test.npy", Y_test, allow_pickle=False)
+    if has_test_set:
+        np.save(f"{npy_dir}/Y_test.npy", Y_test, allow_pickle=False)
 
     with open(scalers_file, 'wb') as f:
         pickle.dump(scalers, f)
@@ -785,8 +814,8 @@ def preprocess_dataset_split(
         'train_timestep_end': train_end_idx,
         'valid_timestep_start': train_end_idx,
         'valid_timestep_end': valid_end_idx,
-        'test_timestep_start': valid_end_idx,
-        'test_timestep_end': n_timesteps,
+        'test_timestep_start': valid_end_idx if has_test_set else 'NA',
+        'test_timestep_end': n_timesteps if has_test_set else 'NA',
         'frames_per_sample': frames_per_sample,
         'forecast_horizon': forecast_horizon,
         'split_type': f'{train_split}_{valid_split}_{test_split}_temporal',
@@ -810,10 +839,12 @@ def preprocess_dataset_split(
     print("\nFinal shapes:")
     print(f"  X_train: {np.load(f'{npy_dir}/X_train.npy', mmap_mode='r').shape}")
     print(f"  X_valid: {np.load(f'{npy_dir}/X_valid.npy', mmap_mode='r').shape}")
-    print(f"  X_test:  {np.load(f'{npy_dir}/X_test.npy', mmap_mode='r').shape}")
+    if has_test_set:
+        print(f"  X_test:  {np.load(f'{npy_dir}/X_test.npy', mmap_mode='r').shape}")
     print(f"  Y_train: {Y_train.shape}")
     print(f"  Y_valid: {Y_valid.shape}")
-    print(f"  Y_test:  {Y_test.shape}")
+    if has_test_set:
+        print(f"  Y_test:  {Y_test.shape}")
     print(f"  Target source: {target_name}")
     print(f"  Observed channels ({len(observed_channels)}): {', '.join(observed_channels)}")
     print(f"  Forecast channels ({len(forecast_channels)}):  {', '.join(forecast_channels)}")
@@ -837,10 +868,11 @@ def main():
             frames_per_sample=24,
             forecast_horizon=24,
             target_source='airnow',
-            train_pct=0.75,
-            valid_pct=0.13,
+            train_pct=0.85,
+            valid_pct=0.15,
             sequence_stride=1,
-            past_only=True
+            past_only=False,
+            has_test_set=False
         )
         print("\n✓ AirNow target preprocessing complete!")
         print(f"  Cache: {cache_airnow}")
