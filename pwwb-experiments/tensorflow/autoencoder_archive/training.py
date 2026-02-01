@@ -43,15 +43,14 @@ def argparser(valid_models, valid_losses):
     return args
 
 args = argparser(
-    valid_models=set(['classic', 'two_path', 'dual_autoencoder', 'stateful_dual_autoencoder', 'stateful_classic']),
+    valid_models=set(['classic', 'two_path', 'dual_autoencoder', 'dual_ae_gated_skips']),
     valid_losses=set(['grid_mae', 'grid_mse', 'nhood'])
 )
 
-stateful = True if (args.model == 'stateful_dual_autoencoder' or args.model == 'stateful_classic') else False
 
 # training parameters
-EPOCHS = 100
-BATCH_SIZE = 4 if stateful else 64 
+EPOCHS = 100 
+BATCH_SIZE = 16
 
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -103,7 +102,7 @@ USE_MULTIPROCESSING = False
 #MAX_QUEUE_SIZE = 10
 
 # channel information
-with open(os.path.join(EXPERIMENT_PATH, 'preprocessed_cache/metadata.pkl'), 'rb') as f:
+with open(os.path.join(EXPERIMENT_PATH, f'{args.data}/metadata.pkl'), 'rb') as f:
     metadata = pickle.load(f)
 channel_to_idx = {ch : i for i, ch in enumerate(metadata['channel_names'])}
 
@@ -113,34 +112,34 @@ train_ds = PWWBPyDataset(
     x_path=os.path.join(DATA_PATH, 'X_train.npy'),
     y_path=os.path.join(DATA_PATH, 'Y_train.npy'),
     batch_size=BATCH_SIZE,
-    shuffle=False if stateful else True,
-    keep_remainder=False if stateful else True,
+    shuffle=True,
     workers=WORKERS,
     use_multiprocessing=USE_MULTIPROCESSING
 )
-print('\tTraining dataset loaded.')
+print(f'\tTraining dataset loaded: {len(train_ds)} batches loaded.')
 
 valid_ds = PWWBPyDataset(
     x_path=os.path.join(DATA_PATH, 'X_valid.npy'),
     y_path=os.path.join(DATA_PATH, 'Y_valid.npy'),
     batch_size=BATCH_SIZE,
     shuffle=False,
-    keep_remainder=False if stateful else True,
     workers=WORKERS,
     use_multiprocessing=USE_MULTIPROCESSING
 )
-print('\tValidation dataset loaded.')
+print(f'\tValidation dataset loaded: {len(valid_ds)} batches loaded.')
 
+# NOTE fix later to properly support test vs valid
+'''
 test_ds = PWWBPyDataset(
     x_path=os.path.join(DATA_PATH, 'X_test.npy'),
     y_path=os.path.join(DATA_PATH, 'Y_test.npy'),
     batch_size=BATCH_SIZE,
     shuffle=False,
-    keep_remainder=False if stateful else True,
     workers=WORKERS,
     use_multiprocessing=USE_MULTIPROCESSING
 )
 print('\tTest dataset loaded.\n')
+'''
 
 input_shape = train_ds.input_shape
 f, h, w, c = input_shape
@@ -161,11 +160,35 @@ ARCH_10x10 = {
     'strides': [2, 2]
 }
 
+# NOTE
+ARCH_84 = {
+    'temporal_filters': [16, 24, 32],
+    'spatial_filters': [32, 48, 64],
+    'bottleneck': 256,
+    'latent_size': 7,
+    'strides': [2, 2, 3]
+}
+
 convlstm_reg_config = {
     'kernel_regularizer': keras.regularizers.l2(3e-4),
     'recurrent_regularizer': keras.regularizers.l2(3e-4),
     'dropout': 0.15
 }
+
+dual_ae = local_model.DualAutoencoder(
+    input_shape=input_shape,
+    arch_config=ARCH_84,
+    convlstm_reg_config=convlstm_reg_config,
+    output_horizon=metadata['forecast_horizon'],
+    observed_channels=[
+        metadata['channel_names'].index(ch)
+        for ch in metadata['observed_channels']
+    ],
+    forecast_channels=[
+        metadata['channel_names'].index(ch)
+        for ch in metadata['forecast_channels']
+    ]
+)
 
 match args.model:
     case 'classic':
@@ -186,46 +209,18 @@ match args.model:
             path2_channels=[channel_to_idx[ch] for ch in path2_channel_names],
         )
     case 'dual_autoencoder':
-        model = local_model.dual_autoencoder(
-            input_shape,
-            arch_config=ARCH_5x5,
-            convlstm_reg_config=convlstm_reg_config,
-            output_horizon=metadata['forecast_horizon'],
-            observed_channels=[
-                metadata['channel_names'].index(ch)
-                for ch in metadata['observed_channels']
-            ],
-            forecast_channels=[
-                metadata['channel_names'].index(ch)
-                for ch in metadata['forecast_channels']
-            ]
-        )
-    case 'stateful_dual_autoencoder':
-        dual_autoencoder_config = {
-            'input_shape': input_shape,
-            'arch_config': ARCH_5x5,
-            'convlstm_reg_config': convlstm_reg_config,
-            'output_horizon': metadata['forecast_horizon'],
-            'observed_channels': [
-                metadata['channel_names'].index(ch)
-                for ch in metadata['observed_channels']
-            ],
-            'forecast_channels': [
-                metadata['channel_names'].index(ch)
-                for ch in metadata['forecast_channels']
-            ],
-            'stateful': True,
-            'batch_size': BATCH_SIZE
-        }
-        model = local_model.dual_autoencoder(**dual_autoencoder_config)
-    case 'stateful_classic':
-        model = local_model.stateful_classic(input_shape, BATCH_SIZE)
+        model = dual_ae.dual_autoencoder()
+    case 'dual_ae_gated_skips':
+        model = dual_ae.gated_skips()
     case _:
         raise ValueError(f'Model not implemented.')
 
 match args.loss:
     case 'grid_mae':
-        model.compile(loss='mean_absolute_error', optimizer='adam')
+        model.compile(
+            loss='mean_absolute_error',
+            optimizer=keras.optimizers.AdamW(weight_decay=1e-3)
+        )
     case 'grid_mse':
         model.compile(loss='mean_squared_error', optimizer='adam')
     case 'nhood':
@@ -239,10 +234,10 @@ print()
 
 plot_model(
     model, 
-    to_file=os.path.join(RESULTS_PATH, 'model_shapeless.png'),
+    to_file=os.path.join(RESULTS_PATH, 'model.png'),
     show_layer_names=True, 
     expand_nested=True,
-    #show_shapes=True,
+    show_shapes=True,
     rankdir='TB' # TB=vertical, LR=horizontal
 )
 if args.test:
@@ -265,14 +260,6 @@ callbacks = [
     )
 ]
 
-if stateful:
-    class ResetStatesCallback(keras.callbacks.Callback):
-        def on_epoch_begin(self, epoch, logs):
-            for layer in self.model.layers:
-                if hasattr(layer, 'reset_states'):
-                    layer.reset_states()
-    callbacks.append(ResetStatesCallback())
-
 history = model.fit(
     train_ds,
     validation_data=valid_ds,
@@ -291,10 +278,10 @@ model.save(os.path.join(RESULTS_PATH, 'model.keras'))
 print(f'{TextColor.GREEN}complete.{TextColor.ENDC}\n')
 
 print(f'{TextColor.BLUE}Generating and saving predictions.{TextColor.ENDC}')
-if stateful:
-    for layer in model.layers:
-        if hasattr(layer, 'reset_states'):
-            layer.reset_states()
 
+# NOTE fix later to properly support test vs valid
+'''
 y_pred = model.predict(test_ds)
+'''
+y_pred = model.predict(valid_ds)
 np.save(os.path.join(RESULTS_PATH, 'y_pred.npy'), y_pred)
