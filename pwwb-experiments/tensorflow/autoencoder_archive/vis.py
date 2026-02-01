@@ -9,6 +9,7 @@ parser.add_argument('config_name', help='the folder containing the results of th
 parser.add_argument('data', help='the folder containing the training data used in the experiment')
 args = parser.parse_args()
 
+# NOTE parameterize this
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
 EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/autoencoder_archive')
 RESULTS_PATH = os.path.join(EXPERIMENT_PATH, f'results/{args.config_name}') 
@@ -23,6 +24,7 @@ from libs.results_visualizer import *
 
 # things you need to use plot_training_history
 #if os.path.exists(os.path.join(RESULTS_PATH, 'history.pkl')):
+print('Loading objects', end=' ')
 with open(os.path.join(RESULTS_PATH, 'history.pkl'), 'rb') as f:
     history = pickle.load(f)
 plot_training_history(
@@ -38,11 +40,19 @@ with open(os.path.join(DATA_PATH, 'scalers.pkl'), 'rb') as f:
 airnow_scaler = scalers['AirNow_PM25']
 
 airnow_channel_idx = metadata['channel_names'].index('AirNow_PM25')
+print('complete.')
 
+# NOTE fix later to support valid vs test set
+print('Loading test/validation', end=' ')
+'''
 y_true = np.load(os.path.join(DATA_PATH, 'npy_files/Y_test.npy'))
+'''
+y_true = np.load(os.path.join(DATA_PATH, 'npy_files/Y_valid.npy'))
 y_pred = np.load(os.path.join(RESULTS_PATH, 'y_pred.npy'))
+print('complete.')
 
 #### NOTE experimenting with dead sensor removal
+'''
 print('WARNING! WE ARE REMOVING SAMPLES THAT HAVE MULTIPLE DEAD SENSORS!!!')
 sample_contains_static_frames = np.array([
     np.array([
@@ -56,12 +66,27 @@ idx, *_ = np.where(sample_contains_static_frames)
 y_true = y_true[~sample_contains_static_frames]
 y_pred = y_pred[~sample_contains_static_frames]
 ####
+'''
 
+# NOTE fix later to support valid vs test set
+print('Unscaling airnow', end=' ')
+'''
 X = np.load(os.path.join(DATA_PATH, 'npy_files/X_test.npy'))
+'''
+X = np.load(os.path.join(DATA_PATH, 'npy_files/X_valid.npy'), mmap_mode='r')
 X_airnow_scaled = X[..., airnow_channel_idx]
 X_airnow = (airnow_scaler
             .inverse_transform(X_airnow_scaled.reshape(-1, 1))
             .reshape(X_airnow_scaled.shape))
+del X
+print('complete.')
+
+# NOTE outlier removal
+mask = np.ones(len(y_true), dtype=bool)
+mask[1916 : 1952] = False
+y_true = y_true[mask]
+y_pred = y_pred[mask]
+X_airnow = X_airnow[mask]
 
 #### NOTE modifications for stateful batch misalignment
 '''
@@ -72,7 +97,7 @@ y_true = y_true[:len(y_pred)]
 print(y_true.shape, y_pred.shape, X_airnow.shape)
 '''
 ####
-
+print('Plotting samples', end=' ')
 # sample plots + time series
 rng = np.random.default_rng(seed=42)
 idx = rng.integers(low=0, high=len(y_true), size=1).item()
@@ -87,14 +112,18 @@ plot_sample(
 )
 
 save_best_worst_samples(y_pred, y_true, os.path.join(RESULTS_PATH, 'samples'))
+print('complete.')
 
 # error plots
+print('Plotting error', end=' ')
 save_nrmse_plots(
     y_pred,
     y_true,
     list(metadata['sensors'].values()),
-    os.path.join(RESULTS_PATH, 'error')
+    os.path.join(RESULTS_PATH, 'error'),
+    dim=y_pred.shape[2] # height
 )
+print('complete.')
 
 '''
 # plotting sensor timeseries
