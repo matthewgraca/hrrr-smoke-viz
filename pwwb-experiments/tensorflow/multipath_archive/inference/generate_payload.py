@@ -40,22 +40,21 @@ start_time = time.time()
 EXTENT = (-118.615, -117.70, 33.60, 34.35)
 DIM = 84
 
-# Current time floored to the hour
 now = pd.Timestamp.now(tz='UTC').floor('h')
 
-# Input window: last 24 hours of observations up to and including current hour
-input_end = now + pd.Timedelta(hours=1)  # exclusive end, so +1 to include current hour
+input_end = now + pd.Timedelta(hours=1)
 input_start = input_end - pd.Timedelta(hours=24)
 
-forecast_start = input_end  # starts right after input window
-forecast_end = forecast_start + pd.Timedelta(hours=24)  # exclusive end
+forecast_start = input_end
+forecast_end = forecast_start + pd.Timedelta(hours=24)
+
+SATELLITE_BUFFER_HOURS = 16
+satellite_start = input_start - pd.Timedelta(hours=SATELLITE_BUFFER_HOURS)
 
 START_DATE = input_start.strftime('%Y-%m-%d-%H')
 END_DATE = input_end.strftime('%Y-%m-%d-%H')
 START_DATE_SPACE = input_start.strftime('%Y-%m-%d %H:%M')
 END_DATE_SPACE = input_end.strftime('%Y-%m-%d %H:%M')
-START_DATE_DAY = input_start.strftime('%Y-%m-%d')
-END_DATE_DAY = input_end.strftime('%Y-%m-%d')
 elevation_path = "data/elevation.npy"
 OUT_DIR = 'data/operational'
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -66,11 +65,12 @@ print_header("=" * 60)
 print_info(f"Current time (UTC):  {now}")
 print_info(f"Input window:        {input_start} to {input_end} (24h observations)")
 print_info(f"Forecast window:     {forecast_start} to {forecast_end} (24h predictions)")
+print_info(f"Satellite buffer:    {satellite_start} to {input_end} ({24 + SATELLITE_BUFFER_HOURS}h for GOES/TEMPO)")
 print_info(f"Extent:              {EXTENT}")
 print_info(f"Dimension:           {DIM}")
 print_header("=" * 60)
 
-print_step("\n[1/12] Fetching AirNow PM2.5...")
+print_step("\n[1/18] Fetching AirNow PM2.5...")
 t1 = time.time()
 from libs.airnowdata import AirNowData
 
@@ -84,12 +84,12 @@ airnow = AirNowData(
     elevation_path=elevation_path,
     dim=DIM,
     force_reprocess=True,
-    verbose=2,
+    verbose=0,
 )
 airnow_data = airnow.data[-24:]
 print_success(f"AirNow PM2.5: {airnow_data.shape} ({time.time() - t1:.1f}s)")
 
-print_step("\n[2/12] Computing AirNow hourly climatology (30-day lookback)...")
+print_step("\n[2/18] Computing AirNow hourly climatology (30-day lookback)...")
 t2 = time.time()
 
 clim_start = input_start - pd.Timedelta(days=30)
@@ -105,7 +105,7 @@ airnow_clim_raw = AirNowData(
     elevation_path=elevation_path,
     dim=DIM,
     force_reprocess=True,
-    verbose=2,
+    verbose=0,
 )
 
 clim_data = airnow_clim_raw.data
@@ -113,12 +113,12 @@ clim_data = clim_data.reshape(30, 24, DIM, DIM)
 hourly_clim = clim_data.mean(axis=0)
 
 airnow_hourly_clim = np.zeros((24, DIM, DIM))
-for i, ts in enumerate(pd.date_range(input_start, input_end, freq='h', inclusive='both')[:24]):
+for i, ts in enumerate(pd.date_range(input_start, input_end, freq='h', inclusive='left')[:24]):
     hour = ts.hour
     airnow_hourly_clim[i] = hourly_clim[hour]
 print_success(f"AirNow hourly clim: {airnow_hourly_clim.shape} ({time.time() - t2:.1f}s)")
 
-print_step("\n[3/12] Fetching OpenAQ PM2.5...")
+print_step("\n[3/18] Fetching OpenAQ PM2.5...")
 t3 = time.time()
 from libs.openaqdata import OpenAQData
 
@@ -142,30 +142,33 @@ except Exception as e:
     openaq_data = np.zeros((24, DIM, DIM))
 print_success(f"OpenAQ PM2.5: {openaq_data.shape} ({time.time() - t3:.1f}s)")
 
-print_step("\n[4/12] Fetching NAQFC PM2.5...")
+print_step("\n[4/18] Fetching NAQFC PM2.5...")
 t4 = time.time()
 from libs.naqfcdata import NAQFCData
 
 os.makedirs(f'{OUT_DIR}/naqfc', exist_ok=True)
 
 try:
-    naqfc = NAQFCData(
+    naqfc_full = NAQFCData(
         start_date=START_DATE_SPACE,
-        end_date=END_DATE_SPACE,
+        end_date=forecast_end.strftime('%Y-%m-%d %H:%M'),
         extent=EXTENT,
         dim=DIM,
         product='pm25',
         local_path=f'{OUT_DIR}/naqfc',
         save_path=f'{OUT_DIR}/naqfc',
-        verbose=2,
+        realtime=True,
+        verbose=0,
     )
-    naqfc_data = naqfc.data[-24:]
+    naqfc_data = naqfc_full.data[:24]
+    naqfc_data_forecast = naqfc_full.data[24:48]
 except Exception as e:
     print_error(f"NAQFC failed: {e}")
     naqfc_data = np.zeros((24, DIM, DIM))
+    naqfc_data_forecast = np.zeros((24, DIM, DIM))
 print_success(f"NAQFC PM2.5: {naqfc_data.shape} ({time.time() - t4:.1f}s)")
 
-print_step("\n[5/12] Fetching HRRR (observed)...")
+print_step("\n[5/18] Fetching HRRR (observed)...")
 t5 = time.time()
 from libs.hrrrdata import HRRRData
 
@@ -199,28 +202,36 @@ except Exception as e:
     hrrr_precip = np.zeros((24, DIM, DIM))
 print_success(f"HRRR u/v/wind/temp/pbl/precip: {hrrr_u.shape} ({time.time() - t5:.1f}s)")
 
-print_step("\n[6/12] Fetching HRRR forecasts (24h ahead)...")
+print_step("\n[6/18] Fetching HRRR forecasts (24h ahead)...")
 t6 = time.time()
 
-hrrr_forecast = HRRRData(
-    extent=EXTENT,
-    grid_size=DIM,
-    output_dir=f'{OUT_DIR}/hrrr_forecast',
-    force_reprocess=True,
-    verbose=False,
-    max_threads=10,
-    forecast=True,
-)
-hrrr_u_forecast = hrrr_forecast.data['u_wind']
-hrrr_v_forecast = hrrr_forecast.data['v_wind']
-hrrr_wind_speed_forecast = hrrr_forecast.data['wind_speed']
-hrrr_temp_forecast = hrrr_forecast.data['temp_2m']
-hrrr_pbl_forecast = hrrr_forecast.data['pbl_height']
-hrrr_precip_forecast = hrrr_forecast.data['precip_rate']
-
+try:
+    hrrr_forecast = HRRRData(
+        extent=EXTENT,
+        grid_size=DIM,
+        output_dir=f'{OUT_DIR}/hrrr_forecast',
+        force_reprocess=True,
+        verbose=False,
+        max_threads=10,
+        forecast=True,
+    )
+    hrrr_u_forecast = hrrr_forecast.data['u_wind']
+    hrrr_v_forecast = hrrr_forecast.data['v_wind']
+    hrrr_wind_speed_forecast = hrrr_forecast.data['wind_speed']
+    hrrr_temp_forecast = hrrr_forecast.data['temp_2m']
+    hrrr_pbl_forecast = hrrr_forecast.data['pbl_height']
+    hrrr_precip_forecast = hrrr_forecast.data['precip_rate']
+except Exception as e:
+    print_error(f"HRRR forecast failed: {e}")
+    hrrr_u_forecast = np.zeros((24, DIM, DIM))
+    hrrr_v_forecast = np.zeros((24, DIM, DIM))
+    hrrr_wind_speed_forecast = np.zeros((24, DIM, DIM))
+    hrrr_temp_forecast = np.zeros((24, DIM, DIM))
+    hrrr_pbl_forecast = np.zeros((24, DIM, DIM))
+    hrrr_precip_forecast = np.zeros((24, DIM, DIM))
 print_success(f"HRRR forecast: {hrrr_u_forecast.shape} ({time.time() - t6:.1f}s)")
 
-print_step("\n[7/12] Loading elevation...")
+print_step("\n[7/18] Loading elevation...")
 t7 = time.time()
 
 elevation_path = 'data/elevation.npy'
@@ -235,13 +246,19 @@ else:
     elevation_data = np.zeros((24, DIM, DIM))
 print_success(f"Elevation: {elevation_data.shape} ({time.time() - t7:.1f}s)")
 
-print_step("\n[8/12] Generating time encoding (input window)...")
+print_step("\n[8/18] NDVI (placeholder)...")
 t8 = time.time()
+
+ndvi_data = np.zeros((24, DIM, DIM))
+print_success(f"NDVI: {ndvi_data.shape} ({time.time() - t8:.1f}s)")
+
+print_step("\n[9/18] Generating time encoding (input window)...")
+t9 = time.time()
 from libs.timedata import TimeData
 
 time_enc = TimeData(
-    start_date=START_DATE_DAY,
-    end_date=END_DATE_DAY,
+    start_date=input_start.strftime('%Y-%m-%d %H:%M'),
+    end_date=input_end.strftime('%Y-%m-%d %H:%M'),
     dim=DIM,
     cyclical=True,
     month=True,
@@ -249,20 +266,20 @@ time_enc = TimeData(
     day_of_month=False,
     verbose=False,
 )
-time_data = time_enc.data[-24:]
+time_data = time_enc.data
 
 temporal_month_sin = time_data[..., 0]
 temporal_month_cos = time_data[..., 1]
 temporal_hour_sin = time_data[..., 2]
 temporal_hour_cos = time_data[..., 3]
-print_success(f"Time encoding (input): {time_data.shape} ({time.time() - t8:.1f}s)")
+print_success(f"Time encoding (input): {time_data.shape} ({time.time() - t9:.1f}s)")
 
-print_step("\n[9/12] Generating time encoding (forecast window)...")
-t9 = time.time()
+print_step("\n[10/18] Generating time encoding (forecast window)...")
+t10 = time.time()
 
 time_enc_forecast = TimeData(
-    start_date=forecast_start.strftime('%Y-%m-%d'),
-    end_date=forecast_end.strftime('%Y-%m-%d'),
+    start_date=forecast_start.strftime('%Y-%m-%d %H:%M'),
+    end_date=forecast_end.strftime('%Y-%m-%d %H:%M'),
     dim=DIM,
     cyclical=True,
     month=True,
@@ -270,51 +287,124 @@ time_enc_forecast = TimeData(
     day_of_month=False,
     verbose=False,
 )
-time_data_forecast = time_enc_forecast.data[-24:]
+time_data_forecast = time_enc_forecast.data
 
 temporal_month_sin_forecast = time_data_forecast[..., 0]
 temporal_month_cos_forecast = time_data_forecast[..., 1]
 temporal_hour_sin_forecast = time_data_forecast[..., 2]
 temporal_hour_cos_forecast = time_data_forecast[..., 3]
-print_success(f"Time encoding (forecast): {time_data_forecast.shape} ({time.time() - t9:.1f}s)")
+print_success(f"Time encoding (forecast): {time_data_forecast.shape} ({time.time() - t10:.1f}s)")
 
-print_step("\n[10/12] Fetching NAQFC forecast...")
-t10 = time.time()
-
-try:
-    os.makedirs(f'{OUT_DIR}/naqfc_forecast', exist_ok=True)
-    naqfc_forecast = NAQFCData(
-        start_date=forecast_start.strftime('%Y-%m-%d %H:%M'),
-        end_date=(forecast_end + pd.Timedelta(hours=1)).strftime('%Y-%m-%d %H:%M'),
-        extent=EXTENT,
-        dim=DIM,
-        product='pm25',
-        local_path=f'{OUT_DIR}/naqfc_forecast',
-        save_path=f'{OUT_DIR}/naqfc_forecast',
-        verbose=2,
-    )
-    naqfc_data_forecast = naqfc_forecast.data[-24:]
-except Exception as e:
-    print_error(f"NAQFC forecast failed: {e}")
-    naqfc_data_forecast = np.zeros((24, DIM, DIM))
-print_success(f"NAQFC forecast: {naqfc_data_forecast.shape} ({time.time() - t10:.1f}s)")
-
-print_step("\n[11/12] Computing AirNow hourly clim (forecast window)...")
+print_step("\n[11/18] Fetching GOES AOD (with 16h lookback buffer)...")
 t11 = time.time()
 
+from libs.goesdata import GOESData
+
+os.makedirs(f'{OUT_DIR}/goes', exist_ok=True)
+
+try:
+    goes_full = GOESData(
+        start_date=satellite_start.strftime('%Y-%m-%d %H:%M'),
+        end_date=input_end.strftime('%Y-%m-%d %H:%M'),
+        extent=EXTENT,
+        dim=DIM,
+        hourly_mean=True,
+        save_dir=f'{OUT_DIR}/goes/raw',
+        cache_path=f'{OUT_DIR}/goes/cache.npz',
+        load_cache=False,
+        save_cache=True,
+        verbose=False,
+        pre_downloaded=False,
+    )
+    goes_data = goes_full.data[-24:]
+    print_success(f"GOES AOD: fetched {goes_full.data.shape[0]}h, using last 24 -> {goes_data.shape}")
+except Exception as e:
+    print_error(f"GOES failed: {e}")
+    goes_data = np.zeros((24, DIM, DIM))
+print_success(f"GOES: {goes_data.shape} ({time.time() - t11:.1f}s)")
+
+print_step("\n[12/18] Fetching TEMPO NO2 (with 16h lookback buffer)...")
+t12 = time.time()
+
+from libs.tempodata import TempoNO2Data
+
+os.makedirs(f'{OUT_DIR}/tempo', exist_ok=True)
+
+try:
+    tempo_processed_path = f'{OUT_DIR}/tempo/operational.npz'
+    
+    if os.path.exists(tempo_processed_path):
+        tempo_cache = np.load(tempo_processed_path, allow_pickle=True)
+        cached_end = pd.to_datetime(tempo_cache['end_date'].item())
+        
+        if (now - cached_end) > pd.Timedelta(hours=6):
+            raise ValueError("Cache stale, refreshing")
+        
+        tempo_data = tempo_cache['data'][-24:]
+        print_success(f"TEMPO NO2: loaded from cache -> {tempo_data.shape}")
+    else:
+        raise FileNotFoundError("No cache")
+        
+except Exception as e:
+    print_info(f"TEMPO cache miss ({e}), fetching fresh...")
+    
+    try:
+        tempo_full = TempoNO2Data(
+            start_date=satellite_start.strftime('%Y-%m-%d %H:%M'),
+            end_date=input_end.strftime('%Y-%m-%d %H:%M'),
+            extent=EXTENT,
+            dim=DIM,
+            raw_dir=f'{OUT_DIR}/tempo/raw/',
+            processed_dir=f'{OUT_DIR}/tempo/',
+            n_threads=4,
+            cloud_threshold=0.5,
+            test_mode=False,
+        )
+        tempo_full.run()
+        
+        tempo_files = [f for f in os.listdir(f'{OUT_DIR}/tempo/') if f.startswith('tempo_no2') and f.endswith('.npz')]
+        if tempo_files:
+            tempo_processed = np.load(f'{OUT_DIR}/tempo/{sorted(tempo_files)[-1]}')
+            tempo_all = tempo_processed['data']
+            tempo_data = tempo_all[-24:]
+            
+            np.savez_compressed(
+                tempo_processed_path,
+                data=tempo_all,
+                end_date=str(input_end),
+            )
+            print_success(f"TEMPO NO2: fetched {tempo_all.shape[0]}h, using last 24 -> {tempo_data.shape}")
+        else:
+            raise FileNotFoundError("No processed TEMPO files found")
+            
+    except Exception as e2:
+        print_error(f"TEMPO fetch failed: {e2}, using zeros")
+        tempo_data = np.zeros((24, DIM, DIM))
+
+print_success(f"TEMPO: {tempo_data.shape} ({time.time() - t12:.1f}s)")
+
+print_step("\n[13/18] NAQFC PM2.5 Forecast (already fetched)...")
+t13 = time.time()
+print_success(f"NAQFC forecast: {naqfc_data_forecast.shape} ({time.time() - t13:.1f}s)")
+
+print_step("\n[14/18] HRRR Forecast (already fetched)...")
+t14 = time.time()
+print_success(f"HRRR forecast: {hrrr_u_forecast.shape} ({time.time() - t14:.1f}s)")
+
+print_step("\n[15/18] Computing AirNow hourly clim (forecast window)...")
+t15 = time.time()
+
 airnow_hourly_clim_forecast = np.zeros((24, DIM, DIM))
-for i, ts in enumerate(pd.date_range(forecast_start, forecast_end, freq='h', inclusive='both')[:24]):
+for i, ts in enumerate(pd.date_range(forecast_start, forecast_end, freq='h', inclusive='left')[:24]):
     hour = ts.hour
     airnow_hourly_clim_forecast[i] = hourly_clim[hour]
-print_success(f"AirNow hourly clim (forecast): {airnow_hourly_clim_forecast.shape} ({time.time() - t11:.1f}s)")
+print_success(f"AirNow hourly clim (forecast): {airnow_hourly_clim_forecast.shape} ({time.time() - t15:.1f}s)")
 
-print_step("\n[12/12] GOES & TEMPO (skipped for now)...")
-t12 = time.time()
-goes_data = np.zeros((24, DIM, DIM))
-tempo_data = np.zeros((24, DIM, DIM))
-print_success(f"GOES: {goes_data.shape}, TEMPO: {tempo_data.shape} ({time.time() - t12:.1f}s)")
+print_step("\n[16/18] Temporal encoding forecast (already fetched)...")
+t16 = time.time()
+print_success(f"Temporal forecast: {time_data_forecast.shape} ({time.time() - t16:.1f}s)")
 
-print_step("\nStacking into input tensor...")
+print_step("\n[17/18] Stacking into input tensor (30 channels)...")
 
 X_input = np.stack([
     airnow_data,
@@ -328,6 +418,7 @@ X_input = np.stack([
     hrrr_pbl,
     hrrr_precip,
     elevation_data,
+    ndvi_data,
     temporal_month_sin,
     temporal_month_cos,
     temporal_hour_sin,
@@ -352,7 +443,7 @@ X_input = np.expand_dims(X_input, axis=0)
 
 print_success(f"Input tensor: {X_input.shape}")
 
-print_step("\nSaving payload...")
+print_step("\n[18/18] Saving payload...")
 np.savez_compressed(
     f'{OUT_DIR}/payload.npz',
     X_input=X_input,
@@ -365,6 +456,9 @@ print_success(f"Saved to {OUT_DIR}/payload.npz")
 
 total_time = time.time() - start_time
 
+from viz_payload import visualize_payload
+visualize_payload()
+
 print_header("\n" + "=" * 60)
 print_header("SUMMARY")
 print_header("=" * 60)
@@ -372,6 +466,7 @@ print_success(f"Input tensor: {X_input.shape}")
 print_success(f"Channels: {X_input.shape[-1]}")
 print_success(f"Input window: {input_start} to {input_end}")
 print_success(f"Forecast window: {forecast_start} to {forecast_end}")
+print_success(f"Satellite buffer: {satellite_start} (16h lookback for GOES/TEMPO)")
 print_success(f"Saved to: {OUT_DIR}/payload.npz")
 print_header("=" * 60)
 print_header(f"TOTAL TIME: {total_time:.1f}s ({total_time/60:.1f} min)")

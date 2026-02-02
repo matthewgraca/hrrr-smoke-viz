@@ -15,8 +15,8 @@ import time
 class TempoNO2Data:
     def __init__(
         self,
-        start_date="2023-08-02",
-        end_date="2025-08-02",
+        start_date="2023-08-02 00:00",
+        end_date="2025-08-02 00:00",
         extent=(-118.615, -117.70, 33.60, 34.35),
         dim=84,
         raw_dir='data/tempo_v03_raw/',
@@ -184,44 +184,71 @@ class TempoNO2Data:
         print("=" * 70)
         
         total_downloaded = 0
-        current = self.start_date.replace(day=1)
+        current = self.start_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end_limit = self.end_date
         
         while current <= end_limit:
             year, month = current.year, current.month
-            month_dir = os.path.join(self.raw_dir, f"{year}", f"{month:02d}")
             
-            month_start = max(datetime(year, month, 1), self.start_date.to_pydatetime())
+            # Determine if this is the current/end month (partial month)
+            is_end_month = (year == end_limit.year and month == end_limit.month)
+            is_start_month = (year == self.start_date.year and month == self.start_date.month)
+            
+            # Calculate month boundaries
             if month == 12:
                 next_month = datetime(year+1, 1, 1)
             else:
                 next_month = datetime(year, month+1, 1)
-            month_end = min(next_month - timedelta(seconds=1), end_limit.to_pydatetime())
             
-            if month_end < month_start:
+            # Set actual request range (preserving hour for start/end)
+            if is_start_month:
+                request_start = self.start_date.to_pydatetime()
+            else:
+                request_start = datetime(year, month, 1)
+            
+            if is_end_month:
+                request_end = end_limit.to_pydatetime()
+            else:
+                request_end = next_month - timedelta(seconds=1)
+            
+            if request_end < request_start:
                 current = next_month
                 continue
             
+            # For partial months (start or end), use datetime-based directory naming
+            if is_start_month or is_end_month:
+                month_dir = os.path.join(
+                    self.raw_dir, 
+                    f"{year}", 
+                    f"{month:02d}",
+                    f"{request_start.strftime('%Y%m%d%H')}_{request_end.strftime('%Y%m%d%H')}"
+                )
+            else:
+                month_dir = os.path.join(self.raw_dir, f"{year}", f"{month:02d}")
+            
+            # Check for existing files
             if os.path.exists(month_dir):
                 existing = [f for f in os.listdir(month_dir) if f.endswith('.nc4') or f.endswith('.nc')]
                 if len(existing) > 0:
-                    print(f"\n{year}-{month:02d}: Found {len(existing)} files, skipping...")
+                    print(f"\n{year}-{month:02d}: Found {len(existing)} files in {month_dir}, skipping...")
                     total_downloaded += len(existing)
                     current = next_month
                     continue
             
             os.makedirs(month_dir, exist_ok=True)
-            print(f"\n{year}-{month:02d}: Submitting Harmony job...")
             
-            job_response = self._submit_harmony_job(month_start, month_end)
+            date_range_str = f"{request_start.strftime('%Y-%m-%d %H:%M')} to {request_end.strftime('%Y-%m-%d %H:%M')}"
+            print(f"\n{year}-{month:02d}: Submitting Harmony job for {date_range_str}...")
+            
+            job_response = self._submit_harmony_job(request_start, request_end)
             if not job_response:
-                print(f"   Failed to submit job, skipping month")
+                print(f"   Failed to submit job, skipping")
                 current = next_month
                 continue
             
             job_id = job_response.get('jobID')
             if not job_id:
-                print(f"   No job ID returned, skipping month")
+                print(f"   No job ID returned, skipping")
                 current = next_month
                 continue
             
@@ -372,7 +399,7 @@ class TempoNO2Data:
         
         output_file = os.path.join(
             self.processed_dir,
-            f"tempo_no2_la_hourly_qa0_{self.start_date.strftime('%Y%m%d')}_{self.end_date.strftime('%Y%m%d')}.npz"
+            f"tempo_no2_la_hourly_qa0_{self.start_date.strftime('%Y%m%d%H')}_{self.end_date.strftime('%Y%m%d%H')}.npz"
         )
         
         print(f"\n   Saving...")
@@ -464,8 +491,8 @@ class TempoNO2Data:
 
 def main():
     processor = TempoNO2Data(
-        start_date='2023-08-02',
-        end_date='2025-08-02',
+        start_date='2023-08-02 00:00',
+        end_date='2025-08-02 00:00',
         extent=(-118.615, -117.70, 33.60, 34.35),
         dim=84,
         raw_dir='data/tempo_v03_raw_test/',

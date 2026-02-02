@@ -27,9 +27,10 @@ class NAQFCData:
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
         product='pm25',         # 'pm25' = pm2.5, 'o3' = ozone, 'dust', 'smoke'
-        local_path=None,        # where grib files should be saved to/live in. saved to folder 'noaa-nws-naqfc-pds-{product}'
-        save_path=None,         # where the final numpy file should be saved to, saved to 'naqfc_{product}_processed.npz'
+        local_path=None,        # where grib files should be saved to/live in
+        save_path=None,         # where the final numpy file should be saved to
         load_numpy=False,       # specifies the numpy file should be loaded from cache
+        realtime=False,         # use extended forecast hours for operational runs
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
     ): 
         '''
@@ -38,8 +39,15 @@ class NAQFCData:
             2. Download
             3. Process
                 - Reproject, subregion, resize
+        
+        realtime mode:
+            When True, uses the full 72-hour forecast horizon from each model
+            run instead of stitching analysis hours. This is useful for 
+            operational/realtime runs where the latest model cycle may not
+            be available yet.
         '''
         self.VERBOSE = verbose if verbose in {0, 1, 2} else 0
+        self.realtime = realtime
 
         # load from cache
         if load_numpy:
@@ -306,7 +314,20 @@ class NAQFCData:
             if filename_form[product] in os.path.basename(f)
         ]
 
-        return paths[fwd_steps : len(paths) + back_steps]
+        # In realtime mode, skip the slicing to get all available files
+        if self.realtime:
+            if self.VERBOSE == 0:
+                print(f'🕐 Realtime mode: fetching all {len(paths)} available files')
+                for p in paths:
+                    print(f'    → {os.path.basename(p)}')
+            return paths
+        
+        result = paths[fwd_steps : len(paths) + back_steps]
+        if self.VERBOSE == 0:
+            print(f'📁 Normal mode: fetching {len(result)} files (sliced from {len(paths)})')
+            for p in result:
+                print(f'    → {os.path.basename(p)}')
+        return result
 
     def _download(self, s3, sources, destination, size=1e+7):
         '''
@@ -466,11 +487,16 @@ class NAQFCData:
     ### NOTE: Processing helpers
     def _get_dates(self, ds, available_dates):
         '''
-        Combs through the Dataset to find the valid dates to pull
-        Assumptions:
+        Combs through the Dataset to find the valid dates to pull.
+        
+        In normal mode:
             - For models that initialize on 06 and 12, we'll pull
                 07->12 and 13->06
             - For models that initialize on 03, we'll pull 24 hours
+        
+        In realtime mode:
+            - Uses the full 72-hour forecast horizon to cover gaps
+              when the latest model cycle isn't available yet.
 
         Furthermore, we use the dates we want to get the intersection 
             between the dates in the Dataset and the dates we're looking
@@ -479,18 +505,29 @@ class NAQFCData:
         Returns the dates we're searching for as a numpy array.
         '''
         init_hr = pd.Timestamp(ds.time.values).hour
-        look_ahead = -1
-        if init_hr == 6:
-            look_ahead = 6
-        elif init_hr == 12:
-            look_ahead = 18
-        elif init_hr == 3:
-            look_ahead = 24
+        
+        if self.realtime:
+            # Use full forecast horizon for operational/realtime runs
+            look_ahead = 72
         else:
-            raise ValueError('Initialization hour must be 06, 12, or 03')
+            # Original logic: stitch analysis hours from consecutive runs
+            if init_hr == 6:
+                look_ahead = 6
+            elif init_hr == 12:
+                look_ahead = 18
+            elif init_hr == 3:
+                look_ahead = 24
+            else:
+                raise ValueError('Initialization hour must be 06, 12, or 03')
 
         ds_dates = pd.to_datetime(ds.valid_time.values[:look_ahead])
         dates_to_pull = set(available_dates.tz_localize(None)) & set(ds_dates)
+        
+        if self.VERBOSE == 0:
+            init_time = pd.Timestamp(ds.time.values)
+            print(f'    📅 File init time: {init_time}')
+            print(f'       Available in file: {ds_dates[0]} to {ds_dates[-1]} ({len(ds_dates)} hours)')
+            print(f'       Pulling {len(dates_to_pull)} hours: {sorted(dates_to_pull)[:3]}...{sorted(dates_to_pull)[-3:] if len(dates_to_pull) > 3 else ""}')
 
         return np.array(sorted(list(dates_to_pull)), dtype='datetime64[ns]')
 
@@ -595,6 +632,9 @@ class NAQFCData:
             pd.to_datetime(ds.valid_time[i].item(), utc=True) : cv2.resize(ds.data[i], (dim, dim))
             for i in range(len(ds))
         }
+        
+        if self.VERBOSE == 0:
+            print(f'    ✅ Extracted {len(resized_data)} frames from {os.path.basename(file_path)}')
 
         return resized_data
 

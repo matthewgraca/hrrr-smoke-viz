@@ -16,17 +16,20 @@ import gc
 class HRRRData:
     def __init__(
         self,
+        start_date="2023-08-02-00",
+        end_date="2023-08-03-00",
         extent=None, 
         extent_name='la_basin',
         output_dir='data/hrrr',
+        grid_size=84,
         chunk_months=2,
         force_reprocess=False,
         verbose=False,
-        max_threads=20
+        max_threads=20,
+        forecast=False,
     ):
-        self.start_date = "2023-08-02-00"
-        self.end_date = "2023-08-03-00"
-        
+        self.start_date = start_date
+        self.end_date = end_date
         self.extent = extent
         self.extent_name = extent_name
         self.output_dir = output_dir
@@ -34,8 +37,8 @@ class HRRRData:
         self.verbose = verbose
         self.max_threads = max_threads
         self.force_reprocess = force_reprocess
-        
-        self.grid_size = 84
+        self.grid_size = grid_size
+        self.forecast = forecast
         
         self.lon_regular = np.linspace(extent[0], extent[1], self.grid_size)
         self.lat_regular = np.linspace(extent[2], extent[3], self.grid_size)
@@ -52,24 +55,147 @@ class HRRRData:
         self.combined_search = '|'.join([v['search'].strip(':') for v in self.variables.values()])
         
         os.makedirs(output_dir, exist_ok=True)
-        self.chunk_dir = os.path.join(output_dir, 'chunks')
+        
+        if forecast:
+            self.run_forecast_mode()
+        else:
+            self.run_observed_mode()
+    
+    def run_observed_mode(self):
+        self.chunk_dir = os.path.join(self.output_dir, 'chunks')
         os.makedirs(self.chunk_dir, exist_ok=True)
         
-        self.final_output = os.path.join(output_dir, f'hrrr_surface_2years_{self.grid_size}x{self.grid_size}.npz')
+        self.final_output = os.path.join(self.output_dir, f'hrrr_surface_{self.grid_size}x{self.grid_size}.npz')
         
-        if os.path.exists(self.final_output) and not force_reprocess:
-            print(f"Loading existing data from {self.final_output}")
+        if os.path.exists(self.final_output) and not self.force_reprocess:
+            if self.verbose:
+                print(f"Loading existing data from {self.final_output}")
             self.load_final_data()
             return
         
-        print(f"Extracting 2 years of HRRR surface data")
-        print(f"Period: {self.start_date} to {self.end_date}")
-        print(f"Extent: {extent}")
-        print(f"Output grid: {self.grid_size}x{self.grid_size}")
-        print(f"Processing in {chunk_months}-month chunks")
+        if self.verbose:
+            print(f"Extracting HRRR surface data (observed)")
+            print(f"Period: {self.start_date} to {self.end_date}")
+            print(f"Extent: {self.extent}")
+            print(f"Output grid: {self.grid_size}x{self.grid_size}")
+            print(f"Processing in {self.chunk_months}-month chunks")
         
         self.process_all_chunks()
         self.combine_chunks()
+    
+    def run_forecast_mode(self):
+        if self.verbose:
+            print(f"Extracting HRRR forecast data")
+            print(f"Extent: {self.extent}")
+            print(f"Output grid: {self.grid_size}x{self.grid_size}")
+        
+        latest_run = self.get_latest_special_run()
+        if latest_run is None:
+            raise ValueError("No HRRR special run found")
+        
+        self.latest_run = latest_run
+        
+        if self.verbose:
+            print(f"Using HRRR run: {latest_run}")
+        
+        now_utc = pd.Timestamp.now(tz='UTC').floor('h').tz_localize(None)
+        offset = int((now_utc - latest_run).total_seconds() / 3600)
+        fxx_start = offset + 1
+        fxx_end = offset + 24
+        
+        if self.verbose:
+            print(f"Offset: {offset}h, pulling fxx={fxx_start} to fxx={fxx_end}")
+        
+        self.download_forecasts(latest_run, fxx_start, fxx_end)
+    
+    def get_latest_special_run(self):
+        now_utc = pd.Timestamp.now(tz='UTC').floor('h').tz_localize(None)
+        special_hours = [18, 12, 6, 0]
+        
+        for days_back in [0, 1]:
+            date = now_utc - pd.Timedelta(days=days_back)
+            for hour in special_hours:
+                run_time = date.replace(hour=hour, minute=0, second=0)
+                if run_time >= now_utc:
+                    continue
+                
+                try:
+                    H = Herbie(date=run_time, fxx=1, model='hrrr', product='sfc', verbose=False)
+                    if H.grib is not None:
+                        return run_time
+                except:
+                    continue
+        return None
+    
+    def download_forecasts(self, latest_run, fxx_start, fxx_end):
+        fxx_range = list(range(fxx_start, fxx_end + 1))
+        forecast_data = {var: [None] * 24 for var in self.variables.keys()}
+        
+        def download_forecast_hour(fxx):
+            try:
+                H = Herbie(date=latest_run, fxx=fxx, model='hrrr', product='sfc', verbose=False)
+                H.download(search=self.combined_search)
+                result = H.xarray(search=self.combined_search, remove_grib=False)
+                
+                if isinstance(result, list):
+                    ds = result[0]
+                    for other_ds in result[1:]:
+                        ds = ds.merge(other_ds, compat='override')
+                else:
+                    ds = result
+                
+                extracted = {}
+                for var_name, var_info in self.variables.items():
+                    found_var = None
+                    for possible_name in var_info['var_names']:
+                        if possible_name in ds:
+                            found_var = possible_name
+                            break
+                    if found_var is None:
+                        found_var = list(ds.data_vars)[0]
+                    
+                    data_subset, lats_subset, lons_subset = self.subset_and_get_coords(ds, found_var)
+                    extracted[var_name] = self.interpolate_to_latlon(data_subset, lats_subset, lons_subset)
+                
+                ds.close()
+                return fxx, extracted
+            except Exception as e:
+                if self.verbose:
+                    tqdm.write(f"Failed fxx={fxx}: {e}")
+                return fxx, None
+        
+        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+            futures = {executor.submit(download_forecast_hour, fxx): fxx for fxx in fxx_range}
+            
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading forecasts", leave=False):
+                fxx, extracted = future.result()
+                idx = fxx - fxx_start
+                
+                if extracted is not None:
+                    for var_name in self.variables.keys():
+                        forecast_data[var_name][idx] = extracted[var_name]
+                else:
+                    for var_name in self.variables.keys():
+                        forecast_data[var_name][idx] = np.zeros((self.grid_size, self.grid_size))
+        
+        for var_name in self.variables.keys():
+            for i in range(24):
+                if forecast_data[var_name][i] is None:
+                    if i > 0 and forecast_data[var_name][i-1] is not None:
+                        forecast_data[var_name][i] = forecast_data[var_name][i-1]
+                    else:
+                        forecast_data[var_name][i] = np.zeros((self.grid_size, self.grid_size))
+        
+        self.data = {}
+        for var_name in self.variables.keys():
+            self.data[var_name] = np.array(forecast_data[var_name])
+        
+        self.data['wind_speed'] = np.sqrt(self.data['u_wind']**2 + self.data['v_wind']**2)
+        
+        if self.verbose:
+            print(f"Complete!")
+            for var, arr in self.data.items():
+                print(f"  {var}: {arr.shape}, [{arr.min():.2f}, {arr.max():.2f}]")
         
     def generate_chunk_periods(self):
         chunks = []
@@ -96,17 +222,19 @@ class HRRRData:
     
     def process_all_chunks(self):
         chunks = self.generate_chunk_periods()
-        print(f"\nTotal chunks to process: {len(chunks)}")
+        if self.verbose:
+            print(f"\nTotal chunks to process: {len(chunks)}")
         
-        for chunk in tqdm(chunks, desc="Overall progress"):
+        for chunk in tqdm(chunks, desc="Overall progress", disable=not self.verbose):
             chunk_file = os.path.join(self.chunk_dir, chunk['filename'])
             
             if os.path.exists(chunk_file) and not self.force_reprocess:
                 continue
             
-            tqdm.write(f"\n{'='*60}")
-            tqdm.write(f"Processing chunk {chunk['num']}/{len(chunks)}")
-            tqdm.write(f"Period: {chunk['start']} to {chunk['end']}")
+            if self.verbose:
+                tqdm.write(f"\n{'='*60}")
+                tqdm.write(f"Processing chunk {chunk['num']}/{len(chunks)}")
+                tqdm.write(f"Period: {chunk['start']} to {chunk['end']}")
             
             try:
                 chunk_data, timestamps = self.process_chunk(chunk['start'], chunk['end'])
@@ -115,14 +243,15 @@ class HRRRData:
                 save_dict.update(chunk_data)
                 
                 np.savez_compressed(chunk_file, **save_dict)
-                tqdm.write(f"Saved chunk {chunk['num']}: {len(timestamps)} timestamps")
+                if self.verbose:
+                    tqdm.write(f"Saved chunk {chunk['num']}: {len(timestamps)} timestamps")
                 
                 del chunk_data
                 gc.collect()
                 
             except Exception as e:
-                tqdm.write(f"Error processing chunk {chunk['num']}: {e}")
                 if self.verbose:
+                    tqdm.write(f"Error processing chunk {chunk['num']}: {e}")
                     import traceback
                     traceback.print_exc()
                 continue
@@ -135,7 +264,8 @@ class HRRRData:
             raise ValueError(f"No dates in range {start_date} to {end_date}")
         
         herbies = self.download_all_variables(expected_dates)
-        tqdm.write(f"Downloaded {len(herbies)}/{len(expected_dates)} timestamps")
+        if self.verbose:
+            tqdm.write(f"Downloaded {len(herbies)}/{len(expected_dates)} timestamps")
         
         all_data, successful_dates = self.extract_all_variables(herbies)
         
@@ -174,7 +304,7 @@ class HRRRData:
             
             futures = {exe.submit(download_task, date): date for date in dates}
             
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading", leave=False):
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading", leave=False, disable=not self.verbose):
                 result = future.result()
                 if result is not None:
                     successful.append(result)
@@ -192,7 +322,7 @@ class HRRRData:
         all_data = {var: [] for var in self.variables.keys()}
         successful_dates = []
         
-        for H in tqdm(herbie_list, desc="Extracting", leave=False):
+        for H in tqdm(herbie_list, desc="Extracting", leave=False, disable=not self.verbose):
             try:
                 result = H.xarray(search=self.combined_search, remove_grib=False)
                 
@@ -311,7 +441,7 @@ class HRRRData:
                 continue
         
         missing = np.isnan(aligned).all(axis=(1, 2)).sum()
-        if missing > 0:
+        if missing > 0 and self.verbose:
             tqdm.write(f"Data gaps: {missing} hours missing, forward filling...")
         
         for t in range(n_times):
@@ -327,7 +457,8 @@ class HRRRData:
         return aligned
     
     def combine_chunks(self):
-        print(f"\nCombining all chunks into final output...")
+        if self.verbose:
+            print(f"\nCombining all chunks into final output...")
         
         chunks = self.generate_chunk_periods()
         
@@ -335,11 +466,12 @@ class HRRRData:
         all_data = {var: [] for var in all_vars}
         all_timestamps = []
         
-        for chunk in tqdm(chunks, desc="Combining chunks"):
+        for chunk in tqdm(chunks, desc="Combining chunks", disable=not self.verbose):
             chunk_file = os.path.join(self.chunk_dir, chunk['filename'])
             
             if not os.path.exists(chunk_file):
-                tqdm.write(f"Warning: Missing chunk {chunk['num']}, skipping...")
+                if self.verbose:
+                    tqdm.write(f"Warning: Missing chunk {chunk['num']}, skipping...")
                 continue
             
             data = np.load(chunk_file, allow_pickle=True)
@@ -355,7 +487,8 @@ class HRRRData:
             if len(arrays) > 0:
                 final_data[var] = np.concatenate(arrays, axis=0)
         
-        print(f"Saving final dataset to {self.final_output}")
+        if self.verbose:
+            print(f"Saving final dataset to {self.final_output}")
         
         save_dict = {
             'timestamps': all_timestamps,
@@ -367,10 +500,11 @@ class HRRRData:
         
         np.savez_compressed(self.final_output, **save_dict)
         
-        print(f"\nComplete!")
-        print(f"Timestamps: {len(all_timestamps)} | Range: {all_timestamps[0]} to {all_timestamps[-1]}")
-        for var, arr in final_data.items():
-            print(f"  {var}: {arr.shape}, [{arr.min():.2f}, {arr.max():.2f}]")
+        if self.verbose:
+            print(f"\nComplete!")
+            print(f"Timestamps: {len(all_timestamps)} | Range: {all_timestamps[0]} to {all_timestamps[-1]}")
+            for var, arr in final_data.items():
+                print(f"  {var}: {arr.shape}, [{arr.min():.2f}, {arr.max():.2f}]")
         
         self.data = final_data
         self.timestamps = all_timestamps
@@ -385,20 +519,39 @@ class HRRRData:
         
         self.timestamps = data['timestamps']
         
-        print(f"Loaded: {len(self.timestamps)} timestamps")
-        for var, arr in self.data.items():
-            print(f"  {var}: {arr.shape}, [{arr.min():.2f}, {arr.max():.2f}]")
+        if self.verbose:
+            print(f"Loaded: {len(self.timestamps)} timestamps")
+            for var, arr in self.data.items():
+                print(f"  {var}: {arr.shape}, [{arr.min():.2f}, {arr.max():.2f}]")
 
 
 if __name__ == "__main__":
     extent = (-118.615, -117.70, 33.60, 34.35)
     
+    # Test observed mode
+    print("Testing observed mode...")
     extractor = HRRRData(
+        start_date="2023-08-02-00",
+        end_date="2023-08-03-00",
         extent=extent,
         extent_name='la_basin',
-        output_dir='data/hrrr_surface',
+        output_dir='data/hrrr_test',
+        grid_size=84,
         chunk_months=2,
         force_reprocess=True,
         verbose=True,
-        max_threads=20
+        max_threads=20,
+        forecast=False,
+    )
+    
+    # Test forecast mode
+    print("\nTesting forecast mode...")
+    forecast_extractor = HRRRData(
+        extent=extent,
+        output_dir='data/hrrr_forecast_test',
+        grid_size=84,
+        force_reprocess=True,
+        verbose=True,
+        max_threads=10,
+        forecast=True,
     )
