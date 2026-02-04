@@ -5,20 +5,27 @@ import numpy as np
 import argparse
 
 parser = argparse.ArgumentParser(description='Driver code for the results visualizer')
-parser.add_argument('config_name', help='the folder containing the results of the experiment, with metadata.pkl, scalers.pkl, and y_pred.npy')
-parser.add_argument('data', help='the folder containing the training data used in the experiment')
+parser.add_argument(
+    'experiment_results',
+    help='the folder containing the results of the experiment, with metadata.pkl, scalers.pkl, and y_pred.npy'
+)
+parser.add_argument(
+    'data',
+    help='the folder containing the training data used in the experiment'
+)
 args = parser.parse_args()
 
 # NOTE parameterize this
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
-EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/autoencoder_archive')
-RESULTS_PATH = os.path.join(EXPERIMENT_PATH, f'results/{args.config_name}') 
 # NOTE be mindful of where your data is!
-DATA_PATH = os.path.join(EXPERIMENT_PATH, args.data)
+DATA_PATH = args.data
+RESULTS_PATH = args.experiment_results
 sys.path.append(BASE_PATH)
 
 if not os.path.exists(RESULTS_PATH):
     raise ValueError(f"results path on {RESULTS_PATH} not found")
+if not os.path.exists(DATA_PATH):
+    raise ValueError(f"data path on {DATA_PATH} not found")
 
 from libs.results_visualizer import *
 
@@ -28,7 +35,7 @@ print('Loading objects', end=' ')
 with open(os.path.join(RESULTS_PATH, 'history.pkl'), 'rb') as f:
     history = pickle.load(f)
 plot_training_history(
-    history, os.path.join(RESULTS_PATH, 'loss_curves.png'), args.config_name
+    history, os.path.join(RESULTS_PATH, 'loss_curves.png'), RESULTS_PATH
 )
 
 # things you need to use plot_sample
@@ -82,6 +89,7 @@ del X
 print('complete.')
 
 # NOTE outlier removal
+print('Removing outlier dates (July 4th).')
 mask = np.ones(len(y_true), dtype=bool)
 mask[1916 : 1952] = False
 y_true = y_true[mask]

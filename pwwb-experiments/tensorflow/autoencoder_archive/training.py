@@ -1,5 +1,15 @@
-import argparse
+class TextColor:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'  # Resets formatting
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
 
+import argparse
 def argparser(valid_models, valid_losses):
     parser = argparse.ArgumentParser(
         description='training script'
@@ -17,8 +27,12 @@ def argparser(valid_models, valid_losses):
         help='location of the data'
     )
     parser.add_argument(
-        '-r', '--results_folder',
-        help=f'the folder that will be used to store results'
+        'results',
+        help='location results will be saved to.'
+    )
+    parser.add_argument(
+        'suffix',
+        help='extra string to attach to end of experiment results folder'
     )
     parser.add_argument(
         '-t', '--test', action='store_true',
@@ -27,12 +41,6 @@ def argparser(valid_models, valid_losses):
 
     # validate
     args = parser.parse_args()
-
-    if not args.test:
-        if args.results_folder is None:
-            raise ValueError(
-                'If not in test mode, a results folder must be specified'
-            )
 
     if args.model not in valid_models:
         raise ValueError(f'Invalid model. Pick from: {valid_models}')
@@ -47,9 +55,8 @@ args = argparser(
     valid_losses=set(['grid_mae', 'grid_mse', 'nhood'])
 )
 
-
 # training parameters
-EPOCHS = 100 
+EPOCHS = 100
 BATCH_SIZE = 16
 
 import os
@@ -61,19 +68,22 @@ tf.keras.backend.set_image_data_format('channels_last')
 
 import sys
 
-EXPERIMENT_NAME = (
-    'test_experiment' if args.test
-    else args.model + '_' + args.loss + '_loss' + (
-        '' if args.results_folder is None
-        else '_' + args.results_folder
-    )
-)
+EXPERIMENT_NAME = args.model + '_' + args.loss + '_' + args.suffix
 
 BASE_PATH = '/home/mgraca/Workspace/hrrr-smoke-viz'
-EXPERIMENT_PATH = os.path.join(BASE_PATH, 'pwwb-experiments/tensorflow/autoencoder_archive')
-DATA_PATH = os.path.join(EXPERIMENT_PATH, f'{args.data}/npy_files')
-RESULTS_PATH = os.path.join(EXPERIMENT_PATH, f'results/{EXPERIMENT_NAME}')
+DATA_PATH = args.data
+RESULTS_PATH = (
+    os.path.join(args.results, 'test_experiment')
+    if args.test
+    else os.path.join(args.results, EXPERIMENT_NAME)
+)
+if not os.path.exists(DATA_PATH):
+    raise ValueError(f"data path on {DATA_PATH} not found")
 os.makedirs(RESULTS_PATH, exist_ok=True)
+print(
+    f'{TextColor.BLUE}Results will be saved to:{TextColor.ENDC}',
+    f'{TextColor.BOLD}{RESULTS_PATH}{TextColor.ENDC}'
+)
 
 sys.path.append(BASE_PATH)
 from libs.pwwb.utils.dataset import PWWBPyDataset
@@ -85,32 +95,21 @@ import pickle
 from tensorflow.keras.utils import plot_model
 from tensorflow.keras.callbacks import EarlyStopping
 
-class TextColor:
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'  # Resets formatting
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-
 # dataset parameters
 WORKERS = 4
 USE_MULTIPROCESSING = False
 #MAX_QUEUE_SIZE = 10
 
 # channel information
-with open(os.path.join(EXPERIMENT_PATH, f'{args.data}/metadata.pkl'), 'rb') as f:
+with open(os.path.join(DATA_PATH, 'metadata.pkl'), 'rb') as f:
     metadata = pickle.load(f)
 channel_to_idx = {ch : i for i, ch in enumerate(metadata['channel_names'])}
 
 # load dataset
 print(f'{TextColor.BLUE}Lazy loading datasets...{TextColor.ENDC}')
 train_ds = PWWBPyDataset(
-    x_path=os.path.join(DATA_PATH, 'X_train.npy'),
-    y_path=os.path.join(DATA_PATH, 'Y_train.npy'),
+    x_path=os.path.join(DATA_PATH, 'npy_files/X_train.npy'),
+    y_path=os.path.join(DATA_PATH, 'npy_files/Y_train.npy'),
     batch_size=BATCH_SIZE,
     shuffle=True,
     workers=WORKERS,
@@ -119,8 +118,8 @@ train_ds = PWWBPyDataset(
 print(f'\tTraining dataset loaded: {len(train_ds)} batches loaded.')
 
 valid_ds = PWWBPyDataset(
-    x_path=os.path.join(DATA_PATH, 'X_valid.npy'),
-    y_path=os.path.join(DATA_PATH, 'Y_valid.npy'),
+    x_path=os.path.join(DATA_PATH, 'npy_files/X_valid.npy'),
+    y_path=os.path.join(DATA_PATH, 'npy_files/Y_valid.npy'),
     batch_size=BATCH_SIZE,
     shuffle=False,
     workers=WORKERS,
@@ -131,8 +130,8 @@ print(f'\tValidation dataset loaded: {len(valid_ds)} batches loaded.')
 # NOTE fix later to properly support test vs valid
 '''
 test_ds = PWWBPyDataset(
-    x_path=os.path.join(DATA_PATH, 'X_test.npy'),
-    y_path=os.path.join(DATA_PATH, 'Y_test.npy'),
+    x_path=os.path.join(DATA_PATH, 'npy_files/X_test.npy'),
+    y_path=os.path.join(DATA_PATH, 'npy_files/Y_test.npy'),
     batch_size=BATCH_SIZE,
     shuffle=False,
     workers=WORKERS,

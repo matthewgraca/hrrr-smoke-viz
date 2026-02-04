@@ -12,13 +12,14 @@ MODEL_NAME='dual_ae_gated_skips'
 LOSS_NAME='grid_mae'
 EXPERIMENT_NAME='84x84'
 DATA_LOC='/mnt/wildfire/training-data/2026-01-27'
+RESULTS_LOC='/mnt/wildfire/experiments'
 IS_TEST=false
 VIZ_ONLY=false
 
 if [ "$VIZ_ONLY" = true ]; then
     echo -e "\e[1mConducting visualizations only.\e[0m"
     python vis.py \
-        "${MODEL_NAME}_${LOSS_NAME}_loss_${EXPERIMENT_NAME}" \
+        "${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}" \
         "$DATA_LOC"
     exit 0
 fi
@@ -29,7 +30,8 @@ if [ "$IS_TEST" = true ]; then
         "$MODEL_NAME" \
         "$LOSS_NAME" \
         "$DATA_LOC" \
-        -r "$EXPERIMENT_NAME" \
+        "$RESULTS_LOC" \
+        "$EXPERIMENT_NAME" \
         -t
 else
     echo -e "\e[1mRunning full training sequence.\e[0m"
@@ -37,9 +39,10 @@ else
         "$MODEL_NAME" \
         "$LOSS_NAME" \
         "$DATA_LOC" \
-        -r "$EXPERIMENT_NAME"
+        "$RESULTS_LOC" \
+        "$EXPERIMENT_NAME"
     python vis.py \
-        "${MODEL_NAME}_${LOSS_NAME}_loss_${EXPERIMENT_NAME}" \
+        "${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}" \
         "$DATA_LOC"
 fi
 
