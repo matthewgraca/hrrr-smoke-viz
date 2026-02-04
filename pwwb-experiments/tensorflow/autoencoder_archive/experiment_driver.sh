@@ -8,11 +8,11 @@
 # is test = is/is not a test. turn false if you want a real run.
 # viz only = run only the visualization script, no training.
 
-MODEL_NAME='dual_autoencoder'
+MODEL_NAME='dual_ae_gated_skips'
 LOSS_NAME='grid_mae'
 EXPERIMENT_NAME='84x84'
 DATA_LOC='/mnt/wildfire/training-data/2026-01-27'
-IS_TEST=true
+IS_TEST=false
 VIZ_ONLY=false
 
 if [ "$VIZ_ONLY" = true ]; then
