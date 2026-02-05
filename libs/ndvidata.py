@@ -5,6 +5,8 @@ import os
 import pandas as pd
 import re
 import bisect
+from harmony import Client, Environment, Collection, Request, BBox
+from osgeo import gdal
 
 class NDVIData:
     def __init__(
@@ -17,15 +19,82 @@ class NDVIData:
         save_dir='data', # saved to data/ndvi_processed.npz
         verbose=0 # 0 = all, 1 = progress + errors, 2 = only errors
     ):
-        self.start_date = pd.to_datetime(start_date)
-        self.end_date = pd.to_datetime(end_date)
+        self.start_date_dt = pd.to_datetime(start_date)
+        self.end_date_dt = pd.to_datetime(end_date)
         self.extent = extent
         self.dim = dim
         self.raw_dir = self._validate_raw_dir(raw_dir)
         self.save_dir = self._validate_save_dir(save_dir)
         self.VERBOSE = self._validate_verbose(verbose)
 
-        pass
+        lon_min, lon_max, lat_min, lat_max = self.extent
+        '''
+        harmony_client = Client() # pulls from .netrc file
+        request = Request(
+            # MODIS/Terra Vegetation Indices 16-Day L3 Global 1km SIN Grid V061
+            collection=Collection(id='C2565788905-LPCLOUD'),
+            spatial=BBox(w=lon_min, e=lon_max, s=lat_min, n=lat_max),
+            temporal={
+                'start' : self.start_date_dt,
+                'stop' : self.end_date_dt
+            }
+        )
+        job_id = harmony_client.submit(request)
+        print(harmony_client.status(job_id))
+        results = harmony_client.download_all(job_id, directory=raw_dir, overwrite=True)
+        for r in results:
+            print(r)
+        '''
+        
+        gdal.UseExceptions()
+        hdf_files = sorted(os.listdir(self.raw_dir))
+
+        # crack open the dataset and search through the subdatasets
+        hdf_path = os.path.join(self.raw_dir, hdf_files[0])
+        ds = gdal.Open(hdf_path)
+        if ds is None:
+            raise RuntimeError(f'Unable to open {hdf_path}.')
+        sub_ds = ds.GetSubDatasets()
+        if not sub_ds:
+            raise RuntimeError(f'No subdatasets found.')
+
+        # grab and crack open the ndvi subdataset
+        keyword = 'NDVI'
+        matches = [
+            (name, desc)
+            for name, desc in sub_ds
+            if keyword in name or keyword in desc
+        ]
+        if not matches:
+            raise RuntimeError(f'No matches for {keyword} found in subdatasets')
+        sds_name = matches[0][0]
+
+        ndvi_sds = gdal.Open(sds_name)
+        if ndvi_sds is None:
+            raise RuntimeError(f'Unable to open {keyword} subdataset: {sds_name}')
+
+        # warp
+        out = os.path.join(save_dir, 'out_la.tif')
+        warp_options = gdal.WarpOptions(
+            dstSRS='EPSG:4326',
+            resampleAlg='bilinear',
+            format='GTiff',
+            outputBounds=(lon_min, lat_min, lon_max, lat_max),
+            multithread=True
+        )
+
+        result = gdal.Warp(destNameOrDestDS=out, srcDSOrSrcDSTab=ndvi_sds, options=warp_options)
+        if result is None:
+            raise RuntimeError('gdal.Warp failed.')
+
+        # clean up
+        result.FlushCache()
+        result = None
+        ndvi_sds = None
+        ds = None
+
+        return
+
     
     ### NOTE: Parameter validation methods
     def _validate_raw_dir(self, raw_dir):
@@ -37,8 +106,11 @@ class NDVIData:
                 'It will be stored under \'raw_dir/modis-ndvi\'.'
             )
 
-        os.makedirs(f'{raw_dir}/modis-ndvi', exist_ok=True)
-        return raw_dir
+        new_dir = os.path.join(raw_dir, 'modis-ndvi')
+        os.makedirs(new_dir, exist_ok=True)
+
+        return new_dir
+
 
     def _validate_save_dir(self, save_dir):
         if not os.path.exists(save_dir):
