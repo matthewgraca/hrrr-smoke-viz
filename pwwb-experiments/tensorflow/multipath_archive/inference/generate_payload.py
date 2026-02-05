@@ -41,11 +41,9 @@ EXTENT = (-118.615, -117.70, 33.60, 34.35)
 DIM = 84
 SCALERS_PATH = '/home/moh/nasa/hrrr-smoke-viz/pwwb-experiments/tensorflow/multipath_archive/data/24out_84x84_no_holidays/scalers.pkl'
 
-now = pd.Timestamp.now(tz='UTC').floor('h')
-
+now = pd.Timestamp.now(tz='UTC').floor('h').tz_localize(None)
 input_start = now - pd.Timedelta(hours=23)
 input_end = now + pd.Timedelta(hours=1)
-
 forecast_start = now + pd.Timedelta(hours=1)
 forecast_end = now + pd.Timedelta(hours=25)
 
@@ -91,7 +89,7 @@ from libs.airnowdata import AirNowData
 
 airnow = AirNowData(
     start_date=START_DATE,
-    end_date=END_DATE,
+    end_date = END_DATE,
     extent=EXTENT,
     airnow_api_key=os.getenv('AIRNOW_API_KEY'),
     save_dir=f'{OUT_DIR}/airnow.json',
@@ -99,6 +97,16 @@ airnow = AirNowData(
     elevation_path=elevation_path,
     dim=DIM,
     force_reprocess=True,
+    use_whitelist=True,
+    sensor_whitelist=[
+        'Anaheim',
+        'Compton',
+        'Glendora - Laurel',
+        'Long Beach Signal Hill',
+        'Los Angeles - N. Main Street',
+        'North Holywood',
+        'Reseda'
+    ],
     verbose=0,
 )
 airnow_data = normalize(airnow.data[-24:], 'AirNow_PM25')
@@ -121,6 +129,16 @@ airnow_clim_raw = AirNowData(
     dim=DIM,
     force_reprocess=True,
     verbose=0,
+    use_whitelist=True,
+    sensor_whitelist=[
+        'Anaheim',
+        'Compton',
+        'Glendora - Laurel',
+        'Long Beach Signal Hill',
+        'Los Angeles - N. Main Street',
+        'North Holywood',
+        'Reseda'
+    ],
 )
 
 clim_data = airnow_clim_raw.data
@@ -150,6 +168,8 @@ try:
         elevation_path=elevation_path,
         save_dir=f'{OUT_DIR}/openaq',
         save_path=f'{OUT_DIR}/openaq/processed.npz',
+        inference_mode=True,
+        expected_hours=24,
         verbose=0,
     )
     openaq_data = normalize(openaq.data[-24:], 'OpenAQ_PM25')

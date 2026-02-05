@@ -6,7 +6,7 @@ class TimeData:
         self,
         start_date="2023-08-02",
         end_date="2025-08-02",
-        dim=40,
+        dim=84,
         cyclical=True,
         month=True,
         day_of_week=False,
@@ -104,7 +104,7 @@ class TimeData:
 
         return (
             f"🕒 Encoding the following options:\n"
-            f"{"\n".join(msg)}"
+            f"{chr(10).join(msg)}"
         )
 
     def _expand_val_across_dimensions(self, data, dim):

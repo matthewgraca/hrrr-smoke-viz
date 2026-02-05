@@ -18,20 +18,22 @@ class OpenAQData:
         end_date='2025-01-10 00:59',
         extent=(-118.75, -117.0, 33.5, 34.5),
         dim=40,
-        product=2,              # sensor data to ingest (2 is pm2.5)
-        is_nowcast=False,       # determines if the values should be nowcast or raw
-        save_dir=None,          # where json files should be saved to
-        save_path=None,         # where the final numpy file should be saved to
-        load_json=False,        # specifies that jsons should be loaded from cache
-        load_csv=False,         # specifies that the csvs should be loaded from cache
-        load_numpy=False,       # specifies the numpy file should be loaded from cache
+        product=2,
+        is_nowcast=False,
+        save_dir=None,
+        save_path=None,
+        load_json=False,
+        load_csv=False,
+        load_numpy=False,
         use_interpolation=True,
         elevation_path=None,
         use_variable_blur=False,
         power=2.0,
         neighbors=10,
         elevation_scale_factor=100,
-        verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
+        verbose=0,
+        inference_mode=False,
+        expected_hours=24,
     ):
         '''
         Pipeline:
@@ -40,28 +42,17 @@ class OpenAQData:
             3. Read json, plot data on grids of a given dimension
             4. Interpolate
 
-        To run from scratch, just keep load_json and load_np off.
-
-        On save_dir, load_json, load_numpy, and load_csv:
-            - If a save_dir is provided, that's where we'll read/write from as 
-                our cache.
-            - load_json is intended for when you have the measurements or
-                sensor jsons, but not the processed numpy file.
-            - load_csv is when you have processed the json files into csvs
-                already.
-            - load_numpy is intended for when you have the completely processed 
-                numpy file. 
-
-            Think of it as:
-                all false = ingest from scratch
-                json = farm-to-table raw api reponses from openaq
-                csv = stitched-together jsons (no imputation or processing yet)
-                numpy = gridded and interpolated
+        inference_mode: When True, relaxes end date requirement for sensor
+            pruning (to handle API lag) and forward-fills to expected_hours.
+        expected_hours: Number of hours expected in output (used for forward-fill
+            in inference_mode).
         '''
-        # members
         self.data = None
         self.sensor_locations = None
         self.VERBOSE = self._validate_verbose_flag(verbose)
+        self.inference_mode = inference_mode
+        self.expected_hours = expected_hours
+        self.dim = dim
         self.start_date, self.end_date = (
             (None, None)
             if load_numpy
@@ -71,7 +62,6 @@ class OpenAQData:
         self._validate_save_dir(save_dir)
         self.is_nowcast = is_nowcast
 
-        # datetimes to use for queries
         start_dt = pd.to_datetime(start_date, utc=True)
         end_dt = pd.to_datetime(end_date, utc=True)
         dates = pd.date_range(
@@ -99,7 +89,6 @@ class OpenAQData:
             )
             df_measurements = self._load_measurements_from_csv_cache(save_dir)
 
-        # init IDW
         idw = IDW(
             power,
             neighbors,
@@ -110,7 +99,6 @@ class OpenAQData:
             verbose=self.VERBOSE
         )
 
-        # preprocess dataframes 
         df_measurements, df_locations = self._preprocess_dataframes(
             df_measurements,
             df_locations,
@@ -121,8 +109,7 @@ class OpenAQData:
         self.sensor_locations = dict(
             zip(df_locations['locations'], df_locations['x, y'])
         )
- 
-        # process to numpys
+
         ground_site_grids = self._df_to_gridded_data(
             df_measurements, dim, self.sensor_locations 
         )
@@ -140,7 +127,11 @@ class OpenAQData:
             else ground_site_grids
         )
 
-        self.data = grids 
+        self.data = grids
+
+        # Forward fill if in inference mode and we have fewer than expected hours
+        if self.inference_mode:
+            self.data = self._forward_fill_to_expected(self.data)
 
         self._save_numpy_to_cache(
             cache_path=(
@@ -237,7 +228,7 @@ class OpenAQData:
                 f'{self._get_response_msg(response.status_code)}\n'
                 f'Query made: {response.url}\n'
                 f'Number of sensors in extent: '
-                f'{len(response.json()['results'])}\n'
+                f"{len(response.json()['results'])}\n"
             )
 
         return response
@@ -552,7 +543,7 @@ class OpenAQData:
                 if res['datetimeLast'] is not None
                 else start_dt
             )
-            if start <= start_dt and end >= end_dt:
+            if start <= start_dt and end >= end_dt - pd.Timedelta(hours=1):
                 d['sensor id'].append(res['id'])
                 d['provider'].append(res['provider']['name'])
                 d['locations'].append(res['name'])
@@ -1094,6 +1085,35 @@ class OpenAQData:
     ):
         #### start helpers
         # filter out sensors that are not in the whitelist
+        def _forward_fill_to_expected(self, data):
+            '''
+            Forward fills the last available frame to reach expected_hours.
+            Used in inference_mode to handle API lag where the most recent
+            hour(s) may not be available yet.
+            '''
+            current_hours = data.shape[0]
+            
+            if current_hours >= self.expected_hours:
+                if self.VERBOSE == 0 and current_hours > self.expected_hours:
+                    print(
+                        f'⚠️  Got {current_hours} hours, expected {self.expected_hours}. '
+                        f'Trimming to last {self.expected_hours}.'
+                    )
+                return data[-self.expected_hours:]
+            
+            missing_hours = self.expected_hours - current_hours
+            
+            if self.VERBOSE == 0:
+                print(
+                    f'📈 Forward filling: got {current_hours} hours, '
+                    f'padding {missing_hours} hour(s) to reach {self.expected_hours}'
+                )
+            
+            last_frame = data[-1:]
+            padding = np.repeat(last_frame, missing_hours, axis=0)
+            filled_data = np.concatenate([data, padding], axis=0)
+            
+            return filled_data
         def filter_whitelisted_sensors(
             df_measurements,
             df_locations,

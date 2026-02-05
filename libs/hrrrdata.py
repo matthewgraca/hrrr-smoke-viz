@@ -272,8 +272,8 @@ class HRRRData:
                 continue
     
     def process_chunk(self, start_date, end_date):
-        end_dt = pd.to_datetime(end_date.replace('-', ' ')) - pd.Timedelta(hours=1)
-        expected_dates = pd.date_range(start_date.replace('-', ' '), end_dt, freq='1h')
+        end_dt = pd.to_datetime(end_date.replace('-', ' '))
+        expected_dates = pd.date_range(start_date.replace('-', ' '), end_dt, freq='1h', inclusive='left')
         
         if len(expected_dates) == 0:
             raise ValueError(f"No dates in range {start_date} to {end_date}")

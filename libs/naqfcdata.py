@@ -507,10 +507,8 @@ class NAQFCData:
         init_hr = pd.Timestamp(ds.time.values).hour
         
         if self.realtime:
-            # Use full forecast horizon for operational/realtime runs
             look_ahead = 72
         else:
-            # Original logic: stitch analysis hours from consecutive runs
             if init_hr == 6:
                 look_ahead = 6
             elif init_hr == 12:
