@@ -109,23 +109,38 @@ class HRRRData:
         self.download_forecasts(latest_run, fxx_start, fxx_end)
     
     def get_latest_special_run(self):
-        now_utc = pd.Timestamp.now(tz='UTC').floor('h').tz_localize(None)
-        special_hours = [18, 12, 6, 0]
-        
-        for days_back in [0, 1]:
-            date = now_utc - pd.Timedelta(days=days_back)
-            for hour in special_hours:
-                run_time = date.replace(hour=hour, minute=0, second=0)
-                if run_time >= now_utc:
-                    continue
-                
-                try:
-                    H = Herbie(date=run_time, fxx=1, model='hrrr', product='sfc', verbose=False)
-                    if H.grib is not None:
-                        return run_time
-                except:
-                    continue
-        return None
+            """Find the latest HRRR special run (00/06/12/18 UTC) with full forecast availability."""
+            now_utc = pd.Timestamp.now(tz='UTC').floor('h').tz_localize(None)
+            special_hours = [18, 12, 6, 0]
+            
+            for days_back in [0, 1]:
+                date = now_utc - pd.Timedelta(days=days_back)
+                for hour in special_hours:
+                    run_time = date.replace(hour=hour, minute=0, second=0)
+                    if run_time >= now_utc:
+                        continue
+                    
+                    # Calculate what fxx range we'd need
+                    offset = int((now_utc - run_time).total_seconds() / 3600)
+                    fxx_end = offset + 24
+                    
+                    # Skip if we'd exceed 48h max
+                    if fxx_end > 48:
+                        if self.verbose:
+                            print(f"   Skipping {run_time}: fxx_end={fxx_end} exceeds 48h")
+                        continue
+                    
+                    try:
+                        # Verify the END of our needed range is available, not just fxx=1
+                        H = Herbie(date=run_time, fxx=fxx_end, model='hrrr', product='sfc', verbose=False)
+                        if H.grib is not None:
+                            if self.verbose:
+                                print(f"   Using run {run_time}: fxx={offset+1} to fxx={fxx_end}")
+                            return run_time
+                    except:
+                        continue
+            
+            return None
     
     def download_forecasts(self, latest_run, fxx_start, fxx_end):
         fxx_range = list(range(fxx_start, fxx_end + 1))

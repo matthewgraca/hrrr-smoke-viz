@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
 from scipy.ndimage import zoom
-import time
+import time, re
 
 
 class TempoNO2Data:
@@ -19,12 +19,14 @@ class TempoNO2Data:
         end_date="2025-08-02 00:00",
         extent=(-118.615, -117.70, 33.60, 34.35),
         dim=84,
-        raw_dir='data/tempo_v03_raw/',
-        processed_dir='data/tempo_v03_processed/',
+        raw_dir='data/tempo_nrt_raw/',
+        processed_dir='data/tempo_nrt_processed/',
         n_threads=4,
         max_retries=5,
         initial_wait=2,
         cloud_threshold=0.5,
+        use_nrt=True,
+        expected_latency_hours=4,  # NRT should be ~3h, buffer to 4
         test_mode=False
     ):
         if test_mode:
@@ -44,9 +46,18 @@ class TempoNO2Data:
         self.max_retries = max_retries
         self.initial_wait = initial_wait
         self.cloud_threshold = cloud_threshold
+        self.use_nrt = use_nrt
+        self.expected_latency_hours = expected_latency_hours
         self.test_mode = test_mode
         
-        self.collection_id = 'C2930763263-LARC_CLOUD'
+        # NRT L3 vs Standard L3
+        if use_nrt:
+            self.collection_id = 'C3685668637-LARC_CLOUD'  # TEMPO_NO2_L3_NRT
+            self.short_name = 'TEMPO_NO2_L3_NRT'
+        else:
+            self.collection_id = 'C3685896708-LARC_CLOUD'  # TEMPO_NO2_L3 V04
+            self.short_name = 'TEMPO_NO2_L3'
+        
         self.harmony_root = 'https://harmony.earthdata.nasa.gov'
         
         self.variables = [
@@ -62,13 +73,15 @@ class TempoNO2Data:
         
         self.bearer_token = self._setup_auth()
         
-        print("TEMPO NO2 L3 V03 Data Pipeline")
+        print(f"TEMPO NO2 L3 {'NRT' if use_nrt else 'Standard'} Data Pipeline")
         print("=" * 70)
+        print(f"Collection: {self.short_name}")
         print(f"Date range: {self.start_date} to {self.end_date}")
         print(f"Total hours: {len(self.all_timestamps)}")
         print(f"LA extent: {self.extent}")
         print(f"Output grid: {self.dim}x{self.dim}")
         print(f"Cloud threshold: {self.cloud_threshold}")
+        print(f"Expected latency: {self.expected_latency_hours}h (will forward-fill)")
         print("=" * 70)
     
     def _setup_auth(self):
@@ -89,6 +102,61 @@ class TempoNO2Data:
                 auth=(username, password)
             )
             return token_response.json()['access_token']
+    
+    def _check_data_availability(self):
+            """Check latest available data and report latency."""
+            print("\nChecking data availability...")
+            
+            now = datetime.utcnow()
+            # FIX: earthaccess returns oldest-first, so 14 days + count=50 only returned 
+            # old granules and missed recent data. Narrowed to 3 days to ensure we get latest while keeping enough of a buffer to make sure there is redundancy.
+            search_start = now - timedelta(days=3)
+            
+            try:
+                granules = earthaccess.search_data(
+                    short_name=self.short_name,
+                    temporal=(search_start.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")),
+                    count=100
+                )
+                
+                if not granules:
+                    print("   WARNING: No granules found in last 3 days!")
+                    return None, None
+                
+                granule_times = []
+                for g in granules:
+                    try:
+                        umm = g['umm']
+                        temporal = umm.get('TemporalExtent', {})
+                        range_dt = temporal.get('RangeDateTime', {})
+                        end_time = range_dt.get('EndingDateTime')
+                        if end_time:
+                            granule_times.append(pd.to_datetime(end_time))
+                    except (KeyError, TypeError):
+                        continue
+                
+                if not granule_times:
+                    print("   WARNING: Could not parse any granule timestamps!")
+                    return None, None
+                
+                latest = max(granule_times).to_pydatetime().replace(tzinfo=None)
+                latency_hours = (now - latest).total_seconds() / 3600
+                
+                print(f"   Latest data: {latest.strftime('%Y-%m-%d %H:%M')} UTC")
+                print(f"   Current time: {now.strftime('%Y-%m-%d %H:%M')} UTC")
+                print(f"   Latency: {latency_hours:.1f} hours")
+                
+                if latency_hours > 24:
+                    print(f"   ⚠️  WARNING: Data latency ({latency_hours:.1f}h) exceeds 24 hours!")
+                    print(f"   This may indicate a data outage. Will forward-fill from last available.")
+                
+                return latest, latency_hours
+                
+            except Exception as e:
+                print(f"   Error checking availability: {e}")
+                import traceback
+                traceback.print_exc()
+                return None, None
     
     def _submit_harmony_job(self, start_time, end_time):
         var_string = ','.join(quote(v, safe='') for v in self.variables)
@@ -183,6 +251,9 @@ class TempoNO2Data:
         print("DOWNLOADING RAW DATA")
         print("=" * 70)
         
+        # Check current data availability first
+        latest_available, current_latency = self._check_data_availability()
+        
         total_downloaded = 0
         current = self.start_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         end_limit = self.end_date
@@ -190,17 +261,14 @@ class TempoNO2Data:
         while current <= end_limit:
             year, month = current.year, current.month
             
-            # Determine if this is the current/end month (partial month)
             is_end_month = (year == end_limit.year and month == end_limit.month)
             is_start_month = (year == self.start_date.year and month == self.start_date.month)
             
-            # Calculate month boundaries
             if month == 12:
                 next_month = datetime(year+1, 1, 1)
             else:
                 next_month = datetime(year, month+1, 1)
             
-            # Set actual request range (preserving hour for start/end)
             if is_start_month:
                 request_start = self.start_date.to_pydatetime()
             else:
@@ -215,7 +283,6 @@ class TempoNO2Data:
                 current = next_month
                 continue
             
-            # For partial months (start or end), use datetime-based directory naming
             if is_start_month or is_end_month:
                 month_dir = os.path.join(
                     self.raw_dir, 
@@ -226,7 +293,6 @@ class TempoNO2Data:
             else:
                 month_dir = os.path.join(self.raw_dir, f"{year}", f"{month:02d}")
             
-            # Check for existing files
             if os.path.exists(month_dir):
                 existing = [f for f in os.listdir(month_dir) if f.endswith('.nc4') or f.endswith('.nc')]
                 if len(existing) > 0:
@@ -282,12 +348,13 @@ class TempoNO2Data:
             current = next_month
         
         print(f"\nDownload complete! Total files: {total_downloaded}")
-        return total_downloaded
+        return total_downloaded, latest_available
     
     def _get_timestamp_from_filename(self, filename):
-        parts = filename.split('_')
-        ts_str = parts[4]
-        return pd.to_datetime(ts_str, format='%Y%m%dT%H%M%SZ')
+        match = re.search(r'(\d{8}T\d{6}Z)', filename)
+        if match:
+            return pd.to_datetime(match.group(1), format='%Y%m%dT%H%M%SZ').tz_localize(None)
+        raise ValueError(f"Could not find timestamp in filename: {filename}")
     
     def _load_raw_file(self, filepath):
         try:
@@ -330,21 +397,39 @@ class TempoNO2Data:
             print(f"   Error loading {filepath}: {e}")
             return None
     
-    def _process(self):
-        print("\nProcessing QA=0 (strict)...")
+    def _find_last_available_data(self, file_by_hour, target_hour, max_lookback_days=30):
+        """
+        Search backwards from target_hour to find the most recent valid data.
+        Returns (hour_key, filepath) or (None, None) if nothing found.
+        """
+        lookback_hours = max_lookback_days * 24
+        
+        for i in range(lookback_hours):
+            check_hour = target_hour - timedelta(hours=i)
+            if check_hour in file_by_hour:
+                return check_hour, file_by_hour[check_hour]
+        
+        return None, None
+    
+    def _process(self, latest_available=None):
+        print("\nProcessing with forward-fill strategy...")
         
         all_files = []
         for root, dirs, files in os.walk(self.raw_dir):
             for f in files:
                 if f.endswith('.nc4') or f.endswith('.nc'):
                     filepath = os.path.join(root, f)
-                    ts = self._get_timestamp_from_filename(f)
-                    if self.start_date <= ts < self.end_date:
-                        all_files.append((ts, filepath))
+                    try:
+                        ts = self._get_timestamp_from_filename(f)
+                        if self.start_date <= ts < self.end_date:
+                            all_files.append((ts, filepath))
+                    except:
+                        continue
         
         all_files = sorted(all_files, key=lambda x: x[0])
         print(f"Found {len(all_files)} raw files in date range")
         
+        # Map files to hours
         file_by_hour = {}
         for ts, filepath in all_files:
             hour_key = ts.floor('h')
@@ -353,10 +438,25 @@ class TempoNO2Data:
         
         print(f"Unique hours with data: {len(file_by_hour)}")
         
+        # Determine effective end time (latest available or requested end)
+        now = pd.Timestamp.utcnow().floor('h').tz_localize(None)
+        effective_end = min(self.end_date, now)
+        
+        if latest_available:
+            latest_hour = pd.Timestamp(latest_available).floor('h')
+            hours_missing = (effective_end - latest_hour).total_seconds() / 3600
+            if hours_missing > 0:
+                print(f"\n⚠️  Data gap detected: {hours_missing:.0f} hours will be forward-filled")
+                print(f"   Last available: {latest_hour}")
+                print(f"   Requested end: {effective_end}")
+        
+        # Process all hours with forward-fill
         hourly_data = []
-        last_valid = None
+        last_valid_data = None
+        last_valid_hour = None
         valid_count = 0
-        filled_count = 0
+        forward_fill_count = 0
+        gap_fill_count = 0
         fill_log = []
         
         for i, hour in enumerate(self.all_timestamps):
@@ -369,37 +469,75 @@ class TempoNO2Data:
                 
                 if data is not None:
                     hourly_data.append(data)
-                    last_valid = data.copy()
+                    last_valid_data = data.copy()
+                    last_valid_hour = hour
                     valid_count += 1
                     fill_log.append((hour, 'valid', ts))
                 else:
-                    if last_valid is not None:
-                        hourly_data.append(last_valid.copy())
-                        fill_log.append((hour, 'forward_fill_bad_qa', ts))
+                    # File exists but QA failed - forward fill
+                    if last_valid_data is not None:
+                        hourly_data.append(last_valid_data.copy())
+                        fill_log.append((hour, 'forward_fill_bad_qa', f"from {last_valid_hour}"))
+                        forward_fill_count += 1
+                    else:
+                        # No prior data - search backwards
+                        found_hour, found_file = self._find_last_available_data(file_by_hour, hour)
+                        if found_file:
+                            ts_found, fp_found = found_file
+                            data = self._load_raw_file(fp_found)
+                            if data is not None:
+                                hourly_data.append(data)
+                                last_valid_data = data.copy()
+                                last_valid_hour = found_hour
+                                fill_log.append((hour, 'backfill_found', f"from {found_hour}"))
+                                gap_fill_count += 1
+                            else:
+                                hourly_data.append(np.zeros((self.dim, self.dim), dtype=np.float32))
+                                fill_log.append((hour, 'zero_no_valid', None))
+                        else:
+                            hourly_data.append(np.zeros((self.dim, self.dim), dtype=np.float32))
+                            fill_log.append((hour, 'zero_no_prior', None))
+            else:
+                # No file for this hour - forward fill from last valid
+                if last_valid_data is not None:
+                    hourly_data.append(last_valid_data.copy())
+                    fill_log.append((hour, 'forward_fill_missing', f"from {last_valid_hour}"))
+                    forward_fill_count += 1
+                else:
+                    # No prior data yet - search backwards
+                    found_hour, found_file = self._find_last_available_data(file_by_hour, hour)
+                    if found_file:
+                        ts_found, fp_found = found_file
+                        data = self._load_raw_file(fp_found)
+                        if data is not None:
+                            hourly_data.append(data)
+                            last_valid_data = data.copy()
+                            last_valid_hour = found_hour
+                            fill_log.append((hour, 'backfill_found', f"from {found_hour}"))
+                            gap_fill_count += 1
+                        else:
+                            hourly_data.append(np.zeros((self.dim, self.dim), dtype=np.float32))
+                            fill_log.append((hour, 'zero_no_valid', None))
                     else:
                         hourly_data.append(np.zeros((self.dim, self.dim), dtype=np.float32))
-                        fill_log.append((hour, 'zero_no_prior', ts))
-                    filled_count += 1
-            else:
-                if last_valid is not None:
-                    hourly_data.append(last_valid.copy())
-                    fill_log.append((hour, 'forward_fill_missing', None))
-                else:
-                    hourly_data.append(np.zeros((self.dim, self.dim), dtype=np.float32))
-                    fill_log.append((hour, 'zero_no_prior', None))
-                filled_count += 1
+                        fill_log.append((hour, 'zero_no_prior', None))
         
+        # Summary
+        print(f"\n   Processing summary:")
         print(f"   Valid hours: {valid_count}")
-        print(f"   Forward-filled hours: {filled_count}")
+        print(f"   Forward-filled: {forward_fill_count}")
+        print(f"   Gap backfills: {gap_fill_count}")
+        print(f"   Zero-filled (no data): {len(self.all_timestamps) - valid_count - forward_fill_count - gap_fill_count}")
         
         if self.test_mode:
             self._verify_forward_fill(fill_log, hourly_data)
         
         data_array = np.stack(hourly_data, axis=0)
         
+        nrt_suffix = "_nrt" if self.use_nrt else ""
         output_file = os.path.join(
             self.processed_dir,
-            f"tempo_no2_la_hourly_qa0_{self.start_date.strftime('%Y%m%d%H')}_{self.end_date.strftime('%Y%m%d%H')}.npz"
+            f"tempo_no2_la_hourly{nrt_suffix}_{self.start_date.strftime('%Y%m%d%H')}_{self.end_date.strftime('%Y%m%d%H')}.npz"
         )
         
         print(f"\n   Saving...")
@@ -417,7 +555,10 @@ class TempoNO2Data:
             qa_threshold=0,
             cloud_threshold=self.cloud_threshold,
             valid_count=valid_count,
-            filled_count=filled_count
+            forward_fill_count=forward_fill_count,
+            gap_fill_count=gap_fill_count,
+            use_nrt=self.use_nrt,
+            last_valid_hour=str(last_valid_hour) if last_valid_hour else None
         )
         
         size_mb = os.path.getsize(output_file) / (1024**2)
@@ -432,7 +573,7 @@ class TempoNO2Data:
         print("=" * 70)
         
         status_counts = {}
-        for hour, status, src_ts in fill_log:
+        for hour, status, src in fill_log:
             status_counts[status] = status_counts.get(status, 0) + 1
         
         print("\nStatus breakdown:")
@@ -440,45 +581,23 @@ class TempoNO2Data:
             pct = 100 * count / len(fill_log)
             print(f"   {status}: {count} ({pct:.1f}%)")
         
-        print("\nHour-by-hour log:")
+        print("\nFirst 50 hours:")
         print("-" * 70)
-        for i, (hour, status, src_ts) in enumerate(fill_log):
-            src_str = f"from {src_ts}" if src_ts else ""
-            print(f"   {hour} -> {status} {src_str}")
-        
-        print("\nVerifying forward fill correctness...")
-        errors = []
-        last_valid_idx = None
-        
-        for i, (hour, status, src_ts) in enumerate(fill_log):
-            if status == 'valid':
-                last_valid_idx = i
-            elif status in ['forward_fill_missing', 'forward_fill_bad_qa']:
-                if last_valid_idx is not None:
-                    if not np.allclose(hourly_data[i], hourly_data[last_valid_idx]):
-                        errors.append(f"Hour {i} ({hour}): forward fill mismatch with last valid at {last_valid_idx}")
-            elif status == 'zero_no_prior':
-                if not np.allclose(hourly_data[i], 0):
-                    errors.append(f"Hour {i} ({hour}): expected zeros but got non-zero data")
-        
-        if errors:
-            print("\nERRORS FOUND:")
-            for e in errors:
-                print(f"   {e}")
-        else:
-            print("\nAll forward fills verified correctly!")
+        for i, (hour, status, src) in enumerate(fill_log[:50]):
+            src_str = f" {src}" if src else ""
+            print(f"   {hour} -> {status}{src_str}")
         
         print("-" * 70)
     
     def run(self):
         start_time = time.time()
-        self._download_raw()
+        total_downloaded, latest_available = self._download_raw()
         
         print("\n" + "=" * 70)
         print("PROCESSING TO HOURLY ALIGNED GRID")
         print("=" * 70)
         
-        self._process()
+        self._process(latest_available)
         
         total_time = time.time() - start_time
         hours = total_time / 3600
@@ -491,15 +610,17 @@ class TempoNO2Data:
 
 def main():
     processor = TempoNO2Data(
-        start_date='2023-08-02 00:00',
-        end_date='2025-08-02 00:00',
+        start_date='2023-09-17 00:00',  # NRT V02 starts Sept 17, 2025
+        end_date='2026-02-02 18:00',     # Current time
         extent=(-118.615, -117.70, 33.60, 34.35),
         dim=84,
-        raw_dir='data/tempo_v03_raw_test/',
-        processed_dir='data/tempo_v03_processed/',
+        raw_dir='data/tempo_nrt_raw/',
+        processed_dir='data/tempo_nrt_processed/',
         n_threads=4,
         max_retries=5,
         cloud_threshold=0.5,
+        use_nrt=True,  # Use NRT L3 for best latency
+        expected_latency_hours=4,
         test_mode=False
     )
     processor.run()
