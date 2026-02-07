@@ -264,7 +264,7 @@ class OpenAQData:
                 f'from {start_dt} to {end_dt}...'
             )
 
-        url = f'https://api.openaq.org/v3/sensors/{sensor_id}/hours'
+        url = f'https://api.openaq.org/v3/sensors/{sensor_id}/measurements'
         params = {
             'datetime_from' : start_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
             'datetime_to'   : end_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
@@ -794,7 +794,7 @@ class OpenAQData:
             with open(f'{sensor_dir}/{f}', 'r') as j:
                 response_data = json.load(j)
             for res in response_data['results']:
-                date = pd.to_datetime(res['period']['datetimeFrom']['utc'])
+                date = pd.to_datetime(res['period']['datetimeFrom']['utc']).round('H')
                 date_to_sensorval[date] = res['value'] 
 
         return [v for k, v in sorted(date_to_sensorval.items())]
