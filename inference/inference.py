@@ -265,8 +265,6 @@ def main():
                         help='Path to payload generation script')
     parser.add_argument('--output-dir', default='/tmp/forecasts',
                         help='Output directory for forecasts')
-    parser.add_argument('--no-mask', action='store_true',
-                        help='Disable LA County masking')
     args = parser.parse_args()
     
     model_path = args.model if args.model else CONFIG['model_path']
@@ -286,11 +284,7 @@ def main():
     Y_pred = run_inference(model, X_input)
     
     save_forecast(Y_pred, output_dir, metadata)
-    
-    # Load mask only when needed for visualization
-    mask = None
-    if not args.no_mask:
-        mask = load_county_mask(CONFIG['mask_path'])
+    mask = load_county_mask(CONFIG['mask_path'])
     
     generate_summary_plot(Y_pred, output_dir, metadata, CONFIG, mask=mask)
     generate_forecast_svgs(Y_pred, f"{output_dir}/svgs", metadata, CONFIG, mask=mask)
