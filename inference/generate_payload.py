@@ -31,16 +31,14 @@ def setup_netrc():
 
 setup_netrc()
 
-# ── Constants ──────────────────────────────────────────────────────────────────
 EXTENT = (-118.615, -117.70, 33.60, 34.35)
 DIM = 84
 SCALERS_PATH = 'model/scalers.pkl'
 N_CHANNELS = 30
-SATELLITE_BUFFER_HOURS = 16
+SATELLITE_BUFFER_HOURS = 14
 OUT_DIR = '/tmp/realtime'
 ELEVATION_PATH = 'data/elevation.npy'
 
-# ── Channel index mapping ─────────────────────────────────────────────────────
 CH_AIRNOW_PM25 = 0
 CH_AIRNOW_CLIM = 1
 CH_OPENAQ_PM25 = 2
@@ -73,7 +71,6 @@ CH_HOUR_SIN_FC = 28
 CH_HOUR_COS_FC = 29
 
 
-# ── Formatting helpers ─────────────────────────────────────────────────────────
 class Colors:
     HEADER = '\033[95m'
     CYAN = '\033[96m'
@@ -99,7 +96,6 @@ def print_info(msg):
     print(f"{Colors.YELLOW}    {msg}{Colors.END}")
 
 
-# ── Core helpers ───────────────────────────────────────────────────────────────
 def load_scalers():
     with open(SCALERS_PATH, 'rb') as f:
         scalers = pickle.load(f)
@@ -117,8 +113,6 @@ def normalize(data, scaler_key, scalers):
     return scaler.transform(data.reshape(-1, 1)).reshape(shape).astype(np.float32)
 
 
-# ── Per-source fetch functions ─────────────────────────────────────────────────
-# Each writes directly into X_input and frees intermediates before returning.
 
 SENSOR_WHITELIST = [
     'Anaheim',
@@ -156,7 +150,6 @@ def fetch_airnow(X_input, scalers, timestamps):
     gc.collect()
     print_success(f"AirNow PM2.5 ({time.time() - t:.1f}s)")
 
-    # ── 30-day hourly climatology ──
     print_step("\n[2/12] Computing AirNow hourly climatology (30-day lookback)...")
     t = time.time()
 
@@ -184,13 +177,11 @@ def fetch_airnow(X_input, scalers, timestamps):
     del airnow_clim_raw
     gc.collect()
 
-    # Input window clim
     clim_buf = np.zeros((24, DIM, DIM), dtype=np.float32)
     for i, ts in enumerate(pd.date_range(timestamps['input_start'], timestamps['input_end'], freq='h', inclusive='left')[:24]):
         clim_buf[i] = hourly_clim[ts.hour]
     X_input[0, :, :, :, CH_AIRNOW_CLIM] = normalize(clim_buf, 'AirNow_Hourly_Clim', scalers)
 
-    # Forecast window clim
     for i, ts in enumerate(pd.date_range(timestamps['forecast_start'], timestamps['forecast_end'], freq='h', inclusive='left')[:24]):
         clim_buf[i] = hourly_clim[ts.hour]
     X_input[0, :, :, :, CH_AIRNOW_CLIM_FC] = normalize(clim_buf, 'AirNow_Hourly_Clim', scalers)
@@ -221,21 +212,19 @@ def fetch_openaq(X_input, scalers, timestamps):
         del openaq
     except Exception as e:
         print_error(f"OpenAQ failed: {e}")
-        # channel stays zeros from pre-allocation
     gc.collect()
     print_success(f"OpenAQ PM2.5 ({time.time() - t:.1f}s)")
 
 
-def fetch_naqfc(X_input, scalers, timestamps):
-    print_step("\n[4/12] Fetching NAQFC PM2.5...")
+def fetch_naqfc_observed(X_input, scalers, timestamps):
+    print_step("\n[4a/12] Fetching NAQFC PM2.5 (observed)...")
     t = time.time()
     from libs.naqfcdata import NAQFCData
-
     os.makedirs(f'{OUT_DIR}/naqfc', exist_ok=True)
     try:
         naqfc = NAQFCData(
             start_date=timestamps['start_date_space'],
-            end_date=timestamps['forecast_end'].strftime('%Y-%m-%d %H:%M'),
+            end_date=timestamps['end_date_space'],
             extent=EXTENT,
             dim=DIM,
             product='pm25',
@@ -245,13 +234,36 @@ def fetch_naqfc(X_input, scalers, timestamps):
             verbose=0,
         )
         X_input[0, :, :, :, CH_NAQFC_PM25] = normalize(naqfc.data[:24], 'NAQFC_PM25', scalers)
-        X_input[0, :, :, :, CH_NAQFC_FORECAST] = normalize(naqfc.data[24:48], 'NAQFC_PM25', scalers)
         del naqfc
     except Exception as e:
-        print_error(f"NAQFC failed: {e}")
+        print_error(f"NAQFC observed failed: {e}")
     gc.collect()
-    print_success(f"NAQFC PM2.5 ({time.time() - t:.1f}s)")
+    print_success(f"NAQFC observed ({time.time() - t:.1f}s)")
 
+
+def fetch_naqfc_forecast(X_input, scalers, timestamps):
+    print_step("\n[4b/12] Fetching NAQFC PM2.5 (forecast)...")
+    t = time.time()
+    from libs.naqfcdata import NAQFCData
+    os.makedirs(f'{OUT_DIR}/naqfc_fc', exist_ok=True)
+    try:
+        naqfc = NAQFCData(
+            start_date=timestamps['end_date_space'],
+            end_date=timestamps['forecast_end'].strftime('%Y-%m-%d %H:%M'),
+            extent=EXTENT,
+            dim=DIM,
+            product='pm25',
+            local_path=f'{OUT_DIR}/naqfc_fc',
+            save_path=f'{OUT_DIR}/naqfc_fc',
+            realtime=True,
+            verbose=0,
+        )
+        X_input[0, :, :, :, CH_NAQFC_FORECAST] = normalize(naqfc.data[:24], 'NAQFC_PM25', scalers)
+        del naqfc
+    except Exception as e:
+        print_error(f"NAQFC forecast failed: {e}")
+    gc.collect()
+    print_success(f"NAQFC forecast ({time.time() - t:.1f}s)")
 
 def fetch_hrrr(X_input, scalers, timestamps):
     print_step("\n[5/12] Fetching HRRR (observed)...")
@@ -289,7 +301,6 @@ def fetch_hrrr(X_input, scalers, timestamps):
     gc.collect()
     print_success(f"HRRR observed ({time.time() - t:.1f}s)")
 
-    # ── HRRR Forecast ──
     print_step("\n[6/12] Fetching HRRR forecasts (24h ahead)...")
     t = time.time()
 
@@ -332,12 +343,11 @@ def fetch_static(X_input):
             import cv2
             elevation = cv2.resize(elevation, (DIM, DIM)).astype(np.float32)
         elevation = (elevation - elevation.min()) / (elevation.max() - elevation.min() + 1e-8)
-        X_input[0, :, :, :, CH_ELEVATION] = elevation[np.newaxis, :, :]  # broadcast across 24h
+        X_input[0, :, :, :, CH_ELEVATION] = elevation[np.newaxis, :, :]
         del elevation
     else:
         print_info("Elevation not found, using zeros")
 
-    # NDVI stays zeros from pre-allocation
     gc.collect()
     print_success(f"Elevation + NDVI ({time.time() - t:.1f}s)")
 
@@ -350,7 +360,6 @@ def fetch_time_encoding(X_input, timestamps):
 
     time_kwargs = dict(dim=DIM, cyclical=True, month=True, day_of_week=False, day_of_month=False, verbose=False)
 
-    # Input window
     te = TimeData(
         start_date=timestamps['input_start'].strftime('%Y-%m-%d %H:%M'),
         end_date=timestamps['input_end'].strftime('%Y-%m-%d %H:%M'),
@@ -362,7 +371,6 @@ def fetch_time_encoding(X_input, timestamps):
     X_input[0, :, :, :, CH_HOUR_COS]  = te.data[..., 3]
     del te
 
-    # Forecast window
     te_fc = TimeData(
         start_date=timestamps['forecast_start'].strftime('%Y-%m-%d %H:%M'),
         end_date=timestamps['forecast_end'].strftime('%Y-%m-%d %H:%M'),
@@ -464,7 +472,6 @@ def fetch_tempo(X_input, scalers, timestamps):
     print_success(f"TEMPO NO2 ({time.time() - t:.1f}s)")
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
 def generate_payload():
     start_time = time.time()
 
@@ -499,28 +506,24 @@ def generate_payload():
     print_info(f"Dimension:           {DIM}")
     print_header("=" * 60)
 
-    # ── Load scalers ──
     print_step("\n[0/12] Loading scalers...")
     scalers = load_scalers()
 
-    # ── Pre-allocate output tensor (float32) ──
     os.makedirs(OUT_DIR, exist_ok=True)
     X_input = np.zeros((1, 24, DIM, DIM, N_CHANNELS), dtype=np.float32)
 
-    # ── Fetch each source, write to X_input, free immediately ──
     fetch_airnow(X_input, scalers, timestamps)
     fetch_openaq(X_input, scalers, timestamps)
-    fetch_naqfc(X_input, scalers, timestamps)
+    fetch_naqfc_observed(X_input, scalers, timestamps)
+    fetch_naqfc_forecast(X_input, scalers, timestamps)
     fetch_hrrr(X_input, scalers, timestamps)
     fetch_static(X_input)
     fetch_time_encoding(X_input, timestamps)
     fetch_goes(X_input, scalers, timestamps)
     fetch_tempo(X_input, scalers, timestamps)
 
-    # ── Cleanup NaNs ──
     np.nan_to_num(X_input, copy=False, nan=0.0)
 
-    # ── Save ──
     print_step("\n[11/12] Saving payload...")
     np.savez_compressed(
         f'{OUT_DIR}/payload.npz',
@@ -532,7 +535,6 @@ def generate_payload():
     )
     print_success(f"Saved to {OUT_DIR}/payload.npz")
 
-    # ── Summary ──
     total_time = time.time() - start_time
     print_header(f"\n{'=' * 60}")
     print_header("SUMMARY")
