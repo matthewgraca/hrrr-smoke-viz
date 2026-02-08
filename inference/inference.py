@@ -41,7 +41,25 @@ CONFIG = {
     'extent': (-118.615, -117.70, 33.60, 34.35),
     'dim': 84,
     'model_path': 'model/best_model.keras',
+    'mask_path': 'data/la_county_mask_84x84.npy',
 }
+
+
+def load_county_mask(mask_path):
+    """Load precomputed LA County mask. Returns None if not found."""
+    if not os.path.exists(mask_path):
+        print(f"  ⚠ Mask not found at {mask_path}, skipping masking")
+        return None
+    mask = np.load(mask_path)
+    print(f"  ✓ Loaded county mask from {mask_path} ({mask.sum()}/{mask.size} pixels)")
+    return mask
+
+
+def apply_mask(data_2d, mask):
+    """Set pixels outside the mask to NaN."""
+    out = data_2d.astype(np.float32).copy()
+    out[~mask] = np.nan
+    return out
 
 
 def generate_payload(payload_script='generate_payload.py', verbose=True):
@@ -89,6 +107,7 @@ def load_payload(payload_path):
     
     return X_input, metadata
 
+
 def upload_to_s3(output_dir):
     """Upload SVGs and metadata to S3 (latest + archived copy)."""
     s3 = boto3.client('s3')
@@ -132,6 +151,8 @@ def upload_to_s3(output_dir):
     
     print(f"  ✓ Uploaded to s3://{bucket}/forecasts/latest/")
     print(f"  ✓ Archived to s3://{bucket}/forecasts/archive/{timestamp}/")
+
+
 def load_model(model_path):
     """Load trained model with custom objects."""
     print(f"\nLoading model from {model_path}...")
@@ -150,7 +171,7 @@ def run_inference(model, X_input):
     return Y_pred
 
 
-def generate_forecast_svgs(Y_pred, output_dir, metadata, config):
+def generate_forecast_svgs(Y_pred, output_dir, metadata, config, mask=None):
     """Generate 24 SVGs for the forecast."""
     os.makedirs(output_dir, exist_ok=True)
     
@@ -159,8 +180,12 @@ def generate_forecast_svgs(Y_pred, output_dir, metadata, config):
     
     print(f"\nGenerating forecast SVGs...")
     for hour in range(24):
+        frame = predictions[hour]
+        if mask is not None:
+            frame = apply_mask(frame, mask)
+        
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.imshow(predictions[hour], origin='upper', cmap='viridis',
+        ax.imshow(frame, origin='upper', cmap='viridis',
                   vmin=vmin, vmax=vmax, interpolation='bilinear')
         ax.axis('off')
         
@@ -172,7 +197,7 @@ def generate_forecast_svgs(Y_pred, output_dir, metadata, config):
     return output_dir
 
 
-def generate_summary_plot(Y_pred, output_dir, metadata, config):
+def generate_summary_plot(Y_pred, output_dir, metadata, config, mask=None):
     """Generate a summary grid of all 24 forecast hours."""
     os.makedirs(output_dir, exist_ok=True)
     
@@ -187,7 +212,11 @@ def generate_summary_plot(Y_pred, output_dir, metadata, config):
     
     for h in range(24):
         ax = axes[h]
-        im = ax.imshow(predictions[h], extent=[lon_min, lon_max, lat_min, lat_max],
+        frame = predictions[h]
+        if mask is not None:
+            frame = apply_mask(frame, mask)
+        
+        im = ax.imshow(frame, extent=[lon_min, lon_max, lat_min, lat_max],
                        origin='upper', cmap='viridis', vmin=vmin, vmax=vmax)
         ax.set_title(f't+{h+1}h', fontsize=10, fontweight='bold')
         ax.set_xticks([])
@@ -236,6 +265,8 @@ def main():
                         help='Path to payload generation script')
     parser.add_argument('--output-dir', default='/tmp/forecasts',
                         help='Output directory for forecasts')
+    parser.add_argument('--no-mask', action='store_true',
+                        help='Disable LA County masking')
     args = parser.parse_args()
     
     model_path = args.model if args.model else CONFIG['model_path']
@@ -255,9 +286,14 @@ def main():
     Y_pred = run_inference(model, X_input)
     
     save_forecast(Y_pred, output_dir, metadata)
-    generate_summary_plot(Y_pred, output_dir, metadata, CONFIG)
     
-    generate_forecast_svgs(Y_pred, f"{output_dir}/svgs", metadata, CONFIG)
+    # Load mask only when needed for visualization
+    mask = None
+    if not args.no_mask:
+        mask = load_county_mask(CONFIG['mask_path'])
+    
+    generate_summary_plot(Y_pred, output_dir, metadata, CONFIG, mask=mask)
+    generate_forecast_svgs(Y_pred, f"{output_dir}/svgs", metadata, CONFIG, mask=mask)
     upload_to_s3(output_dir)
     
     del model
