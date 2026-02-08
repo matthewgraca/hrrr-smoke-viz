@@ -1,12 +1,16 @@
 import rasterio
 import numpy as np
-import cv2
 import os
 import pandas as pd
 import re
 import bisect
+
 from harmony import Client, Environment, Collection, Request, BBox
+from concurrent.futures import as_completed
+from tqdm import tqdm 
 from osgeo import gdal
+import cv2
+
 
 class NDVIData:
     def __init__(
@@ -41,60 +45,40 @@ class NDVIData:
         )
         job_id = harmony_client.submit(request)
         print(harmony_client.status(job_id))
-        results = harmony_client.download_all(job_id, directory=raw_dir, overwrite=True)
-        for r in results:
-            print(r)
+        futures = harmony_client.download_all(job_id, directory=raw_dir, overwrite=False)
+        results = []
+        for f in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            disable=self.VERBOSE == 2
+        ):
+            try:
+                results.append(f.result())
+            except Exception as e:
+                # unsuccessful file dl for some reason
+                # TODO prefer to skip rather than kill the script, but we'd need to note it
+                print(e)
+                print('Skipping corrupted file...')
+                results.append(None)
         '''
-        
+            
         gdal.UseExceptions()
+
+        # download( stuff )
         hdf_files = sorted(os.listdir(self.raw_dir))
-
-        # crack open the dataset and search through the subdatasets
+        # TODO this just grabs the first one!
         hdf_path = os.path.join(self.raw_dir, hdf_files[0])
-        ds = gdal.Open(hdf_path)
-        if ds is None:
-            raise RuntimeError(f'Unable to open {hdf_path}.')
-        sub_ds = ds.GetSubDatasets()
-        if not sub_ds:
-            raise RuntimeError(f'No subdatasets found.')
+        ndvi_sds = self._get_subdataset(hdf_path, keyword='NDVI')
+        frame = self._reproject(ndvi_sds, self.extent)
 
-        # grab and crack open the ndvi subdataset
-        keyword = 'NDVI'
-        matches = [
-            (name, desc)
-            for name, desc in sub_ds
-            if keyword in name or keyword in desc
-        ]
-        if not matches:
-            raise RuntimeError(f'No matches for {keyword} found in subdatasets')
-        sds_name = matches[0][0]
-
-        ndvi_sds = gdal.Open(sds_name)
-        if ndvi_sds is None:
-            raise RuntimeError(f'Unable to open {keyword} subdataset: {sds_name}')
-
-        # warp
-        out = os.path.join(save_dir, 'out_la.tif')
-        warp_options = gdal.WarpOptions(
-            dstSRS='EPSG:4326',
-            resampleAlg='bilinear',
-            format='GTiff',
-            outputBounds=(lon_min, lat_min, lon_max, lat_max),
-            multithread=True
-        )
-
-        result = gdal.Warp(destNameOrDestDS=out, srcDSOrSrcDSTab=ndvi_sds, options=warp_options)
-        if result is None:
-            raise RuntimeError('gdal.Warp failed.')
-
-        # clean up
-        result.FlushCache()
-        result = None
-        ndvi_sds = None
-        ds = None
+        ndvi_sds = None # clean up
+        import matplotlib.pyplot as plt
+        frame = cv2.resize(src=frame, dsize=(self.dim, self.dim))
+        plt.imshow(frame)
+        plt.savefig('test.png')
+        out = os.path.join(self.save_dir, 'out_la.tif')
 
         return
-
     
     ### NOTE: Parameter validation methods
     def _validate_raw_dir(self, raw_dir):
@@ -111,7 +95,6 @@ class NDVIData:
 
         return new_dir
 
-
     def _validate_save_dir(self, save_dir):
         if not os.path.exists(save_dir):
             raise ValueError(
@@ -124,6 +107,62 @@ class NDVIData:
         if v is None:
             raise ValueError('Verbose must be 0, 1, 2.')
         return v
+
+    ### NOTE: Frame processing methods
+    def _get_subdataset(self, hdf_path, keyword='NDVI'):
+        # opens dataset, exposes subdatasets
+        ds = gdal.Open(hdf_path)
+        if ds is None:
+            raise RuntimeError(f'Unable to open {hdf_path}.')
+        sub_ds = ds.GetSubDatasets()
+        if not sub_ds:
+            raise RuntimeError(f'No subdatasets found.')
+        ds = None # clean up
+
+        # searches for keyword in subdatasets
+        matches = [
+            (name, desc)
+            for name, desc in sub_ds
+            if keyword in name or keyword in desc
+        ]
+        if not matches:
+            raise RuntimeError(f'No matches for {keyword} found in subdatasets')
+        sds_name = matches[0][0]
+
+        # cracks open subdataset
+        found_sds = gdal.Open(sds_name)
+        if found_sds is None:
+            raise RuntimeError(f'Unable to open {keyword} subdataset: {sds_name}')
+
+        return found_sds
+
+    def _reproject(self, product_sds, extent):
+        ''' 
+        Reprojects a given product subdataset.
+            - To equirectangular
+            - Bilinear resampling
+        Returns the result as a numpy array
+        '''
+        lon_min, lon_max, lat_min, lat_max = extent
+        result = gdal.Warp(
+            destNameOrDestDS='',
+            srcDSOrSrcDSTab=product_sds,
+            options=gdal.WarpOptions(
+                dstSRS='EPSG:4326',
+                resampleAlg='bilinear',
+                format='MEM',
+                outputBounds=(lon_min, lat_min, lon_max, lat_max),
+                multithread=True
+            )
+        )
+        if result is None:
+            raise RuntimeError('gdal.Warp failed.')
+
+        # store as array and clean up
+        arr = result.ReadAsArray()
+        result = None
+
+        return arr
 
 
 '''
