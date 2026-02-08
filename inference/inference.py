@@ -185,8 +185,10 @@ def generate_forecast_svgs(Y_pred, output_dir, metadata, config, mask=None):
             frame = apply_mask(frame, mask)
         
         fig, ax = plt.subplots(figsize=(6, 6))
+        fig.patch.set_facecolor('none')
+        ax.set_facecolor('none')
         cmap = plt.cm.viridis.copy()
-        cmap.set_bad(alpha=0)  # NaN pixels become transparent instead of NaN as it made the iamge non trasnparent before which is prob not what we want.
+        cmap.set_bad(alpha=0)
         ax.imshow(frame, origin='upper', cmap=cmap,
                   vmin=vmin, vmax=vmax, interpolation='bilinear')
         ax.axis('off')
@@ -218,8 +220,10 @@ def generate_summary_plot(Y_pred, output_dir, metadata, config, mask=None):
         if mask is not None:
             frame = apply_mask(frame, mask)
         
+        cmap = plt.cm.viridis.copy()
+        cmap.set_bad(alpha=0)
         im = ax.imshow(frame, extent=[lon_min, lon_max, lat_min, lat_max],
-                       origin='upper', cmap='viridis', vmin=vmin, vmax=vmax)
+                       origin='upper', cmap=cmap, vmin=vmin, vmax=vmax)
         ax.set_title(f't+{h+1}h', fontsize=10, fontweight='bold')
         ax.set_xticks([])
         ax.set_yticks([])
@@ -235,7 +239,7 @@ def generate_summary_plot(Y_pred, output_dir, metadata, config, mask=None):
     )
     
     save_path = f"{output_dir}/forecast_summary.png"
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight', transparent=True)
     plt.close()
     
     print(f"\n  ✓ Saved summary plot to {save_path}")
