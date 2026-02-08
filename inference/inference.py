@@ -185,12 +185,14 @@ def generate_forecast_svgs(Y_pred, output_dir, metadata, config, mask=None):
             frame = apply_mask(frame, mask)
         
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.imshow(frame, origin='upper', cmap='viridis',
+        cmap = plt.cm.viridis.copy()
+        cmap.set_bad(alpha=0)  # NaN pixels become transparent instead of NaN as it made the iamge non trasnparent before which is prob not what we want.
+        ax.imshow(frame, origin='upper', cmap=cmap,
                   vmin=vmin, vmax=vmax, interpolation='bilinear')
         ax.axis('off')
         
         path = f"{output_dir}/forecast_t{hour+1:02d}.svg"
-        plt.savefig(path, format='svg', bbox_inches='tight', pad_inches=0)
+        plt.savefig(path, format='svg', bbox_inches='tight', pad_inches=0, transparent=True)
         plt.close()
         print(f"    ✓ t+{hour+1:02d}h")
     
@@ -284,6 +286,7 @@ def main():
     Y_pred = run_inference(model, X_input)
     
     save_forecast(Y_pred, output_dir, metadata)
+
     mask = load_county_mask(CONFIG['mask_path'])
     
     generate_summary_plot(Y_pred, output_dir, metadata, CONFIG, mask=mask)
