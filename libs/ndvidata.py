@@ -11,7 +11,6 @@ from tqdm import tqdm
 from osgeo import gdal
 import cv2
 
-
 class NDVIData:
     def __init__(
         self,
@@ -44,7 +43,9 @@ class NDVIData:
 
         NDVI_SCALE_FACTOR = 0.0001
         lon_min, lon_max, lat_min, lat_max = self.extent
-        '''
+
+        if self.VERBOSE < 2:
+            print('Submitting job to Harmony...', end= ' ')
         harmony_client = Client() # pulls from .netrc file
         request = Request(
             # MODIS/Terra Vegetation Indices 16-Day L3 Global 1km SIN Grid V061
@@ -56,63 +57,75 @@ class NDVIData:
             }
         )
         job_id = harmony_client.submit(request)
-        print(harmony_client.status(job_id))
+        job_desc = harmony_client.status(job_id)
         futures = harmony_client.download_all(job_id, directory=raw_dir, overwrite=False)
+
+        if self.VERBOSE < 2:
+            print('complete.')
+            print('Downloading granules...')
+
+        # silences when job completes.
+        # why they look here and auto turn it on for you is... idk lol
+        os.environ['VERBOSE'] = 'FALSE'         
         results = []
         for f in tqdm(
             as_completed(futures),
-            total=len(futures),
+            total=job_desc['num_input_granules'],
             disable=self.VERBOSE == 2
         ):
             try:
                 results.append(f.result())
             except Exception as e:
                 # unsuccessful file dl for some reason
-                # TODO prefer to skip rather than kill the script, but we'd need to note it
-                print(e)
-                print('Skipping corrupted file...')
+                tqdm.write(str(e))
+                tqdm.write('Skipping corrupted file...')
                 results.append(None)
-        '''
-            
+
         gdal.UseExceptions()
-
-        # download( stuff )
-        hdf_files = sorted(os.listdir(self.raw_dir))
-        # TODO this just grabs the first one! will eventually wrap in a loop.
-        hdf_path = os.path.join(self.raw_dir, hdf_files[0])
-        ndvi_sds = self._get_subdataset(hdf_path, keyword='NDVI')
-        frame = self._reproject(ndvi_sds, self.extent)
-        frame = NDVI_SCALE_FACTOR * frame
-
-        ndvi_sds = None # clean up
-        frame = cv2.resize(src=frame, dsize=(self.dim, self.dim))
-
-        # map frame to day the image was taken
-        file = os.path.basename(hdf_path)
-
         pattern = re.compile(r"""
-            MOD13A2\.                           # product short name
-            A(\d{7})\.                          # julian day of acquisition
-            (\w{6})\.                           # tile identifier
-            (\d{3})\.                           # collection version
-            (\d{13})                            # julian date of production
+            MOD13A2\.   # product short name
+            A(\d{7})\.  # julian day of acquisition
+            (\w{6})\.   # tile identifier
+            (\d{3})\.   # collection version
+            (\d{13})    # julian date of production
         """, re.VERBOSE)
-        patterns = self._search_pattern(pattern, file)
-
         dates = pd.date_range(
             self.start_date_dt, self.end_date_dt, freq='h', inclusive='left'
         )
         filled_dates = {d : None for d in dates}
-        filled_dates = self._align_frame_to_date(
-            filled_dates,
-            patterns['julian_acquisition_day'],
-            frame,
-            self.start_date_dt
-        )
+        hdf_files = sorted(os.listdir(self.raw_dir))
+
+        if self.VERBOSE < 2:
+            print('Processing hdf files into numpy frames...')
+        for f in tqdm(hdf_files, disable=self.VERBOSE == 2):
+            ndvi_sds = self._get_subdataset(
+                os.path.join(self.raw_dir, f), keyword='NDVI'
+            )
+            frame = self._reproject(ndvi_sds, self.extent)
+            frame = NDVI_SCALE_FACTOR * frame
+            frame = cv2.resize(src=frame, dsize=(self.dim, self.dim))
+
+            # map frame to day the image was taken
+            patterns = self._search_pattern(pattern, os.path.basename(f))
+
+            filled_dates = self._align_frame_to_date(
+                filled_dates,
+                patterns['julian_acquisition_day'],
+                frame,
+                self.start_date_dt
+            )
+            ndvi_sds = None # clean up
 
         self.data = self._fill_gaps_and_to_numpy(filled_dates)
-        # TODO now support going through multiple files
-        # implement loading from cache
+
+        nan_frames_count = self._count_samples_with_nan_frames(self.data)
+        if self.VERBOSE < 2 and nan_frames_count > 0:
+            print(
+                f'Warning: {nan_frames_count} frames are nan. '
+                'This happens if the files covering the start date are '
+                'corrupted/missing, as you cannot forward fill without a '
+                'beginning.'
+            )
 
         self._save_numpy_to_cache(
             save_path=os.path.join(save_dir, 'ndvi_processed.npz'),
@@ -227,8 +240,9 @@ class NDVIData:
     def _align_frame_to_date(self, dates_dict, julian_day, frame, start_date):
         date = pd.to_datetime(julian_day, format='%Y%j')
         date = start_date if date < start_date else date
+        if date not in dates_dict:
+            raise RuntimeError(f'Date {date} not found in date range!')
         dates_dict[date] = frame
-
         return dates_dict
 
     def _fill_gaps_and_to_numpy(self, data_dict):
@@ -249,6 +263,9 @@ class NDVIData:
         frames = np.stack(frames, axis=0)
 
         return frames
+
+    def _count_samples_with_nan_frames(self, arr):
+        return np.count_nonzero(np.all(arr != arr, axis=(1, 2)))
     
     ### NOTE caching methods
     def _save_numpy_to_cache(
