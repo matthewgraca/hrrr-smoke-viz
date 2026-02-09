@@ -328,7 +328,7 @@ class NDVIData:
         )
 
         if self.VERBOSE == 0:
-            print('complete!\n')
+            print('complete.')
 
     def _load_numpy_cache(self, cache_path):
         '''
