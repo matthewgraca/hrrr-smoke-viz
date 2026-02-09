@@ -15,8 +15,9 @@ class TestNDVIData(unittest.TestCase):
         cls.N = N
 
     @classmethod
-    def tearDown(cls):
+    def tearDownClass(cls):
         del cls.N
 
-    def test_dummy(self):
+    def test_loads_cache_without_raising_errors(self):
+        ndata = NDVIData(cache_path='tests/ndvidata/data/ndvi_processed.npz', verbose=2)
         self.assertTrue(True)

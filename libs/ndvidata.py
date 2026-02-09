@@ -15,22 +15,34 @@ import cv2
 class NDVIData:
     def __init__(
         self,
-        start_date,
-        end_date,
+        start_date='2023-08-02',
+        end_date='2023-08-22',
         extent=(-118.615, -117.70, 33.60, 34.35),
         dim=84,
-        raw_dir='data', # saved to data/modis-ndvi
-        save_dir='data', # saved to data/ndvi_processed.npz
+        raw_dir='data',     # saved to data/modis-ndvi
+        save_dir='data',    # saved to data/ndvi_processed.npz
+        cache_path=None,    # if provided, loads data from given path
         verbose=0 # 0 = all, 1 = progress + errors, 2 = only errors
     ):
+        self.VERBOSE = self._validate_verbose(verbose)
+        if cache_path is not None:
+            cache_data = self._load_numpy_cache(cache_path)
+            self.data = cache_data['data'] 
+            self.start_date = cache_data['start_date']
+            self.end_date = cache_data['end_date']
+            self.extent = cache_data['extent']
+            self.dim = cache_data['data'][0].shape
+            return
+
         self.start_date_dt = pd.to_datetime(start_date)
         self.end_date_dt = pd.to_datetime(end_date)
         self.extent = extent
         self.dim = dim
         self.raw_dir = self._validate_raw_dir(raw_dir)
         self.save_dir = self._validate_save_dir(save_dir)
-        self.VERBOSE = self._validate_verbose(verbose)
+        self.data = None
 
+        NDVI_SCALE_FACTOR = 0.0001
         lon_min, lon_max, lat_min, lat_max = self.extent
         '''
         harmony_client = Client() # pulls from .netrc file
@@ -66,18 +78,49 @@ class NDVIData:
 
         # download( stuff )
         hdf_files = sorted(os.listdir(self.raw_dir))
-        # TODO this just grabs the first one!
+        # TODO this just grabs the first one! will eventually wrap in a loop.
         hdf_path = os.path.join(self.raw_dir, hdf_files[0])
         ndvi_sds = self._get_subdataset(hdf_path, keyword='NDVI')
         frame = self._reproject(ndvi_sds, self.extent)
+        frame = NDVI_SCALE_FACTOR * frame
 
         ndvi_sds = None # clean up
-        import matplotlib.pyplot as plt
         frame = cv2.resize(src=frame, dsize=(self.dim, self.dim))
-        plt.imshow(frame)
-        plt.savefig('test.png')
-        out = os.path.join(self.save_dir, 'out_la.tif')
 
+        # map frame to day the image was taken
+        file = os.path.basename(hdf_path)
+
+        pattern = re.compile(r"""
+            MOD13A2\.                           # product short name
+            A(\d{7})\.                          # julian day of acquisition
+            (\w{6})\.                           # tile identifier
+            (\d{3})\.                           # collection version
+            (\d{13})                            # julian date of production
+        """, re.VERBOSE)
+        patterns = self._search_pattern(pattern, file)
+
+        dates = pd.date_range(
+            self.start_date_dt, self.end_date_dt, freq='h', inclusive='left'
+        )
+        filled_dates = {d : None for d in dates}
+        filled_dates = self._align_frame_to_date(
+            filled_dates,
+            patterns['julian_acquisition_day'],
+            frame,
+            self.start_date_dt
+        )
+
+        self.data = self._fill_gaps_and_to_numpy(filled_dates)
+        # TODO now support going through multiple files
+        # implement loading from cache
+
+        self._save_numpy_to_cache(
+            save_path=os.path.join(save_dir, 'ndvi_processed.npz'),
+            data=self.data,
+            start_date=start_date,
+            end_date=end_date,
+            extent=extent
+        )
         return
     
     ### NOTE: Parameter validation methods
@@ -163,59 +206,89 @@ class NDVIData:
         result = None
 
         return arr
+    
+    ### NOTE: dataset building/alignment methods
+    def _search_pattern(self, pattern, string):
+        '''
+        Pattern moved out so that compiling the regex is only a one-time cost.
 
+        Example: MOD13A2.A2023209.h08v05.061.2023226000837.hdf
+        '''
+        match = re.search(pattern, string)
+        if match:
+            matches = match.groups()
+        return {
+            'julian_acquisition_day' : matches[0],
+            'tile_id' : matches[1],
+            'collection_id' : matches[2],
+            'julian_production_date' : matches[3]
+        }
 
-'''
-params = {
-    'cache_path' : '/mnt/wildfire/raw-data/modis-ndvi',
-    'dim' : 84,
-    'start_date' : '2023-08-02',
-    'end_date' : '2025-08-02',
-    'save_path': '/mnt/wildfire/processed-data/2026-01-27'
-}
+    def _align_frame_to_date(self, dates_dict, julian_day, frame, start_date):
+        date = pd.to_datetime(julian_day, format='%Y%j')
+        date = start_date if date < start_date else date
+        dates_dict[date] = frame
 
-print(f'These are the parameters. Press ENTER if these look good, else Ctrl+c out of here and change them in the script.')
-print(params)
-input()
+        return dates_dict
 
-NDVI_SCALE_FACTOR = 0.0001 # ndvi is supposed to be [-1, 1], but NASA wants to use int for better storage, so we fix it.
+    def _fill_gaps_and_to_numpy(self, data_dict):
+        '''
+        Converts to dataframe to fill gaps, then converts dataframe
+            to numpy
+        '''
+        # avoids inferring dataframe structure from first element
+        df = pd.DataFrame({'frames' : data_dict.values()})
+        df = df.ffill()
 
-dates = dict.fromkeys(pd.date_range(params['start_date'], params['end_date'], freq='h', inclusive='left'))
+        frames = df.to_numpy()
+        frames = np.squeeze(frames)
+        frames = [
+            np.full((self.dim, self.dim), np.nan) if x is None else x
+            for x in frames
+        ]
+        frames = np.stack(frames, axis=0)
 
-# match the year + julian day to the processed frame
-pattern = r'doy(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})'
-doy_to_frame = {}
-for file in sorted(os.listdir(params['cache_path'])):
-    match = re.search(pattern, file)
-    if match:
-        year, doy, hour, minute, second = match.groups()
-        file_date = year + doy
+        return frames
+    
+    ### NOTE caching methods
+    def _save_numpy_to_cache(
+        self, save_path, data, start_date, end_date, extent
+    ):
+        if self.VERBOSE == 0:
+            print(f'Saving data to {save_path}...', end=' ')
 
-    with rasterio.open(os.path.join(params['cache_path'], file), 'r') as src:
-        ndvi = src.read()
-        ndvi = np.squeeze(ndvi)
-        ndvi = cv2.resize(ndvi, (params['dim'], params['dim']))
-        ndvi = ndvi * NDVI_SCALE_FACTOR
+        np.savez_compressed(
+            file=save_path,
+            data=self.data,
+            start_date=start_date,
+            end_date=end_date,
+            extent=extent
+            # product='NDVI' if we want to extend this class for more modis
+        )
 
-    doy_to_frame[file_date] = ndvi.copy()
+        if self.VERBOSE == 0:
+            print('complete!\n')
 
-# match the date's year + julian day to the processed frame
-file_ydoy = list(doy_to_frame.keys())
-i = 0
-for date in dates.keys():
-    y_doy = date.strftime('%Y') + date.strftime('%j')
-    if i + 1 == len(file_ydoy):
-        dates[date] = file_ydoy[-1]
-    else:
-        dates[date] = file_ydoy[i] 
-        if y_doy < file_ydoy[i] or y_doy >= file_ydoy[i+1]:
-            i += 1
+    def _load_numpy_cache(self, cache_path):
+        '''
+        Loads numpy cache data.
+        '''
+        if self.VERBOSE == 0:
+            print(f'Loading numpy data from {cache_path}...', end=' ')
+        cached_data = np.load(cache_path, allow_pickle=True)
 
-res = [doy_to_frame[ydoy] for ydoy in dates.values()]
-res = np.stack(res, axis=0)
-print(res.shape)
+        # ensure data can be loaded
+        try:
+            data = cached_data['data']
+            start_date = cached_data['start_date']
+            end_date = cached_data['end_date']
+            extent = cached_data['extent']
+        except:
+            raise ValueError(
+                'Cache data is missing one or more keys: '
+                '(date, start_date, end_date, extent)'
+            )
 
-save_path = os.path.join(params['save_path'], 'ndvi_processed.npy')
-print(f'Saved to {save_path}')
-np.save(save_path, res)
-'''
+        if self.VERBOSE == 0: print(f'complete!\n')
+
+        return cached_data
