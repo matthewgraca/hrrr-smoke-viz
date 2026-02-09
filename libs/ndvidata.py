@@ -58,7 +58,9 @@ class NDVIData:
         )
         job_id = harmony_client.submit(request)
         job_desc = harmony_client.status(job_id)
-        futures = harmony_client.download_all(job_id, directory=raw_dir, overwrite=False)
+        futures = harmony_client.download_all(
+            job_id, directory=self.raw_dir, overwrite=False
+        )
 
         if self.VERBOSE < 2:
             print('complete.')
