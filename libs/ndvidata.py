@@ -1,15 +1,12 @@
-import rasterio
-import numpy as np
+import cv2
 import os
+import numpy as np
 import pandas as pd
 import re
-import bisect
-
 from harmony import Client, Environment, Collection, Request, BBox
 from concurrent.futures import as_completed
 from tqdm import tqdm 
 from osgeo import gdal
-import cv2
 
 class NDVIData:
     def __init__(
