@@ -368,7 +368,7 @@ class OpenAQData:
                 response_data = response.json()
 
                 for res in response_data['results']:
-                    date = pd.to_datetime(res['period']['datetimeFrom']['utc'])
+                    date = pd.to_datetime(res['period']['datetimeFrom']['utc']).round('h')
                     date_to_sensorval[date] = res['value'] 
 
                 # save response in json
@@ -527,7 +527,7 @@ class OpenAQData:
         if self.VERBOSE == 0:
             print(
                 f'🗓️  Pruning sensors by date operational between '
-                f'{start_dt} and {end_dt}...'
+                f'{start_dt} and {end_dt}, with 12 hour buffer...'
             )
 
         # to build the dataframe
@@ -551,7 +551,7 @@ class OpenAQData:
                 res['datetimeLast']['utc']
                 if res['datetimeLast'] is not None
                 else start_dt
-            )
+            ) + pd.Timedelta(hours=12)
             if start <= start_dt and end >= end_dt:
                 d['sensor id'].append(res['id'])
                 d['provider'].append(res['provider']['name'])
@@ -794,7 +794,7 @@ class OpenAQData:
             with open(f'{sensor_dir}/{f}', 'r') as j:
                 response_data = json.load(j)
             for res in response_data['results']:
-                date = pd.to_datetime(res['period']['datetimeFrom']['utc']).round('H')
+                date = pd.to_datetime(res['period']['datetimeFrom']['utc']).round('h')
                 date_to_sensorval[date] = res['value'] 
 
         return [v for k, v in sorted(date_to_sensorval.items())]
@@ -1090,8 +1090,9 @@ class OpenAQData:
         min_uptime=0.75,
         max_zscore=3,
         max_pm25=300,
-        whitelist=set(['AirNow', 'Clarity'])
+        whitelist=set(['Clarity'])
     ):
+        # FIXME: AirNow sensors should ingest an extra hour on top.
         #### start helpers
         # filter out sensors that are not in the whitelist
         def filter_whitelisted_sensors(
