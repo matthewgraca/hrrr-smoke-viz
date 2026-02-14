@@ -115,7 +115,8 @@ class OpenAQData:
             df_measurements,
             df_locations,
             dim,
-            self.extent
+            self.extent,
+            whitelist=set(['AirNow', 'Clarity'])
         )
 
         self.sensor_locations = dict(
@@ -416,19 +417,30 @@ class OpenAQData:
             else list(df['pm2.5 sensor id'])
         )
         for i, sensor_id in enumerate(sensor_ids):
+            sensor = df.iloc[i]
             if self.VERBOSE == 0:
                 tqdm.write(
-                    f"Ingesting data from {df.iloc[i]['provider']} "
-                    f"sensor at {df.iloc[i]['locations']}."
+                    f"Ingesting data from {sensor['provider']} "
+                    f"sensor at {sensor['locations']}."
                 )
+            # airnow requires an extra hour due to their reporting method
+            # sensor reporting @ 7:15 gets assigned to "7->8" but doesn't
+            # get ingested b/c the range of the date is up to 8, thus the 
+            # need to bump.
+            # so by ingesting 8:15, we actually get 7->8, thereby getting
+            # the value at 7 as desired
             sensor_values.append(
                 self._measurement_queries_for_a_sensor(
-                    api_key,
-                    sensor_id,
-                    start_dt,
-                    end_dt,
-                    dates,
-                    save_dir
+                    api_key=api_key,
+                    sensor_id=sensor_id,
+                    start_dt=start_dt,
+                    end_dt=(
+                        end_dt
+                        if sensor['provider'] != 'AirNow'
+                        else end_dt + pd.Timedelta(hours=1)
+                    ),
+                    dates=dates,
+                    save_dir=save_dir
                 )
             )
 
@@ -1090,35 +1102,28 @@ class OpenAQData:
         min_uptime=0.75,
         max_zscore=3,
         max_pm25=300,
-        whitelist=set(['Clarity'])
+        whitelist=set(['AirNow', 'Clarity', 'AirGradient'])
     ):
-        # FIXME: AirNow sensors should ingest an extra hour on top.
         #### start helpers
         # filter out sensors that are not in the whitelist
         def filter_whitelisted_sensors(
             df_measurements,
             df_locations,
-            whitelist=set(['AirNow', 'Clarity'])
+            whitelist=set(['AirNow', 'Clarity', 'AirGradient'])
         ):
             if self.VERBOSE == 0:
                 print(
                     f'✂️  Pruning sensors that are not in the whitelist of: '
                     f'{whitelist}'
                 )
+            whitelisted_providers = df_locations['provider'].isin(whitelist)
 
-            blacklist = (
-                df_locations[~df_locations['provider']
-                    .isin(whitelist)]['locations']
-                    .to_list()
-            )
+            blacklist = df_locations[~whitelisted_providers]['locations'].to_list()
             df1 = df_measurements.drop(labels=blacklist, axis='columns')
-            df2 = (
-                df_locations[df_locations['provider']
-                    .isin(whitelist)]
-                    .reset_index(drop=True)
-            )
+            df2 = df_locations[whitelisted_providers].reset_index(drop=True)
 
-            if self.VERBOSE == 0: print(f'Sensors removed: {blacklist}\n')
+            if self.VERBOSE == 0:
+                print(df_locations[~whitelisted_providers])
 
             return df1, df2
 
