@@ -19,15 +19,16 @@ class GOESData:
         self,
         start_date="2025-01-10 00:00",
         end_date="2025-01-10 00:59",
-        extent=(-118.75, -117.0, 33.5, 34.5),
-        dim=40,
+        extent=(-118.615, -117.70, 33.60, 34.35),
+        dim=84,
         hourly_mean=True,   # use either hourly mean or observation closest to hour. 4x speed, but high chance of bad frames.
         save_dir=None,      # where nc4 files should be saved to
         cache_path=None,    # location where to save or load cache data
         load_cache=False,   # determines if data should be loaded from cache_dir
         save_cache=True,    # determines if data should be written to cache_dir
         verbose=False,
-        pre_downloaded=False,   # set to True if user already dl'd from aws
+        pre_downloaded=False,# set to True if user already dl'd from aws
+        product='ABI-L2-AODC' 
     ):
         """
         Pipeline:
@@ -67,8 +68,10 @@ class GOESData:
             self.data = cache_data['data'] 
             return
 
+        product = self._validate_product(product)
+
         if not pre_downloaded:
-            self._download_dataset(start_date, end_date, save_dir, hourly_mean, verbose)
+            self._download_dataset(start_date, end_date, save_dir, hourly_mean, verbose, product)
 
         # define for one-time calculation of reprojected spatial resolution
         res_x, res_y = None, None
@@ -81,12 +84,12 @@ class GOESData:
                 prog_bar.set_description(self._retrieve_data_str(date))
                 start, end = date, date + pd.Timedelta(minutes=59, seconds=59)
                 ds = self._ingest_dataset(
-                    start, end, save_dir, verbose, hourly_mean, downloaded=True
+                    start, end, save_dir, verbose, hourly_mean, True, product
                 )
                 # process dataset -> gridded data
                 prog_bar.set_description(self._process_data_str(date))
                 ds, res_x, res_y = self._process_ds(
-                    ds, extent, hourly_mean, res_x, res_y
+                    ds, extent, hourly_mean, res_x, res_y, product
                 )
                 gridded_data = self._ds_to_gridded_data(
                     ds, extent, dim, date, verbose
@@ -94,6 +97,12 @@ class GOESData:
             except FileNotFoundError:
                 # file not found in aws, i.e. satellite outage; use prev frame
                 outages += 1
+                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
+            except ValueError as e:
+                # likely a wrong arg you need to look at
+                errors += 1
+                tqdm.write('⁉️  Check if your args are valid.')
+                tqdm.write(f'ValueError: {e}')
                 gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
             except Exception as e:
                 # generic message, default to prev frame. usually corrupt data
@@ -163,6 +172,32 @@ class GOESData:
             raise ValueError(f"Cache path does not exist. {msg}")
         return True
 
+    def _validate_product(self, product):
+        '''
+        look thru this disaster + the bucket to find your product 
+        https://www.ospo.noaa.gov/resources/documents/PUG/GS%20Series%20416-R-PUG-L2%20Plus-0349%20Vol%205%20v2.5.pdf
+
+        That being said, this class only supports the products you see below
+        
+        Common codes:
+            L2: level of processing performed by the GOES team
+            F/C/M (appended to the end):
+                - F: Full disk
+                - C: Continental US focus
+                - M: Mesoscale focus
+        '''
+        supported_products = set([
+            'ABI-L2-AODC',  # Aerosol Optical Depth
+            'ABI-L2-ADPC'   # Aerosol Detection Product
+        ])
+
+        if product not in supported_products:
+            raise ValueError(
+                f'GOESData currently only supports {supported_products}.'
+            )
+
+        return product
+
     ### NOTE: Methods for ingesting and preprocessing the data
 
     def _ingest_dataset(
@@ -172,7 +207,8 @@ class GOESData:
         save_dir, 
         verbose, 
         hourly_mean,
-        downloaded
+        downloaded,
+        product
     ):
         """
         Ingests the GOES data; expects a date range, not one timestamp.
@@ -184,7 +220,7 @@ class GOESData:
         """
         default_kwargs = {
             'satellite': 'goes18',
-            'product': 'ABI-L2-AODC',
+            'product': product,
             'return_as': 'xarray' if downloaded else 'filelist',
             'verbose' : False,
             'ignore_missing' : False,
@@ -280,7 +316,7 @@ class GOESData:
         
         return gridded_data
 
-    def _process_ds(self, ds, extent, hourly_mean, res_x, res_y):
+    def _process_ds(self, ds, extent, hourly_mean, res_x, res_y, product):
         """
         Aliases the pipeline of converting the raw dataset into a dataset 
             that can be directly converted to gridded data
@@ -292,7 +328,7 @@ class GOESData:
             res_x and res_y are not None, they pass through; else they 
             are computed and returned.
         """
-        ds = self._compute_high_quality_mean_aod(ds, hourly_mean)
+        ds = self._compute_high_quality_mean(ds, hourly_mean, product)
         ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
         return ds, res_x, res_y
 
@@ -386,7 +422,7 @@ class GOESData:
 
         return ds
 
-    def _download_dataset(self, start_date, end_date, save_dir, hourly_mean, verbose):
+    def _download_dataset(self, start_date, end_date, save_dir, hourly_mean, verbose, product):
         """
         Strictly responsible for downloading the dataset
         This is different from ingest in that it tracks the ingest itself
@@ -405,7 +441,8 @@ class GOESData:
                     save_dir=save_dir,
                     verbose=verbose,
                     hourly_mean=hourly_mean,
-                    downloaded=False
+                    downloaded=False,
+                    product=product
                 )
             except FileNotFoundError:
                 # file not found in aws; just ignore since this is just ingest 
@@ -438,7 +475,7 @@ class GOESData:
 
         return subset
 
-    def _compute_high_quality_mean_aod(self, ds, hourly_mean):
+    def _compute_high_quality_mean(self, ds, hourly_mean, product):
         """
         Calculates mean AOD, and returns a Dataset with the added mean data
         Expects dataset with time component (e.g. (t, x, y)) if hourly mean
@@ -459,12 +496,45 @@ class GOESData:
                 • Use high + medium (“top 2”) qualities AOD for routine 
                 operational applications!
         """
-        high, medium, low, no_retrieval = 0, 1, 2, 3
-        quality_aod = ds['AOD'].where(ds['DQF'] <= medium)
+        product_var = {
+            'ABI-L2-AODC' : 'AOD',
+            'ABI-L2-ADPC' : 'Smoke',
+        }
+        product_quality_flags = {
+            'ABI-L2-AODC' : {
+                'high' : 0,
+                'med' : 1,
+                'low' : 2,
+                'no_retrieval' : 3
+            },
+            # https://www.noaasis.noaa.gov/pdf/ps-pvr/goes18/ABI/Aerosol%20Detection/Full/GOES-18_ABI_L2_ADP_Full_ReadMe.pdf
+            'ABI-L2-ADPC' : {
+                'high' : 0 if 'PQI' in ds else 12,
+                'med' : 4 if 'PQI' in ds else 4,
+                'low' : 8 if 'PQI' in ds else 0,
+                'no_retrieval' : 12 if 'PQI' in ds else np.nan # idk what it is, need to check
+            }
+        }
+        high = product_quality_flags[product]['high']
+        med = product_quality_flags[product]['med']
+        low = product_quality_flags[product]['low']
+        no_retrieval = product_quality_flags[product]['no_retrieval']
+
+        # https://www.noaasis.noaa.gov/pdf/ps-pvr/goes18/ABI/Aerosol%20Detection/Full/GOES-18_ABI_L2_ADP_Full_ReadMe.pdf
+        # extract only bits 2-3; those are the smoke-relevant ones
+        if product_var[product] == 'Smoke':
+            dqf = ds['DQF'].astype('uint8')
+            smoke_bits = dqf & 0b1100 
+            top_2_quality = (smoke_bits == high) | (smoke_bits == med)
+        else:
+            top_2_quality = (ds['DQF'] == high) | (ds['DQF'] == med)
+
+        # TODO should smoke flags be a mean? there's something to be said that larger = has been in the frame longer over the hour, so it being quantitative is not a bad idea
+        quality_product = ds[product_var[product]].where(top_2_quality)
         temp_ds = ds.assign(
-            AOD_mean=(
-                quality_aod.mean(dim='t', skipna=True)
-                if hourly_mean else quality_aod
+            product_mean=(
+                quality_product.mean(dim='t', skipna=True)
+                if hourly_mean else quality_product
             )
         )
 
@@ -525,13 +595,13 @@ class GOESData:
     def _reproject(self, ds, extent, x, y):
         """
         Performs a reprojection on the Dataset to Plate Carree.
-        Expects the main variable to be AOD_mean, to avoid reprojection 
+        Expects the main variable to be 'product_mean', to avoid reprojection 
             over multiple variables.
 
         x and y make up the dimensions of the spatial grid, in Plate Carree.
         """
         temp_ds = self._convert_radians_to_meters(ds)
-        temp_ds = temp_ds['AOD_mean']
+        temp_ds = temp_ds['product_mean']
         temp_ds = temp_ds.rio.write_crs(ds.FOV.crs)
         res_x, res_y = self._calculate_reprojection_resolution(
             temp_ds, extent, x, y
