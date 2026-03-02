@@ -20,6 +20,7 @@ class OpenAQData:
         dim=40,
         product=2,              # sensor data to ingest (2 is pm2.5)
         is_nowcast=False,       # determines if the values should be nowcast or raw
+        whitelist=['AirNow', 'Clarity', 'AirGradient'],
         save_dir=None,          # where json files should be saved to
         save_path=None,         # where the final numpy file should be saved to
         load_json=False,        # specifies that jsons should be loaded from cache
@@ -116,7 +117,7 @@ class OpenAQData:
             df_locations,
             dim,
             self.extent,
-            whitelist=set(['AirNow', 'Clarity'])
+            whitelist=whitelist
         )
 
         self.sensor_locations = dict(
@@ -423,7 +424,7 @@ class OpenAQData:
                     f"Ingesting data from {sensor['provider']} "
                     f"sensor at {sensor['locations']}."
                 )
-            # airnow requires an extra hour due to their reporting method
+            # airnow & airgrad require an extra hour due to their report method 
             # sensor reporting @ 7:15 gets assigned to "7->8" but doesn't
             # get ingested b/c the range of the date is up to 8, thus the 
             # need to bump.
@@ -436,7 +437,7 @@ class OpenAQData:
                     start_dt=start_dt,
                     end_dt=(
                         end_dt
-                        if sensor['provider'] != 'AirNow'
+                        if sensor['provider'] == 'Clarity'
                         else end_dt + pd.Timedelta(hours=1)
                     ),
                     dates=dates,
@@ -1102,14 +1103,14 @@ class OpenAQData:
         min_uptime=0.75,
         max_zscore=3,
         max_pm25=300,
-        whitelist=set(['AirNow', 'Clarity', 'AirGradient'])
+        whitelist=['AirNow', 'Clarity', 'AirGradient']
     ):
         #### start helpers
         # filter out sensors that are not in the whitelist
         def filter_whitelisted_sensors(
             df_measurements,
             df_locations,
-            whitelist=set(['AirNow', 'Clarity', 'AirGradient'])
+            whitelist=['AirNow', 'Clarity', 'AirGradient']
         ):
             if self.VERBOSE == 0:
                 print(
