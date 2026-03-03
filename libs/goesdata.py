@@ -71,7 +71,9 @@ class GOESData:
         product = self._validate_product(product)
 
         if not pre_downloaded:
-            self._download_dataset(start_date, end_date, save_dir, hourly_mean, verbose, product)
+            self._download_dataset(
+                start_date, end_date, save_dir, hourly_mean, verbose, product
+            )
 
         # define for one-time calculation of reprojected spatial resolution
         res_x, res_y = None, None
@@ -188,7 +190,8 @@ class GOESData:
         '''
         supported_products = set([
             'ABI-L2-AODC',  # Aerosol Optical Depth
-            'ABI-L2-ADPC'   # Aerosol Detection Product
+            'ABI-L2-ADPC',  # Aerosol Detection Product
+            'ABI-L2-FDCC'   # Fire Hotspot Detection and Characterization
         ])
 
         if product not in supported_products:
@@ -422,11 +425,30 @@ class GOESData:
 
         return ds
 
-    def _download_dataset(self, start_date, end_date, save_dir, hourly_mean, verbose, product):
+    def _download_dataset(
+        self,
+        start_date,
+        end_date,
+        save_dir,
+        hourly_mean,
+        verbose,
+        product
+    ):
         """
         Strictly responsible for downloading the dataset
         This is different from ingest in that it tracks the ingest itself
             with a progress bar and error messages
+
+        Args:
+            start_date: The start date
+            end_date: The end date
+            save_dir: The directory where the .nc files will be saved
+            hourly_mean: Flag determining if we should download EVERY file 
+                for the hour and compute the mean, OR just download the file
+                closest to the hour. More robust, but larger space requirements
+            verbose: How loud the output is
+            product: The specific product of the GOES satellite you want. See:
+                https://www.goes-r.gov/products/docs/PUG-L2%2B-vol5.pdf
         """
         outages = 0
         prog_bar = tqdm(self._realigned_date_range(start_date, end_date))
@@ -475,70 +497,125 @@ class GOESData:
 
         return subset
 
-    def _compute_high_quality_mean(self, ds, hourly_mean, product):
-        """
-        Calculates mean AOD, and returns a Dataset with the added mean data
-        Expects dataset with time component (e.g. (t, x, y)) if hourly mean
-            is true.
+    def _quality_flags(self, product, ds):
+        '''
+        Each product has its own data quality flag (DQF).
 
-        What is meant by "Quality AOD"?
-            • High Quality AOD is most accurate but is missing part of the 
-            smoke plume, also big gaps along coastlines 
-            (very stringent screening)
-            • High + Medium Quality AOD (“top 2 qualities”) fills in 
-            most of smoke plume and some of the gaps along coastlines
-            • High + Medium + Low Quality AOD (“all qualities”) fully 
-            resolves the smoke plume, but at the expense of erroneous high AOD 
-            values along coastlines and over inland shallow lakes
-            • Bottom Line: Make sure you process AOD using the appropriate 
-            data quality flags!
-                • Avoid low quality AOD for most situations.
-                • Use high + medium (“top 2”) qualities AOD for routine 
-                operational applications!
-        """
-        product_var = {
-            'ABI-L2-AODC' : 'AOD',
-            'ABI-L2-ADPC' : 'Smoke',
-        }
-        product_quality_flags = {
+        Currently supports:
+            - AODC
+            - ADPC
+                ADP transitioned some time from baseline to enterprise. this 
+                changed what the DQFs meant, and can be detected with the 
+                existence of the PQI variable
+
+                https://www.noaasis.noaa.gov/pdf/ps-pvr/goes18/ABI/Aerosol%20Detection/Full/GOES-18_ABI_L2_ADP_Full_ReadMe.pdf
+            - FDCC
+                https://www.star.nesdis.noaa.gov/goesr/documents/ATBDs/Enterprise/ATBD_Enterprise_Fire_Hot_Spot_v2.7_2020-10-31.pdf
+
+                Because our current algo expects high and medium, we alias 
+                    valid_fire = high
+                    valid_nonfire = medium
+        '''
+        return {
             'ABI-L2-AODC' : {
                 'high' : 0,
                 'med' : 1,
                 'low' : 2,
                 'no_retrieval' : 3
             },
-            # https://www.noaasis.noaa.gov/pdf/ps-pvr/goes18/ABI/Aerosol%20Detection/Full/GOES-18_ABI_L2_ADP_Full_ReadMe.pdf
             'ABI-L2-ADPC' : {
                 'high' : 0 if 'PQI' in ds else 12,
                 'med' : 4 if 'PQI' in ds else 4,
                 'low' : 8 if 'PQI' in ds else 0,
                 'no_retrieval' : 12 if 'PQI' in ds else np.nan # idk what it is, need to check
+            },
+            'ABI-L2-FDCC' : {
+                'high' : 0,     #'valid_fire' : 0,
+                'med' : 1,      #'valid_nonfire' : 1,
+                'invalid_cloud' : 2,
+                'invalid_glint_surface_offdisk': 3,
+                'invalid_bad_input': 4,
+                'invalid_algorithm_failure': 5,
             }
         }
+
+    def _high_quality_condition(self, product, ds):
+        '''
+        For the most part, you can find documentation that supports the
+        usage of "top 2 quality values" for the product you use.
+
+        Expects the dataset has a variable DQF
+
+        Returns a condition you plug into ds.where()
+        '''
+        product_quality_flags = self._quality_flags(product, ds)
         high = product_quality_flags[product]['high']
         med = product_quality_flags[product]['med']
-        low = product_quality_flags[product]['low']
-        no_retrieval = product_quality_flags[product]['no_retrieval']
 
         # https://www.noaasis.noaa.gov/pdf/ps-pvr/goes18/ABI/Aerosol%20Detection/Full/GOES-18_ABI_L2_ADP_Full_ReadMe.pdf
         # extract only bits 2-3; those are the smoke-relevant ones
-        if product_var[product] == 'Smoke':
+        if product == 'ABI-L2-ADPC':
             dqf = ds['DQF'].astype('uint8')
             smoke_bits = dqf & 0b1100 
             top_2_quality = (smoke_bits == high) | (smoke_bits == med)
         else:
             top_2_quality = (ds['DQF'] == high) | (ds['DQF'] == med)
 
-        # TODO should smoke flags be a mean? there's something to be said that larger = has been in the frame longer over the hour, so it being quantitative is not a bad idea
-        quality_product = ds[product_var[product]].where(top_2_quality)
-        temp_ds = ds.assign(
-            product_mean=(
-                quality_product.mean(dim='t', skipna=True)
-                if hourly_mean else quality_product
-            )
-        )
+        return top_2_quality
 
-        return temp_ds
+    def _compute_average(self, hourly_mean, product_var, ds, high_quality_values):
+        '''
+        Depending on the product, average can be different things .
+
+        Save to "product_mean", as this is the variable expected downstream.
+
+        Average here can mean many things. For quantitative variables, 
+            the classic mean works.
+
+        For binary variables, the median could also work here. Mean could
+            also work if it's just 0 vs 1, and represent confidence over
+            the hour.
+
+        For categorical variables (more than 2), then the mode would work.
+
+        Currently, we use the classic mean since our variables are either
+            quantitative, or binary.
+        '''
+        # for FRP (and Area, Temp) specifically, we want the background to 
+        # be 0, not nan and thus subject to interpolation
+        products_to_fill_with_zero = ['Temp', 'Area', 'Power']
+        mean = (
+            high_quality_values.mean(dim='t', skipna=True)
+            if hourly_mean
+            else high_quality_values 
+        )
+        mean = mean.fillna(0) if product_var in products_to_fill_with_zero else mean
+        return ds.assign(product_mean=mean)
+
+    def _compute_high_quality_mean(self, ds, hourly_mean, product):
+        """
+        Calculates mean product value, and returns a Dataset with the added mean data
+        Expects dataset with time component (e.g. (t, x, y)) if hourly mean
+            is true.
+        """
+        # NOTE the current pipeline only supports one product at a time
+        # if we need the others, we can paramaterize this.
+        subproducts = {
+            'ABI-L2-AODC' : ['AOD'],
+            'ABI-L2-ADPC' : ['Smoke', 'Dust'],
+            'ABI-L2-FDCC' : ['Mask', 'Temp', 'Area', 'Power']
+        }
+        product_var = {
+            'ABI-L2-AODC' : subproducts['ABI-L2-AODC'][0],
+            'ABI-L2-ADPC' : subproducts['ABI-L2-ADPC'][0],
+            'ABI-L2-FDCC' : subproducts['ABI-L2-FDCC'][3]
+        }
+        high_quality_values = ds[product_var[product]].where(
+            self._high_quality_condition(product, ds)
+        )
+        return self._compute_average(
+            hourly_mean, product_var[product], ds, high_quality_values
+        )
 
     ### NOTE: Methods for reprojections
 
