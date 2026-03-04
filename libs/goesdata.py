@@ -28,7 +28,8 @@ class GOESData:
         save_cache=True,    # determines if data should be written to cache_dir
         verbose=False,
         pre_downloaded=False,# set to True if user already dl'd from aws
-        product='ABI-L2-AODC' 
+        product='ABI-L2-AODC',
+        subproduct='AOD'
     ):
         """
         Pipeline:
@@ -69,6 +70,7 @@ class GOESData:
             return
 
         product = self._validate_product(product)
+        subproduct = self._validate_subproduct(product, subproduct)
 
         if not pre_downloaded:
             self._download_dataset(
@@ -91,7 +93,7 @@ class GOESData:
                 # process dataset -> gridded data
                 prog_bar.set_description(self._process_data_str(date))
                 ds, res_x, res_y = self._process_ds(
-                    ds, extent, hourly_mean, res_x, res_y, product
+                    ds, extent, hourly_mean, res_x, res_y, product, subproduct
                 )
                 gridded_data = self._ds_to_gridded_data(
                     ds, extent, dim, date, verbose
@@ -200,6 +202,21 @@ class GOESData:
             )
 
         return product
+    
+    def _validate_subproduct(self, product, subproduct):
+        supported_subproducts = {
+            'ABI-L2-AODC' : ['AOD'],
+            'ABI-L2-ADPC' : ['Smoke', 'Dust'],
+            'ABI-L2-FDCC' : ['Mask', 'Temp', 'Area', 'Power']
+        }
+
+        if subproduct not in supported_subproducts[product]:
+            raise ValueError(
+                f'GOESData {product} currently only supports '
+                f'{supported_subproducts[product]}.'
+            )
+
+        return subproduct
 
     ### NOTE: Methods for ingesting and preprocessing the data
 
@@ -319,7 +336,7 @@ class GOESData:
         
         return gridded_data
 
-    def _process_ds(self, ds, extent, hourly_mean, res_x, res_y, product):
+    def _process_ds(self, ds, extent, hourly_mean, res_x, res_y, product, subproduct):
         """
         Aliases the pipeline of converting the raw dataset into a dataset 
             that can be directly converted to gridded data
@@ -331,7 +348,7 @@ class GOESData:
             res_x and res_y are not None, they pass through; else they 
             are computed and returned.
         """
-        ds = self._compute_high_quality_mean(ds, hourly_mean, product)
+        ds = self._compute_high_quality_mean(ds, hourly_mean, product, subproduct)
         ds, res_x, res_y = self._reproject(ds, extent, res_x, res_y)
         return ds, res_x, res_y
 
@@ -563,7 +580,7 @@ class GOESData:
 
         return top_2_quality
 
-    def _compute_average(self, hourly_mean, product_var, ds, high_quality_values):
+    def _compute_average(self, hourly_mean, subproduct, ds, high_quality_values):
         '''
         Depending on the product, average can be different things .
 
@@ -583,16 +600,16 @@ class GOESData:
         '''
         # for FRP (and Area, Temp) specifically, we want the background to 
         # be 0, not nan and thus subject to interpolation
-        products_to_fill_with_zero = ['Temp', 'Area', 'Power']
+        products_to_fill_with_zero = ['Mask', 'Temp', 'Area', 'Power']
         mean = (
             high_quality_values.mean(dim='t', skipna=True)
             if hourly_mean
             else high_quality_values 
         )
-        mean = mean.fillna(0) if product_var in products_to_fill_with_zero else mean
+        mean = mean.fillna(0) if subproduct in products_to_fill_with_zero else mean
         return ds.assign(product_mean=mean)
 
-    def _compute_high_quality_mean(self, ds, hourly_mean, product):
+    def _compute_high_quality_mean(self, ds, hourly_mean, product, subproduct):
         """
         Calculates mean product value, and returns a Dataset with the added mean data
         Expects dataset with time component (e.g. (t, x, y)) if hourly mean
@@ -600,21 +617,11 @@ class GOESData:
         """
         # NOTE the current pipeline only supports one product at a time
         # if we need the others, we can paramaterize this.
-        subproducts = {
-            'ABI-L2-AODC' : ['AOD'],
-            'ABI-L2-ADPC' : ['Smoke', 'Dust'],
-            'ABI-L2-FDCC' : ['Mask', 'Temp', 'Area', 'Power']
-        }
-        product_var = {
-            'ABI-L2-AODC' : subproducts['ABI-L2-AODC'][0],
-            'ABI-L2-ADPC' : subproducts['ABI-L2-ADPC'][0],
-            'ABI-L2-FDCC' : subproducts['ABI-L2-FDCC'][3]
-        }
-        high_quality_values = ds[product_var[product]].where(
+        high_quality_values = ds[subproduct].where(
             self._high_quality_condition(product, ds)
         )
         return self._compute_average(
-            hourly_mean, product_var[product], ds, high_quality_values
+            hourly_mean, subproduct, ds, high_quality_values
         )
 
     ### NOTE: Methods for reprojections
@@ -654,17 +661,19 @@ class GOESData:
         lon_bottom, lon_top, lat_bottom, lat_top = extent
         lat_center = (lat_top + lat_bottom) / 2
 
-        # calculate meters per degree, relative to the center latitude
+        # using the middle of our extent, calculate the number of meters
+        # per degree for our area
         _, _, m_per_deg_lat = geod.inv(0, lat_center, 0, lat_center + 1)
         _, _, m_per_deg_lon = geod.inv(0, lat_center, 1, lat_center)
 
         # calculate average grid resolution from lat/lon gaps in meters
-        sat_res_x_in_meters = np.diff(ds.x).mean()
-        sat_res_y_in_meters = np.diff(ds.y).mean()
+        # I feel this should be for the extent area, not all x/y?
+        sat_res_x_in_meters = abs(np.diff(ds.x).mean())
+        sat_res_y_in_meters = abs(np.diff(ds.y).mean())
 
         # convert resolution from meters to degrees
-        res_y = sat_res_x_in_meters / m_per_deg_lat
-        res_x = sat_res_y_in_meters / m_per_deg_lon
+        res_x = sat_res_x_in_meters / m_per_deg_lon
+        res_y = sat_res_y_in_meters / m_per_deg_lat
 
         # in total: the resolution of the average pixel, in degrees yipee
         return res_x, res_y
@@ -683,6 +692,7 @@ class GOESData:
         res_x, res_y = self._calculate_reprojection_resolution(
             temp_ds, extent, x, y
         )
+
         reprojected_ds = temp_ds.rio.reproject(
             dst_crs="EPSG:4326", 
             resolution=(res_x, res_y)
