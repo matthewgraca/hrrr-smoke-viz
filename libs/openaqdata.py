@@ -398,8 +398,10 @@ class OpenAQData:
                 response_data = response.json()
 
                 for res in response_data['results']:
-                    date = pd.to_datetime(res['period']['datetimeFrom']['utc']).round('h')
-                    date_to_sensorval[date] = res['value'] 
+                    res_date = res['period']['datetimeFrom']['utc']
+                    date = pd.to_datetime(res_date).round('h')
+                    if date in date_to_sensorval:
+                        date_to_sensorval[date] = res['value'] 
 
                 # save response in json
                 self._save_measurements_json(save_dir, sensor_id, response_data)
@@ -852,8 +854,10 @@ class OpenAQData:
             with open(f'{sensor_dir}/{f}', 'r') as j:
                 response_data = json.load(j)
             for res in response_data['results']:
-                date = pd.to_datetime(res['period']['datetimeFrom']['utc']).round('h')
-                date_to_sensorval[date] = res['value'] 
+                res_date = res['period']['datetimeFrom']['utc']
+                date = pd.to_datetime(res_date).round('h')
+                if date in date_to_sensorval:
+                    date_to_sensorval[date] = res['value'] 
 
         return [v for k, v in sorted(date_to_sensorval.items())]
 
