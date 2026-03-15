@@ -3,14 +3,20 @@
 # -- PARAMETERS --
 # model name = name of the model you want to train
 # loss name = name of the loss you want to use
+# epochs = number of epochs to train for
 # experiment name = string to be append to experiment description
 # data location = folder containing the training data (in the current directory)
 # is test = is/is not a test. turn false if you want a real run.
 # viz only = run only the visualization script, no training.
 
+# -- Assumptions --
+# Script assumes that training.py is in the current directory, so make sure to
+#   run the script where the training and vis script is.
+
 MODEL_NAME='dual_ae_gated_skips'
 LOSS_NAME='grid_mae'
-EXPERIMENT_NAME='84x84'
+EPOCHS='1'
+EXPERIMENT_NAME='rawcon_1_epoch'
 DATA_LOC='/mnt/wildfire/training-data/2026-01-27'
 RESULTS_LOC='/mnt/wildfire/experiments'
 IS_TEST=false
@@ -29,6 +35,7 @@ if [ "$IS_TEST" = true ]; then
     python training.py \
         "$MODEL_NAME" \
         "$LOSS_NAME" \
+        "$EPOCHS" \
         "$DATA_LOC" \
         "$RESULTS_LOC" \
         "$EXPERIMENT_NAME" \
@@ -38,6 +45,7 @@ else
     python training.py \
         "$MODEL_NAME" \
         "$LOSS_NAME" \
+        "$EPOCHS" \
         "$DATA_LOC" \
         "$RESULTS_LOC" \
         "$EXPERIMENT_NAME"

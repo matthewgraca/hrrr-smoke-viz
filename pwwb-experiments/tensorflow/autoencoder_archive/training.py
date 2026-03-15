@@ -23,6 +23,10 @@ def argparser(valid_models, valid_losses):
         help=f'the loss function to use: {valid_losses}'
     )
     parser.add_argument(
+        'epochs',
+        help=f'The number of epochs to train'
+    )
+    parser.add_argument(
         'data',
         help='location of the data'
     )
@@ -56,7 +60,7 @@ args = argparser(
 )
 
 # training parameters
-EPOCHS = 100
+EPOCHS = int(args.epochs)
 BATCH_SIZE = 16
 
 import os
