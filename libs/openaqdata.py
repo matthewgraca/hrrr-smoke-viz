@@ -20,6 +20,7 @@ class OpenAQData:
         dim=40,
         product=2,              # sensor data to ingest (2 is pm2.5)
         is_nowcast=False,       # determines if the values should be nowcast or raw
+        whitelist=['AirNow', 'Clarity', 'AirGradient'],
         save_dir=None,          # where json files should be saved to
         save_path=None,         # where the final numpy file should be saved to
         load_json=False,        # specifies that jsons should be loaded from cache
@@ -32,6 +33,8 @@ class OpenAQData:
         neighbors=10,
         elevation_scale_factor=100,
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
+        is_historical=False,    # if true, queries hourly instead of measurements endpoint
+        keep_outliers=False
     ):
         '''
         Pipeline:
@@ -72,11 +75,10 @@ class OpenAQData:
         self.is_nowcast = is_nowcast
 
         # datetimes to use for queries
-        start_dt = pd.to_datetime(start_date, utc=True)
-        end_dt = pd.to_datetime(end_date, utc=True)
         dates = pd.date_range(
             start_date, end_date, freq='h', inclusive='left', tz='UTC'
         )
+        start_dt, end_dt = dates[0], dates[-1]
 
         if load_numpy:
             cache_path = (
@@ -95,7 +97,8 @@ class OpenAQData:
             sensor_values, df_locations = self._load_sensor_values_and_locations_df(
                 api_key, self.extent, product,
                 load_csv, load_json, save_dir, 
-                start_dt, end_dt, dates
+                start_dt, end_dt, dates,
+                is_historical
             )
             df_measurements = self._load_measurements_from_csv_cache(save_dir)
 
@@ -115,7 +118,9 @@ class OpenAQData:
             df_measurements,
             df_locations,
             dim,
-            self.extent
+            self.extent,
+            whitelist=whitelist,
+            keep_outliers=keep_outliers
         )
 
         self.sensor_locations = dict(
@@ -169,7 +174,8 @@ class OpenAQData:
         save_dir,
         start_dt,
         end_dt,
-        dates
+        dates,
+        is_historical
     ):
         '''
         Gets the sensor values and the locations dataframe of those sensors,
@@ -190,7 +196,7 @@ class OpenAQData:
                 api_key, extent, product, save_dir, start_dt, end_dt 
             )
             sensor_values = self._ingest_sensor_values_from_api(
-                api_key, extent, df_locations, save_dir, start_dt, end_dt, dates
+                api_key, extent, df_locations, save_dir, start_dt, end_dt, dates, is_historical
             )
 
         return sensor_values, df_locations
@@ -248,6 +254,7 @@ class OpenAQData:
         sensor_id,  # make sure this is the sensor for the specific product!
         start_dt,
         end_dt,
+        is_historical=False,
         page=1
     ):
         '''
@@ -257,6 +264,21 @@ class OpenAQData:
             the sensor location (think of it as the "sensor's id", and another
             for the specific product it senses. This is the one you want to 
             query.
+
+        Note on is_historical: if you plan on doing real-time ingest, you 
+            want the "measurements" endpoint because it gets updated faster.
+            If you want to simply ingest historical data, you want the 
+            "hourly" endpoint.
+
+            Why? Because the "measurements" endpoint contains subhourly data.
+            If you plan to ingest a TON of data (e.g. anything larger than a 
+            month of data), the API will throw a 408 at you to tell you that
+            your query is too big. This is because a lot of sensors ingest 
+            every 5 mins; so you can see that a 12x increase is a big ask.
+
+            We could simply request monthly (or even weekly), but we really
+            don't need subhourly data for any reason; this would also increase
+            ingestion time for the historical data.
         '''
         if self.VERBOSE == 0:
             tqdm.write(
@@ -264,7 +286,11 @@ class OpenAQData:
                 f'from {start_dt} to {end_dt}...'
             )
 
-        url = f'https://api.openaq.org/v3/sensors/{sensor_id}/hours'
+        url = (
+            f'https://api.openaq.org/v3/sensors/{sensor_id}/hours'
+            if is_historical else
+            f'https://api.openaq.org/v3/sensors/{sensor_id}/measurements'
+        )
         params = {
             'datetime_from' : start_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
             'datetime_to'   : end_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
@@ -307,7 +333,8 @@ class OpenAQData:
         start_dt,
         end_dt,
         dates,
-        save_dir
+        save_dir,
+        is_historical
     ):
         '''
         Uses pagination to get all the sensor values from a single sensor,
@@ -350,7 +377,9 @@ class OpenAQData:
                         f'performing query.'
                     )
 
-        start_dates, end_dates = self._annually_split_dates(start_dt, end_dt)
+        start_dates, end_dates = self._split_dates(
+            start_dt, end_dt, pd.DateOffset(years=1)
+        )
         for start, end in zip(start_dates, end_dates):
             page = 1
             while page != -1:
@@ -360,6 +389,7 @@ class OpenAQData:
                     sensor_id=sensor_id, 
                     start_dt=start, 
                     end_dt=end,
+                    is_historical=is_historical,
                     page=page
                 )
                 self._manage_rate_limit(response.headers)
@@ -368,8 +398,10 @@ class OpenAQData:
                 response_data = response.json()
 
                 for res in response_data['results']:
-                    date = pd.to_datetime(res['period']['datetimeFrom']['utc'])
-                    date_to_sensorval[date] = res['value'] 
+                    res_date = res['period']['datetimeFrom']['utc']
+                    date = pd.to_datetime(res_date).round('h')
+                    if date in date_to_sensorval:
+                        date_to_sensorval[date] = res['value'] 
 
                 # save response in json
                 self._save_measurements_json(save_dir, sensor_id, response_data)
@@ -384,12 +416,23 @@ class OpenAQData:
 
         return [v for k, v in sorted(date_to_sensorval.items())]
     
-    def _annually_split_dates(self, start_dt, end_dt):
+    def _split_dates(self, start_dt, end_dt, offset):
+        ''' 
+        Split the dates into a list, given an offset
+            offset: a pd.DateOffset() object
+
+        Purpose: OpenAQ seems to not like long queries. I've tried
+            an annual offset, which works well for HOURLY. If you try to
+            ingest subhourly data (e.g. clarity, airgradient) for multiple
+            months, it will NOT scale! You'll end up querying for 12x the 
+            data (reporting every 5 mins), so you'll need to query down to
+            month by month.
+        '''
         start_dates, end_dates = [], [] 
         current, end = start_dt, end_dt
         while current < end:
             start_dates.append(current)
-            current += pd.DateOffset(years=1)
+            current += offset
             end_dates.append(current)
 
         # enforce the last date to be the end datetime
@@ -404,7 +447,8 @@ class OpenAQData:
         start_dt,
         end_dt,
         dates,
-        save_dir
+        save_dir,
+        is_historical
     ):
         '''
         Simply performs the measurement query for every sensor descirbed
@@ -416,19 +460,35 @@ class OpenAQData:
             else list(df['pm2.5 sensor id'])
         )
         for i, sensor_id in enumerate(sensor_ids):
+            sensor = df.iloc[i]
             if self.VERBOSE == 0:
                 tqdm.write(
-                    f"Ingesting data from {df.iloc[i]['provider']} "
-                    f"sensor at {df.iloc[i]['locations']}."
+                    f"Ingesting data from {sensor['provider']} "
+                    f"sensor at {sensor['locations']}."
                 )
+            # airnow & airgrad require an extra hour due to their report method 
+            # sensor reporting @ 7:15 gets assigned to "7->8" but doesn't
+            # get ingested b/c the range of the date is up to 8, thus the 
+            # need to bump.
+            # so by ingesting 8:15, we actually get 7->8, thereby getting
+            # the value at 7 as desired
+
+            '''
+                    end_dt=(
+                        end_dt
+                        if sensor['provider'] == 'Clarity'
+                        else end_dt + pd.Timedelta(hours=1)
+                    ),
+            '''
             sensor_values.append(
                 self._measurement_queries_for_a_sensor(
-                    api_key,
-                    sensor_id,
-                    start_dt,
-                    end_dt,
-                    dates,
-                    save_dir
+                    api_key=api_key,
+                    sensor_id=sensor_id,
+                    start_dt=start_dt,
+                    end_dt=end_dt + pd.Timedelta(hours=1),
+                    dates=dates,
+                    save_dir=save_dir,
+                    is_historical=is_historical
                 )
             )
 
@@ -525,10 +585,7 @@ class OpenAQData:
             given date range
         '''
         if self.VERBOSE == 0:
-            print(
-                f'🗓️  Pruning sensors by date operational between '
-                f'{start_dt} and {end_dt}...'
-            )
+            print(f'🗓️  Pruning sensors not operational after {start_dt}.')
 
         # to build the dataframe
         d = {
@@ -542,17 +599,17 @@ class OpenAQData:
 
         # further prune list of sensors based on time reporting
         for res in data['results']:
-            start = pd.to_datetime(
+            sens_start = pd.to_datetime(
                 res['datetimeFirst']['utc']  
                 if res['datetimeFirst'] is not None
                 else end_dt
             )
-            end = pd.to_datetime(
+            sens_end = pd.to_datetime(
                 res['datetimeLast']['utc']
                 if res['datetimeLast'] is not None
                 else start_dt
             )
-            if start <= start_dt and end >= end_dt:
+            if sens_end > start_dt and sens_start < end_dt:
                 d['sensor id'].append(res['id'])
                 d['provider'].append(res['provider']['name'])
                 d['locations'].append(res['name'])
@@ -661,14 +718,15 @@ class OpenAQData:
         save_dir,
         start_dt,
         end_dt,
-        dates
+        dates,
+        is_historical
     ):
         '''
         Alias for performing the measurement query on all sensors
         '''
         # query by sensor
         sensor_values = self._measurement_query_for_all_sensors(
-            df_locations, api_key, start_dt, end_dt, dates, save_dir 
+            df_locations, api_key, start_dt, end_dt, dates, save_dir, is_historical
         )
 
         return sensor_values
@@ -716,26 +774,21 @@ class OpenAQData:
 
         return
 
-    def _check_datetimes_in_sensor_dir(self, sensor_dir, start_dt, end_dt):
+    def _check_datetimes_in_sensor_dir(
+        self, sensor_dir, start_dt, end_dt, pattern
+    ):
         '''
         Checks if the files in a sensor directory contain the given start 
             and end datetimes.
 
         Throws errors if there's no match, returns if matches are found. 
+
+        Pattern pulled out to avoid recompiling regex for every sensor
         '''
-        def find_dates_in_dir(sensor_dir):
+        def find_dates_in_dir(sensor_dir, pattern):
             '''
             bro i wish
             '''
-            # pattern: day_day
-            pattern = re.compile(
-                r"""
-                (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
-                _
-                (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
-                """, 
-                re.VERBOSE
-            )
             dates = []
             for filename in os.listdir(sensor_dir):
                 match = pattern.search(filename)
@@ -748,21 +801,28 @@ class OpenAQData:
         if self.VERBOSE == 0:
             tqdm.write(
                 f'👀 Examining files in {sensor_dir} '
-                'that match start and end date...',
+                'that are within start and end date...',
                 end=' '
             )
 
-        dates = find_dates_in_dir(sensor_dir)
+        dates = find_dates_in_dir(sensor_dir, pattern)
+        if not dates:
+            if self.VERBOSE == 0:
+                tqdm.write('⏭️ No data found, skipping.')
+        else:
+            sens_start, sens_end = dates[0], dates[-1]
 
-        if dates[0] != start_dt or dates[-1] != end_dt:
-            raise ValueError(
-                f'📅 Date range misaligned.'
-                f'start date = {dates[0]}, expected {start_dt} and '
-                f'end date = {dates[-1]}, expected {end_dt}'
-            )
+            if sens_start > end_dt or sens_end < start_dt:
+                raise ValueError(
+                    f'📅 JSON data out of range.\n'
+                    f'\tStart date of data ({sens_start}) must be before given '
+                    f'end date ({end_dt})\n'
+                    f'\t End date of data ({end_dt}) must be after given start '
+                    f'date ({start_dt}).'
+                )
 
-        if self.VERBOSE == 0:
-            tqdm.write('✅ Complete!')
+            if self.VERBOSE == 0:
+                tqdm.write('✅ Complete!')
 
         return
 
@@ -794,8 +854,10 @@ class OpenAQData:
             with open(f'{sensor_dir}/{f}', 'r') as j:
                 response_data = json.load(j)
             for res in response_data['results']:
-                date = pd.to_datetime(res['period']['datetimeFrom']['utc'])
-                date_to_sensorval[date] = res['value'] 
+                res_date = res['period']['datetimeFrom']['utc']
+                date = pd.to_datetime(res_date).round('h')
+                if date in date_to_sensorval:
+                    date_to_sensorval[date] = res['value'] 
 
         return [v for k, v in sorted(date_to_sensorval.items())]
 
@@ -845,7 +907,16 @@ class OpenAQData:
             self._check_datetimes_in_sensor_dir(
                 sensor_dir=sensor_dir,
                 start_dt=pd.to_datetime(start_date, utc=True),
-                end_dt=pd.to_datetime(end_date, utc=True) - pd.Timedelta(hours=1),
+                end_dt=pd.to_datetime(end_date, utc=True),
+                pattern=re.compile(
+                    # pattern: day_day
+                    r"""
+                    (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
+                    _
+                    (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
+                    """, 
+                    re.VERBOSE
+                )
             ) 
             # if all that is good, we load the sensor measurements
             sensor_values.append(
@@ -1087,37 +1158,32 @@ class OpenAQData:
         df_locations,
         dim,
         extent,
-        min_uptime=0.75,
+        min_uptime=0.0,
         max_zscore=3,
         max_pm25=300,
-        whitelist=set(['AirNow', 'Clarity'])
+        whitelist=['AirNow', 'Clarity', 'AirGradient'],
+        keep_outliers=False
     ):
         #### start helpers
         # filter out sensors that are not in the whitelist
         def filter_whitelisted_sensors(
             df_measurements,
             df_locations,
-            whitelist=set(['AirNow', 'Clarity'])
+            whitelist=['AirNow', 'Clarity', 'AirGradient']
         ):
             if self.VERBOSE == 0:
                 print(
                     f'✂️  Pruning sensors that are not in the whitelist of: '
                     f'{whitelist}'
                 )
+            whitelisted_providers = df_locations['provider'].isin(whitelist)
 
-            blacklist = (
-                df_locations[~df_locations['provider']
-                    .isin(whitelist)]['locations']
-                    .to_list()
-            )
+            blacklist = df_locations[~whitelisted_providers]['locations'].to_list()
             df1 = df_measurements.drop(labels=blacklist, axis='columns')
-            df2 = (
-                df_locations[df_locations['provider']
-                    .isin(whitelist)]
-                    .reset_index(drop=True)
-            )
+            df2 = df_locations[whitelisted_providers].reset_index(drop=True)
 
-            if self.VERBOSE == 0: print(f'Sensors removed: {blacklist}\n')
+            if self.VERBOSE == 0:
+                print(df_locations[~whitelisted_providers])
 
             return df1, df2
 
@@ -1273,7 +1339,13 @@ class OpenAQData:
             if self.is_nowcast
             else filtered_df.iloc[12:].reset_index(drop=True)
         '''
-        filtered_df = impute_outliers_with_nan(filtered_df, max_zscore, max_pm25)
+        filtered_df = (
+            filtered_df
+            if keep_outliers
+            else impute_outliers_with_nan(filtered_df, max_zscore, max_pm25)
+        )
+        # turned off -- decided to let idw spatially fill nans instead of
+        #   temporally ffilling
         #filtered_df = impute_nans_with_fbfill(filtered_df)
         filtered_df, filtered_loc = drop_sensors_colliding_with_reference_monitors(
             filtered_df, filtered_loc
@@ -1281,8 +1353,7 @@ class OpenAQData:
 
         if self.VERBOSE == 0:
             print(
-                f"✅ Complete! Final statistics:\n"
-                f"{filtered_df.describe()}\n"
+                f"✅ Complete! Final statistics:\n{filtered_df.describe()}\n"
             )
 
         return filtered_df, filtered_loc

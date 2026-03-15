@@ -35,6 +35,7 @@ class IDW:
         self.VERBOSE = verbose
         self.use_variable_blur = use_variable_blur
         self.elevation = self._get_elevation_data(elevation_path, dim, elevation_scale_factor)
+        self.closest_coords_and_dists = None
 
         return
 
@@ -52,17 +53,22 @@ class IDW:
         if not self._validate_grid_is_interpolatable(first_frame):
             return frames
 
-        closest_coords_and_dists = self._get_closest_coords_and_dists_per_pixel(
-            dim=self.dim,
-            sensor_coords=self._get_sensor_coords(frames),
-            elevation_grid=self.elevation
+        # one-time compute
+        self.closest_coords_and_dists = (
+            self._get_closest_coords_and_dists_per_pixel(
+                dim=self.dim,
+                sensor_coords=self._get_sensor_coords(frames),
+                elevation_grid=self.elevation
+            )
+            if self.closest_coords_and_dists is None
+            else self.closest_coords_and_dists
         )
 
         interpolated_grids = [
             self._interpolate_frame(
                 frame,
                 self.dim,
-                closest_coords_and_dists,
+                self.closest_coords_and_dists,
                 self.power,
                 self.neighbors,
                 self.use_variable_blur
