@@ -63,7 +63,6 @@ class OpenAQData:
         '''
         # members
         self.data = None
-        self.grids = None
         self.sensor_locations = None
         self.VERBOSE = self._validate_verbose_flag(verbose)
         self.start_date, self.end_date = (
@@ -140,13 +139,13 @@ class OpenAQData:
                 else "IDW interpolation disabled, returning ground site grids."
             )
 
-        self.grids = ground_site_grids
-
-        self.data = (
+        grids = (
             idw.interpolate_frames(ground_site_grids)
             if use_interpolation
             else ground_site_grids
         )
+
+        self.data = grids
 
         self._save_numpy_to_cache(
             cache_path=(
