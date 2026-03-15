@@ -55,7 +55,7 @@ def argparser(valid_models, valid_losses):
     return args
 
 args = argparser(
-    valid_models=set(['classic', 'two_path', 'dual_autoencoder', 'dual_ae_gated_skips']),
+    valid_models=set(['classic', 'two_path', 'dual_ae_gated_skips']),
     valid_losses=set(['grid_mae', 'grid_mse', 'nhood'])
 )
 
@@ -97,7 +97,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pickle
 from tensorflow.keras.utils import plot_model
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 # dataset parameters
 WORKERS = 4
@@ -222,7 +222,7 @@ match args.loss:
     case 'grid_mae':
         model.compile(
             loss='mean_absolute_error',
-            optimizer=keras.optimizers.AdamW(weight_decay=1e-3)
+            optimizer=keras.optimizers.Adam(learning_rate=0.001)
         )
     case 'grid_mse':
         model.compile(loss='mean_squared_error', optimizer='adam')
@@ -260,6 +260,12 @@ callbacks = [
         verbose=1,
         mode='min',
         restore_best_weights=True
+    ),
+    ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.2,
+        patience=10,
+        verbose=1
     )
 ]
 

@@ -248,9 +248,11 @@ def save_best_worst_samples(Y_pred, Y_true, save_dir, n_samples=10, horizons=[1,
 
 
 def _save_sample_plots(Y_pred, Y_true, idx, rmse, save_dir, prefix, label, horizons, sensors):
-    plot_sample(None, Y_pred[idx], Y_true[idx],
-               f"{save_dir}/{prefix}_grid.png",
-               f"{label} (RMSE: {rmse:.2f})")
+    plot_sample(
+        None, Y_pred[idx], Y_true[idx],
+        f"{save_dir}/{prefix}_grid.png",
+        f"{label} (RMSE: {rmse:.2f}, sample: {idx})"
+    )
     
     plot_full_forecast(Y_pred, Y_true,
                       f"{save_dir}/{prefix}_full_ts.png",

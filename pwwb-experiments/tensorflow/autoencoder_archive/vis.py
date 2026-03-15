@@ -44,9 +44,10 @@ with open(os.path.join(DATA_PATH, 'metadata.pkl'), 'rb') as f:
 
 with open(os.path.join(DATA_PATH, 'scalers.pkl'), 'rb') as f:
     scalers = pickle.load(f)
-airnow_scaler = scalers['AirNow_PM25']
+print('NOTE: using openaq, not airnow. refactor this once we decide that raw-out is our final desire.')
+airnow_scaler = scalers['OpenAQ_PM25']
 
-airnow_channel_idx = metadata['channel_names'].index('AirNow_PM25')
+airnow_channel_idx = metadata['channel_names'].index('OpenAQ_PM25')
 print('complete.')
 
 # NOTE fix later to support valid vs test set
