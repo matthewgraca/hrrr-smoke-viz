@@ -275,10 +275,10 @@ def load_hrrr_data(cache_dir):
         result = {
             'u_wind': hrrr_data['u_wind'],
             'v_wind': hrrr_data['v_wind'],
-            'wind_speed': hrrr_data['wind_speed'],
+            #'wind_speed': hrrr_data['wind_speed'],
             'temp_2m': hrrr_data['temp_2m'],
             'pbl_height': hrrr_data['pbl_height'],
-            'precip_rate': hrrr_data['precip_rate']
+            #'precip_rate': hrrr_data['precip_rate']
         }
         
         print(f"    HRRR shape: {result['u_wind'].shape}")
@@ -410,10 +410,10 @@ def preprocess_dataset_split(
         ('naqfc_pm25', 'NAQFC_PM25', True, False, False),
         ('hrrr_wind_u', 'HRRR_Wind_U', True, False, False),
         ('hrrr_wind_v', 'HRRR_Wind_V', True, False, False),
-        ('hrrr_wind_speed', 'HRRR_Wind_Speed', True, False, False),
+        #('hrrr_wind_speed', 'HRRR_Wind_Speed', True, False, False),
         ('hrrr_temp_2m', 'HRRR_Temp_2m', True, False, False),
         ('hrrr_pbl_height', 'HRRR_PBL_Height', True, False, False),
-        ('hrrr_precip_rate', 'HRRR_Precip_Rate', True, False, False),
+        #('hrrr_precip_rate', 'HRRR_Precip_Rate', True, False, False),
         ('elevation', 'Elevation', False, False, False),
         ('ndvi', 'NDVI', False, False, False),
         ('temporal_0', 'Temporal_Month_Sin', False, True, False),
@@ -427,10 +427,10 @@ def preprocess_dataset_split(
         ('naqfc_pm25', 'NAQFC_PM25_Forecast', True, False, True),
         ('hrrr_wind_u', 'HRRR_Wind_U_Forecast', True, False, True),
         ('hrrr_wind_v', 'HRRR_Wind_V_Forecast', True, False, True),
-        ('hrrr_wind_speed', 'HRRR_Wind_Speed_Forecast', True, False, True),
+        #('hrrr_wind_speed', 'HRRR_Wind_Speed_Forecast', True, False, True),
         ('hrrr_temp_2m', 'HRRR_Temp_2m_Forecast', True, False, True),
         ('hrrr_pbl_height', 'HRRR_PBL_Height_Forecast', True, False, True),
-        ('hrrr_precip_rate', 'HRRR_Precip_Rate_Forecast', True, False, True),
+        #('hrrr_precip_rate', 'HRRR_Precip_Rate_Forecast', True, False, True),
         ('airnow_hourly_clim', 'AirNow_Hourly_Clim_Forecast', True, False, True),
         ('temporal_0', 'Temporal_Month_Sin_Forecast', False, True, True),
         ('temporal_1', 'Temporal_Month_Cos_Forecast', False, True, True),
@@ -867,7 +867,7 @@ def main():
         cache_airnow, scalers_airnow, metadata_airnow = preprocess_dataset_split(
             frames_per_sample=24,
             forecast_horizon=24,
-            target_source='airnow',
+            target_source='openaq',
             train_pct=0.85,
             valid_pct=0.15,
             sequence_stride=1,
