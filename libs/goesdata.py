@@ -238,8 +238,16 @@ class GOESData:
         Raises FileNotFoundError if the aws s3 bucket doesn't have data for 
             the given time range.
         """
+        goes17_start = pd.to_datetime('2018-09-01') # roughly
+        goes18_start = pd.to_datetime('2022-05-01') # roughly
+        if start_date < goes17_start:
+            raise ValueError(
+                'Start date too far back for any GOES satellite\n'
+                f'\tGOES 17 start: {goes17_start}\n'
+                f'\tGOES 18 start: {goes18_start}'
+            )
         default_kwargs = {
-            'satellite': 'goes18',
+            'satellite': 'goes18' if start_date >= goes18_start else 'goes17',
             'product': product,
             'return_as': 'xarray' if downloaded else 'filelist',
             'verbose' : False,
