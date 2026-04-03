@@ -34,20 +34,22 @@ class HRRRData:
         end_date="2023-08-03-00",
         extent=None,
         extent_name='la_basin',
-        output_dir='data/hrrr',
+        raw_dir=None,               # where to send the grib files
+        output_dir='data/hrrr',     # where to send the processed file
         grid_size=84,
         chunk_months=2,
         force_reprocess=False,
         verbose=False,
         max_threads=20,
-        forecast=False,
-        historical_forecast=False,
+        forecast=False,             # backwards compatability for inference mode
+        historical_forecast=False,  # used in constructing the training set
         variables=None,
     ):
         self.start_date = start_date
         self.end_date = end_date
         self.extent = extent
         self.extent_name = extent_name
+        self.raw_dir = raw_dir
         self.output_dir = output_dir
         self.chunk_months = chunk_months
         self.verbose = verbose
@@ -67,6 +69,7 @@ class HRRRData:
         self._validate_variables()
 
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(raw_dir, exist_ok=True)
 
         if historical_forecast:
             self.run_historical_forecast_mode()
@@ -146,7 +149,19 @@ class HRRRData:
             test_date = pd.to_datetime(self.start_date.replace('-', ' '))
 
         try:
-            H = Herbie(date=test_date, fxx=0, model='hrrr', product='sfc', verbose=False)
+            herbie_params = {
+                'date': test_date,
+                'fxx' : 0,
+                'model' : 'hrrr',
+                'product' : 'sfc',
+                'verbose' : False
+            }
+            # herbie has its own default param for save_dir, so this avoids
+            # interfering with it
+            if self.raw_dir:
+                herbie_params['save_dir'] = self.raw_dir
+
+            H = Herbie(**herbie_params)
             result = H.xarray(search=self.combined_search, remove_grib=False)
 
             if isinstance(result, list):
@@ -325,10 +340,19 @@ class HRRRData:
         def download_and_extract(run_time, fxx, target):
             for attempt in range(1, max_attempts + 1):
                 try:
-                    H = Herbie(
-                        date=run_time, fxx=fxx, model='hrrr',
-                        product='sfc', verbose=False
-                    )
+                    herbie_params = {
+                        'date': run_time,
+                        'fxx' : fxx,
+                        'model' : 'hrrr',
+                        'product' : 'sfc',
+                        'verbose' : False
+                    }
+                    # herbie has its own default param for save_dir, so this avoids
+                    # interfering with it
+                    if self.raw_dir:
+                        herbie_params['save_dir'] = self.raw_dir
+
+                    H = Herbie(**herbie_params)
                     if H.grib is None:
                         return target, None
                     H.download(search=self.combined_search)
@@ -431,7 +455,19 @@ class HRRRData:
                     continue
 
                 try:
-                    H = Herbie(date=run_time, fxx=fxx_end, model='hrrr', product='sfc', verbose=False)
+                    herbie_params = {
+                        'date': run_time,
+                        'fxx' : fxx_end,
+                        'model' : 'hrrr',
+                        'product' : 'sfc',
+                        'verbose' : False
+                    }
+                    # herbie has its own default param for save_dir, so this avoids
+                    # interfering with it
+                    if self.raw_dir:
+                        herbie_params['save_dir'] = self.raw_dir
+
+                    H = Herbie(**herbie_params)
                     if H.grib is not None:
                         if self.verbose:
                             print(f"   Using run {run_time}: fxx={offset+1} to fxx={fxx_end}")
@@ -447,7 +483,19 @@ class HRRRData:
 
         def download_forecast_hour(fxx):
             try:
-                H = Herbie(date=latest_run, fxx=fxx, model='hrrr', product='sfc', verbose=False)
+                herbie_params = {
+                    'date': latest_run,
+                    'fxx' : fxx,
+                    'model' : 'hrrr',
+                    'product' : 'sfc',
+                    'verbose' : False
+                }
+                # herbie has its own default param for save_dir, so this avoids
+                # interfering with it
+                if self.raw_dir:
+                    herbie_params['save_dir'] = self.raw_dir
+
+                H = Herbie(**herbie_params)
                 H.download(search=self.combined_search)
                 result = H.xarray(search=self.combined_search, remove_grib=False)
 
@@ -586,7 +634,17 @@ class HRRRData:
             def download_task(date):
                 for attempt in range(1, max_attempts + 1):
                     try:
-                        H = Herbie(date=date, fxx=0, verbose=False)
+                        herbie_params = {
+                            'date': date,
+                            'fxx' : 0,
+                            'verbose' : False
+                        }
+                        # herbie has its own default param for save_dir, so this avoids
+                        # interfering with it
+                        if self.raw_dir:
+                            herbie_params['save_dir'] = self.raw_dir
+
+                        H = Herbie(**herbie_params)
                         if H.grib is not None:
                             H.download(search=self.combined_search)
                             return H
