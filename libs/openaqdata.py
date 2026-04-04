@@ -34,7 +34,8 @@ class OpenAQData:
         elevation_scale_factor=100,
         verbose=0,              # 0 = all msgs, 1 = prog bar + errors, 2 = only errors
         is_historical=False,    # if true, queries hourly instead of measurements endpoint
-        keep_outliers=False
+        max_zscore=float('inf'),# std devs above the mean that is acceptable
+        max_pm25=float('inf')   # max allowable pm25 value
     ):
         '''
         Pipeline:
@@ -102,25 +103,15 @@ class OpenAQData:
             )
             df_measurements = self._load_measurements_from_csv_cache(save_dir)
 
-        # init IDW
-        idw = IDW(
-            power,
-            neighbors,
-            dim,
-            elevation_path,
-            elevation_scale_factor,
-            use_variable_blur=False,
-            verbose=self.VERBOSE
-        )
-
         # preprocess dataframes 
         df_measurements, df_locations = self._preprocess_dataframes(
             df_measurements,
             df_locations,
             dim,
             self.extent,
+            max_zscore=max_zscore,
+            max_pm25=max_pm25,
             whitelist=whitelist,
-            keep_outliers=keep_outliers
         )
 
         self.sensor_locations = dict(
@@ -138,6 +129,17 @@ class OpenAQData:
                 if use_interpolation
                 else "IDW interpolation disabled, returning ground site grids."
             )
+
+        # init IDW
+        idw = IDW(
+            power,
+            neighbors,
+            dim,
+            elevation_path,
+            elevation_scale_factor,
+            use_variable_blur=False,
+            verbose=self.VERBOSE
+        )
 
         grids = (
             idw.interpolate_frames(ground_site_grids)
@@ -1158,11 +1160,10 @@ class OpenAQData:
         df_locations,
         dim,
         extent,
-        min_uptime=0.0,
+        min_uptime=0.01,
         max_zscore=3,
         max_pm25=300,
         whitelist=['AirNow', 'Clarity', 'AirGradient'],
-        keep_outliers=False
     ):
         #### start helpers
         # filter out sensors that are not in the whitelist
@@ -1215,14 +1216,42 @@ class OpenAQData:
             return temp_df
 
         # replace all nans with a forward and back fill
-        def impute_nans_with_fbfill(df):
-            if self.VERBOSE == 0:
-                print(
-                    f"Total values that will be imputed from dead sensors "
-                    f"and outliers:\n"
-                    f"{df.isna().sum().sort_values(ascending=False)}\n"
-                )
-            return df.ffill().bfill()
+        def impute_nans_with_fbfill(df, option='temporal'):
+            '''
+            Replaces nans with a forward/back fill
+                options:
+                    - temporal: If a sensor reports nan, forward then backfill it.
+                        The result is every single value will be filled
+                    - spatial: If a whole row of sensors reports nan, then you can
+                        forward then backfill it. The result is that the only time
+                        sensors are imputed is if every other sensor for the same
+                        timestep also report nan.
+                Use temporal if you just want to impute every value. Use spatial if
+                    you want spatial interpolation to handle the missing values,
+                    and only use imputation when a frame won't have any values.
+            '''
+            if option == 'temporal':
+                if self.VERBOSE == 0:
+                    print(
+                        f"Total values that will be imputed from dead sensors "
+                        f"and outliers:\n"
+                        f"{df.isna().sum().sort_values(ascending=False)}\n"
+                    )
+                return df.ffill().bfill()
+            elif option == 'spatial':
+                nan_rows = df.isna().all(axis=1)
+                if self.VERBOSE == 0:
+                    print(
+                        f"Total frames that will be imputed from dead sensors "
+                        f"and outliers:\n"
+                        f"{nan_rows.sum()}\n"
+                    )
+                filled = df.ffill().bfill()
+                res = df.copy()
+                res.loc[nan_rows] = filled.loc[nan_rows]
+                return res
+            else:
+                raise ValueError(f'Invalid option recieved. Pick from {valid_options}')
 
         def drop_sensors_colliding_with_reference_monitors(
             df_measurements,
@@ -1339,14 +1368,8 @@ class OpenAQData:
             if self.is_nowcast
             else filtered_df.iloc[12:].reset_index(drop=True)
         '''
-        filtered_df = (
-            filtered_df
-            if keep_outliers
-            else impute_outliers_with_nan(filtered_df, max_zscore, max_pm25)
-        )
-        # turned off -- decided to let idw spatially fill nans instead of
-        #   temporally ffilling
-        #filtered_df = impute_nans_with_fbfill(filtered_df)
+        filtered_df = impute_outliers_with_nan(filtered_df, max_zscore, max_pm25)
+        filtered_df = impute_nans_with_fbfill(filtered_df, option='spatial')
         filtered_df, filtered_loc = drop_sensors_colliding_with_reference_monitors(
             filtered_df, filtered_loc
         )
