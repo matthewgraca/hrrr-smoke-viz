@@ -231,7 +231,7 @@ class AirNowData:
             np.savez_compressed(
                 processed_cache_dir,
                 data=self.data,
-                ground_site_grids=np.array(self.ground_site_grids, dtype=object),
+                ground_site_grids=self.ground_site_grids,
                 air_sens_loc=air_sens_loc_array,
                 sensor_names=sensor_names_array,
             )
