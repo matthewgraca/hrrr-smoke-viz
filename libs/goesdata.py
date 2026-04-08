@@ -29,7 +29,8 @@ class GOESData:
         verbose=False,
         pre_downloaded=False,# set to True if user already dl'd from aws
         product='ABI-L2-AODC',
-        subproduct='AOD'
+        subproduct='AOD',
+        use_interpolation=True  # spatial and temporal interpolation; false = raw frame data
     ):
         """
         Pipeline:
@@ -83,6 +84,7 @@ class GOESData:
         self.data = []
         prog_bar = tqdm(self._realigned_date_range(start_date, end_date))
         for date in prog_bar:
+            error_raised = False
             try:
                 # ingest
                 prog_bar.set_description(self._retrieve_data_str(date))
@@ -101,22 +103,29 @@ class GOESData:
             except FileNotFoundError:
                 # file not found in aws, i.e. satellite outage; use prev frame
                 outages += 1
-                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
+                error_raised = True
             except ValueError as e:
                 # likely a wrong arg you need to look at
                 errors += 1
                 tqdm.write('⁉️  Check if your args are valid.')
                 tqdm.write(f'ValueError: {e}')
-                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
+                error_raised = True
             except Exception as e:
                 # generic message, default to prev frame. usually corrupt data
                 # unknown errors should print thru verbose level
                 errors += 1
                 tqdm.write(self._unhandled_error_msg(date, e))
-                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
+                error_raised = True
+            finally:
+                if error_raised:
+                    gridded_data = (
+                        self._use_prev_frame(self.data, dim, date, verbose)
+                        if use_interpolation
+                        else np.full((dim, dim), np.nan)
+                    )
 
-            prog_bar.set_description(self._complete_ingest_str(date))
-            self.data.append(gridded_data)
+                prog_bar.set_description(self._complete_ingest_str(date))
+                self.data.append(gridded_data)
         
         if outages > 0: print(f"🛰️ 🪦 {outages} outage(s) imputed.")
         if errors > 0: print(f"🤷⁉️  {errors} error(s) imputed.")
