@@ -45,6 +45,7 @@ class AirNowData:
         verbose=0,
         zscore_threshold=3,
         hard_cap=300,
+        min_uptime=0.01
     ):
         self.air_sens_loc = {}
         self.start_date = start_date
@@ -152,7 +153,7 @@ class AirNowData:
                 "invalid sensor data, imputing non-reporting sensors, imputing "
                 "outliers, and fillings all gaps with forward/backward fill"
             )
-        list_df = self._process_dataframe(airnow_df, start_date, end_date)
+        list_df = self._process_dataframe(airnow_df, start_date, end_date, min_uptime)
  
         if verbose < 1:
             print("Plotting sensor data onto grid...")
@@ -546,7 +547,10 @@ class AirNowData:
             sensor_dfs = []
             for col in df['FullAQSCode'].unique():
                 a = pd.merge(dates_df, df.loc[df['FullAQSCode'] == col], on='UTC', how='left')
+                obj_cols = a.select_dtypes(include=['object']).columns
+                a[obj_cols] = a[obj_cols].astype('string')
                 a[cols_to_interpolate] = a[cols_to_interpolate].ffill().bfill()
+                a = a.dropna(subset=['FullAQSCode']) # f/b fill generates some full-nan rows
                 sensor_dfs.append(a)
             return pd.concat(sensor_dfs, ignore_index=True)
 
@@ -592,7 +596,7 @@ class AirNowData:
             )
             return df[~out_of_extent].reset_index(drop=True)
 
-        def filter_low_sensor_timesteps(df, min_reporting=0.3):
+        def filter_low_sensor_frames(df, min_reporting=0.3):
             '''
             Checks if each frame has the required amount of minimum sensors.
             Sets sensors to nan otherwise.
@@ -611,7 +615,7 @@ class AirNowData:
         filtered_data = generate_samples_from_time(filtered_data, start_date, end_date)
         filtered_data = remove_zscore_outliers(filtered_data, self.zscore_threshold)
         filtered_data = apply_hard_cap(filtered_data, self.hard_cap)
-        filtered_data = filter_low_sensor_timesteps(filtered_data)
+        filtered_data = filter_low_sensor_frames(filtered_data)
 
         return [group for name, group in filtered_data.groupby('UTC')]
 
