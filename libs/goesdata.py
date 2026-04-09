@@ -98,7 +98,7 @@ class GOESData:
                     ds, extent, hourly_mean, res_x, res_y, product, subproduct
                 )
                 gridded_data = self._ds_to_gridded_data(
-                    ds, extent, dim, date, verbose
+                    ds, extent, dim, date, verbose, use_interpolation
                 )
             except FileNotFoundError:
                 # file not found in aws, i.e. satellite outage; use prev frame
@@ -311,13 +311,13 @@ class GOESData:
 
         return ds
 
-    def _ds_to_gridded_data(self, ds, extent, dim, date, verbose):
+    def _ds_to_gridded_data(self, ds, extent, dim, date, verbose, use_interpolation):
         """
         Aliases the pipeline of converting the processed dataset into gridded
             data.
         1. Subregions dataset
         2. Resizes to given dimensions
-        3. Interpolation/imputation of bad data
+        3. Interpolation/imputation of bad data, if desired
             - Currently uses bilinear interpolation
         """
         def bilinear_interpolate(data):
@@ -345,11 +345,12 @@ class GOESData:
 
         gridded_data = self._subregion(ds, extent).data
         gridded_data = cv2.resize(gridded_data, (dim, dim))
-        gridded_data = (
-            bilinear_interpolate(gridded_data)
-            if self._data_meets_nonnan_threshold(gridded_data, 0.20)
-            else self._use_prev_frame(self.data, dim, date, verbose)
-        )
+        if use_interpolation:
+            gridded_data = (
+                bilinear_interpolate(gridded_data)
+                if self._data_meets_nonnan_threshold(gridded_data, 0.20)
+                else self._use_prev_frame(self.data, dim, date, verbose)
+            )
         
         return gridded_data
 
