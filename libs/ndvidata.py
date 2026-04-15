@@ -95,10 +95,10 @@ class NDVIData:
         return v
     
     ### NOTE: Ingestion method
-    def _ingest_hdfs(self, extent, start_date, end_date, raw_dir):
+    def _ingest_hdfs(self, extent, start_date, end_date, raw_dir, reingest=False):
         lon_min, lon_max, lat_min, lat_max = extent
         if self.VERBOSE < 2:
-            print('Submitting job to Harmony...', end= ' ')
+            tqdm.write('Submitting job to Harmony...', end= ' ')
 
         harmony_client = Client() # pulls from .netrc file
         request = Request(
@@ -113,12 +113,12 @@ class NDVIData:
         job_id = harmony_client.submit(request)
         job_desc = harmony_client.status(job_id)
         futures = harmony_client.download_all(
-            job_id, directory=raw_dir, overwrite=False
+            job_id, directory=raw_dir, overwrite=True if reingest else False
         )
 
         if self.VERBOSE < 2:
-            print('complete.')
-            print('Downloading granules...')
+            tqdm.write('complete.')
+            tqdm.write('Downloading granules...')
 
         # silences when job completes.
         # why they look here and auto turn it on for you is... idk lol
@@ -139,15 +139,11 @@ class NDVIData:
         return
 
     ### NOTE: Frame processing methods
-    def _get_subdataset(self, hdf_path, keyword='NDVI'):
-        # opens dataset, exposes subdatasets
-        ds = gdal.Open(hdf_path)
-        if ds is None:
-            raise RuntimeError(f'Unable to open {hdf_path}.')
+    def _get_subdataset(self, ds, keyword='NDVI'):
+        # exposes subdatasets
         sub_ds = ds.GetSubDatasets()
         if not sub_ds:
             raise RuntimeError(f'No subdatasets found.')
-        ds = None # clean up
 
         # searches for keyword in subdatasets
         matches = [
@@ -211,18 +207,21 @@ class NDVIData:
             A(\d{7})\.  # julian day of acquisition
             (\w{6})\.   # tile identifier
             (\d{3})\.   # collection version
-            (\d{13})    # julian date of production
+            (\d{13}).   # julian date of production
+            hdf         # file ext
         """, re.VERBOSE)
         dates = pd.date_range(
             start_date, end_date, freq='h', inclusive='left'
         )
         filled_dates = {d : None for d in dates}
-        hdf_files = sorted(os.listdir(raw_dir))
+        hdf_files = [f for f in sorted(os.listdir(raw_dir)) if pattern.match(f)]
         if self.VERBOSE < 2:
             print('Processing hdf files into numpy frames...')
         for f in tqdm(hdf_files, disable=self.VERBOSE == 2):
             frame = self._process_subdataset_into_numpy_frame(
-                raw_dir, f, extent, dim, NDVI_SCALE_FACTOR
+                raw_dir, f,
+                extent, dim, NDVI_SCALE_FACTOR,
+                start_date, end_date
             )
 
             # map frame to day the image was taken
@@ -239,13 +238,51 @@ class NDVIData:
         return filled_dates
     
     ### NOTE: dataset building/alignment methods
-    def _process_subdataset_into_numpy_frame(self, raw_dir, f, extent, dim, NDVI_SCALE_FACTOR):
-        ndvi_sds = self._get_subdataset(
-            os.path.join(raw_dir, f), keyword='NDVI'
-        )
-        frame = self._reproject(ndvi_sds, extent)
-        frame = NDVI_SCALE_FACTOR * frame
-        frame = cv2.resize(src=frame, dsize=(dim, dim))
+    def _process_subdataset_into_numpy_frame(
+        self,
+        raw_dir,
+        f,
+        extent,
+        dim,
+        NDVI_SCALE_FACTOR,
+        start_date,
+        end_date
+    ):
+        MAX_REINGESTS = 2
+        reingest_count = 0
+        success = False
+        while not success and reingest_count <= MAX_REINGESTS:
+            try:
+                hdf_path = os.path.join(raw_dir, f)
+                ds = gdal.Open(hdf_path)
+                if ds is None:
+                    raise RuntimeError(f'Unable to open hdf file at {hdf_path}')
+                success = True
+            except Exception:
+                ds = None
+                tqdm.write(f'Unable to open {hdf_path}; reingesting')
+                self._ingest_hdfs(
+                    extent,
+                    start_date, end_date,
+                    raw_dir,
+                    reingest=True
+                )
+                reingest_count += 1
+
+        if not success:
+            ds = None
+            raise RuntimeError(
+                f'Unable to open after {MAX_REINGESTS} attempts. '
+                f'Check file for corruption.'
+            )
+            # may return nan frames here instead of hard failing?
+            # there is a integrity check for nans later, keep that in mind
+        else:
+            ndvi_sds = self._get_subdataset(ds, keyword='NDVI')
+            frame = self._reproject(ndvi_sds, extent)
+            frame = NDVI_SCALE_FACTOR * frame
+            frame = cv2.resize(src=frame, dsize=(dim, dim))
+            ds = None
         return frame
 
     def _search_pattern(self, pattern, string):
