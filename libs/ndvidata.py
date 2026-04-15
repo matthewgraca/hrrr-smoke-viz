@@ -273,7 +273,7 @@ class NDVIData:
             ds = None
             raise RuntimeError(
                 f'Unable to open after {MAX_REINGESTS} attempts. '
-                f'Check file for corruption.'
+                f'The original file from the database is likely corrupt.'
             )
             # may return nan frames here instead of hard failing?
             # there is a integrity check for nans later, keep that in mind
