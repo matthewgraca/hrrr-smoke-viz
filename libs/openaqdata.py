@@ -21,8 +21,8 @@ class OpenAQData:
         product=2,              # sensor data to ingest (2 is pm2.5)
         is_nowcast=False,       # determines if the values should be nowcast or raw
         whitelist=['AirNow', 'Clarity', 'AirGradient'],
-        save_dir=None,          # where json files should be saved to
-        save_path=None,         # where the final numpy file should be saved to
+        save_dir=None,          # where json files should be saved to, e.g. 'raw/openaq'
+        save_path=None,         # where the final numpy file is saved to. if none provided, will save to '{save_dir}/openaq_processed.npz'
         load_json=False,        # specifies that jsons should be loaded from cache
         load_csv=False,         # specifies that the csvs should be loaded from cache
         load_numpy=False,       # specifies the numpy file should be loaded from cache
@@ -72,7 +72,7 @@ class OpenAQData:
             else self._validate_dates(start_date, end_date)
         ) 
         self.extent = None if load_numpy else self._validate_extent(extent)
-        self._validate_save_dir(save_dir)
+        os.makedirs(save_dir, exist_ok=True)
         self.is_nowcast = is_nowcast
 
         # datetimes to use for queries
@@ -1039,15 +1039,6 @@ class OpenAQData:
             raise ValueError('Longitude and/or latitude values are invalid.')
 
         return extent
-    
-    def _validate_save_dir(self, save_dir):
-        if not os.path.isdir(save_dir):
-            raise ValueError(
-                f'Invalid save directory. '
-                f'Either correct it or create {save_dir}.'
-            )
-
-        return
 
     ### NOTE: Numpy processing methods
 
