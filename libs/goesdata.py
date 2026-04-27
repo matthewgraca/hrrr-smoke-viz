@@ -606,11 +606,19 @@ class GOESData:
         med = product_quality_flags[product]['med']
 
         # https://www.noaasis.noaa.gov/pdf/ps-pvr/goes18/ABI/Aerosol%20Detection/Full/GOES-18_ABI_L2_ADP_Full_ReadMe.pdf
-        # extract only bits 2-3; those are the smoke-relevant ones
         if product == 'ABI-L2-ADPC':
-            dqf = ds['DQF'].astype('uint8')
-            smoke_bits = dqf & 0b1100 
-            top_2_quality = (smoke_bits == high) | (smoke_bits == med)
+            # extract only bits 2-3; those are the smoke-relevant ones
+            if subproduct == 'Smoke':
+                dqf = ds['DQF'].astype('uint8')
+                smoke_bits = dqf & 0b1100 
+                top_2_quality = (smoke_bits == high) | (smoke_bits == med)
+            # dust uses bits 4 and 5
+            elif subproduct == 'Dust':
+                dqf = ds['DQF'].astype('uint8')
+                dust_bits = dqf & 0b110000 
+                top_2_quality = (dust_bits == high) | (dust_bits == med)
+            else:
+                raise ValueError(f'Subproduct of ABI-L2-ADPC must be either Smoke or Dust, not {subproduct}')
         else:
             top_2_quality = (ds['DQF'] == high) | (ds['DQF'] == med)
 
