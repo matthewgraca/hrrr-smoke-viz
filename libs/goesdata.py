@@ -111,20 +111,20 @@ class GOESData:
                 # file not found in aws, i.e. satellite outage; use prev frame
                 outages += 1
                 error_raised = True
-                tqdm.write(traceback.formax_exc())
+                tqdm.write(traceback.format_exc())
             except ValueError as e:
                 # likely a wrong arg you need to look at
                 errors += 1
                 tqdm.write('⁉️  Check if your args are valid.')
                 tqdm.write(f'ValueError: {e}')
-                tqdm.write(traceback.formax_exc())
+                tqdm.write(traceback.format_exc())
                 error_raised = True
             except Exception as e:
                 # generic message, default to prev frame. usually corrupt data
                 # unknown errors should print thru verbose level
                 errors += 1
                 tqdm.write(self._unhandled_error_msg(date, e))
-                tqdm.write(traceback.formax_exc())
+                tqdm.write(traceback.format_exc())
                 error_raised = True
             finally:
                 if error_raised:
