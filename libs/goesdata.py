@@ -542,7 +542,7 @@ class GOESData:
 
         return subset
 
-    def _quality_flags(self, product, ds):
+    def _quality_flags(self, product, subproduct, ds):
         '''
         Each product has its own data quality flag (DQF).
 
@@ -561,6 +561,19 @@ class GOESData:
                     valid_fire = high
                     valid_nonfire = medium
         '''
+        ADP_products = {
+            'Smoke': {
+                'high' : 0 if 'PQI' in ds else 12,
+                'med' : 4 if 'PQI' in ds else 4,
+                'low' : 8 if 'PQI' in ds else 0,
+                'no_retrieval' : 12 if 'PQI' in ds else np.nan # idk what it is, need to check
+            },
+            'Dust': {
+                'high' : 0 if 'PQI' in ds else 48,
+                'med' : 16 if 'PQI' in ds else 16,
+                'low' : 32 if 'PQI' in ds else 0,
+            }
+        }
         return {
             'ABI-L2-AODC' : {
                 'high' : 0,
@@ -568,12 +581,7 @@ class GOESData:
                 'low' : 2,
                 'no_retrieval' : 3
             },
-            'ABI-L2-ADPC' : {
-                'high' : 0 if 'PQI' in ds else 12,
-                'med' : 4 if 'PQI' in ds else 4,
-                'low' : 8 if 'PQI' in ds else 0,
-                'no_retrieval' : 12 if 'PQI' in ds else np.nan # idk what it is, need to check
-            },
+            'ABI-L2-ADPC' : ADP_products[subproduct],
             'ABI-L2-FDCC' : {
                 'high' : 0,     #'valid_fire' : 0,
                 'med' : 1,      #'valid_nonfire' : 1,
@@ -584,7 +592,7 @@ class GOESData:
             }
         }
 
-    def _high_quality_condition(self, product, ds):
+    def _high_quality_condition(self, product, subproduct, ds):
         '''
         For the most part, you can find documentation that supports the
         usage of "top 2 quality values" for the product you use.
@@ -593,7 +601,7 @@ class GOESData:
 
         Returns a condition you plug into ds.where()
         '''
-        product_quality_flags = self._quality_flags(product, ds)
+        product_quality_flags = self._quality_flags(product, subproduct, ds)
         high = product_quality_flags[product]['high']
         med = product_quality_flags[product]['med']
 
@@ -620,6 +628,7 @@ class GOESData:
         For binary variables, the median could also work here. Mean could
             also work if it's just 0 vs 1, and represent confidence over
             the hour.
+            - we just use a mask. If the pixel ever had a 1, then it'll be 1
 
         For categorical variables (more than 2), then the mode would work.
 
@@ -629,11 +638,12 @@ class GOESData:
         # for FRP (and Area, Temp) specifically, we want the background to 
         # be 0, not nan and thus subject to interpolation
         products_to_fill_with_zero = ['Mask', 'Temp', 'Area', 'Power']
-        mean = (
-            high_quality_values.mean(dim='t', skipna=True)
-            if hourly_mean
-            else high_quality_values 
-        )
+        if hourly_mean:
+            mean = high_quality_values.mean(dim='t', skipna=True)
+            if subproduct == 'Mask':
+                mean = high_quality_values.max(dim='t', skipna=True)
+        else:
+            mean = high_quality_values
         mean = mean.fillna(0) if subproduct in products_to_fill_with_zero else mean
         return ds.assign(product_mean=mean)
 
@@ -646,7 +656,7 @@ class GOESData:
         # NOTE the current pipeline only supports one product at a time
         # if we need the others, we can paramaterize this.
         high_quality_values = ds[subproduct].where(
-            self._high_quality_condition(product, ds)
+            self._high_quality_condition(product, subproduct, ds)
         )
         return self._compute_average(
             hourly_mean, subproduct, ds, high_quality_values
