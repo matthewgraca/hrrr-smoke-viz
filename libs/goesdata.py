@@ -561,36 +561,47 @@ class GOESData:
                     valid_fire = high
                     valid_nonfire = medium
         '''
-        ADP_products = {
-            'Smoke': {
-                'high' : 0 if 'PQI' in ds else 12,
-                'med' : 4 if 'PQI' in ds else 4,
-                'low' : 8 if 'PQI' in ds else 0,
-                'no_retrieval' : 12 if 'PQI' in ds else np.nan # idk what it is, need to check
-            },
-            'Dust': {
-                'high' : 0 if 'PQI' in ds else 48,
-                'med' : 16 if 'PQI' in ds else 16,
-                'low' : 32 if 'PQI' in ds else 0,
-            }
-        }
-        return {
-            'ABI-L2-AODC' : {
-                'high' : 0,
-                'med' : 1,
-                'low' : 2,
-                'no_retrieval' : 3
-            },
-            'ABI-L2-ADPC' : ADP_products[subproduct],
-            'ABI-L2-FDCC' : {
+        # shared?
+        shared_fdc_flags = {
                 'high' : 0,     #'valid_fire' : 0,
                 'med' : 1,      #'valid_nonfire' : 1,
                 'invalid_cloud' : 2,
                 'invalid_glint_surface_offdisk': 3,
                 'invalid_bad_input': 4,
                 'invalid_algorithm_failure': 5,
+        }
+
+        # product_flag[product][subproduct] -> dictionary of quality flags 
+        product_flags = {
+            'ABI-L2-AODC' : {
+                'AOD': {
+                    'high' : 0,
+                    'med' : 1,
+                    'low' : 2,
+                    'no_retrieval' : 3
+                }
+            },
+            'ABI-L2-ADPC': {
+                'Smoke': {
+                    'high' : 0 if 'PQI' in ds else 12,
+                    'med' : 4 if 'PQI' in ds else 4,
+                    'low' : 8 if 'PQI' in ds else 0,
+                    'no_retrieval' : 12 if 'PQI' in ds else np.nan # idk what it is, need to check
+                },
+                'Dust': {
+                    'high' : 0 if 'PQI' in ds else 48,
+                    'med' : 16 if 'PQI' in ds else 16,
+                    'low' : 32 if 'PQI' in ds else 0,
+                }
+            },
+            'ABI-L2-FDCC' : {
+                'Power': shared_fdc_flags,
+                'Area': shared_fdc_flags,
+                'Mask': shared_fdc_flags,
+                'Temp': shared_fdc_flags,
             }
         }
+        return product_flags[product][subproduct]
 
     def _high_quality_condition(self, product, subproduct, ds):
         '''
@@ -602,8 +613,8 @@ class GOESData:
         Returns a condition you plug into ds.where()
         '''
         product_quality_flags = self._quality_flags(product, subproduct, ds)
-        high = product_quality_flags[product]['high']
-        med = product_quality_flags[product]['med']
+        high = product_quality_flags['high']
+        med = product_quality_flags['med']
 
         # https://www.noaasis.noaa.gov/pdf/ps-pvr/goes18/ABI/Aerosol%20Detection/Full/GOES-18_ABI_L2_ADP_Full_ReadMe.pdf
         if product == 'ABI-L2-ADPC':
