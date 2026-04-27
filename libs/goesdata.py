@@ -13,6 +13,7 @@ import multiprocessing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from scipy.interpolate import griddata
+import traceback
 
 class GOESData:
     def __init__(
@@ -29,7 +30,9 @@ class GOESData:
         verbose=False,
         pre_downloaded=False,# set to True if user already dl'd from aws
         product='ABI-L2-AODC',
-        subproduct='AOD'
+        subproduct='AOD',
+        use_interpolation=True,  # spatial and temporal interpolation; false = raw frame data
+        ignore_futurewarnings=True # needs update on goes2go end wrt xarray
     ):
         """
         Pipeline:
@@ -57,6 +60,11 @@ class GOESData:
                 downloaded the data; for reference, just verifying the 
                 ingest takes 36 minutes of compute due to disk read/write 
         """
+        # goes2go xarray needs to pass some argument in the future; nothing we can do here
+        if ignore_futurewarnings:
+            import warnings
+            warnings.simplefilter(action='ignore', category=FutureWarning)
+
         # validate parameters
         if save_cache or load_cache:
             if cache_path is None:
@@ -83,6 +91,7 @@ class GOESData:
         self.data = []
         prog_bar = tqdm(self._realigned_date_range(start_date, end_date))
         for date in prog_bar:
+            error_raised = False
             try:
                 # ingest
                 prog_bar.set_description(self._retrieve_data_str(date))
@@ -96,27 +105,37 @@ class GOESData:
                     ds, extent, hourly_mean, res_x, res_y, product, subproduct
                 )
                 gridded_data = self._ds_to_gridded_data(
-                    ds, extent, dim, date, verbose
+                    ds, extent, dim, date, verbose, use_interpolation
                 )
             except FileNotFoundError:
                 # file not found in aws, i.e. satellite outage; use prev frame
                 outages += 1
-                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
+                error_raised = True
+                tqdm.write(traceback.formax_exc())
             except ValueError as e:
                 # likely a wrong arg you need to look at
                 errors += 1
                 tqdm.write('⁉️  Check if your args are valid.')
                 tqdm.write(f'ValueError: {e}')
-                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
+                tqdm.write(traceback.formax_exc())
+                error_raised = True
             except Exception as e:
                 # generic message, default to prev frame. usually corrupt data
                 # unknown errors should print thru verbose level
                 errors += 1
                 tqdm.write(self._unhandled_error_msg(date, e))
-                gridded_data = self._use_prev_frame(self.data, dim, date, verbose)
+                tqdm.write(traceback.formax_exc())
+                error_raised = True
+            finally:
+                if error_raised:
+                    gridded_data = (
+                        self._use_prev_frame(self.data, dim, date, verbose)
+                        if use_interpolation
+                        else np.full((dim, dim), np.nan)
+                    )
 
-            prog_bar.set_description(self._complete_ingest_str(date))
-            self.data.append(gridded_data)
+                prog_bar.set_description(self._complete_ingest_str(date))
+                self.data.append(gridded_data)
         
         if outages > 0: print(f"🛰️ 🪦 {outages} outage(s) imputed.")
         if errors > 0: print(f"🤷⁉️  {errors} error(s) imputed.")
@@ -302,13 +321,13 @@ class GOESData:
 
         return ds
 
-    def _ds_to_gridded_data(self, ds, extent, dim, date, verbose):
+    def _ds_to_gridded_data(self, ds, extent, dim, date, verbose, use_interpolation):
         """
         Aliases the pipeline of converting the processed dataset into gridded
             data.
         1. Subregions dataset
         2. Resizes to given dimensions
-        3. Interpolation/imputation of bad data
+        3. Interpolation/imputation of bad data, if desired
             - Currently uses bilinear interpolation
         """
         def bilinear_interpolate(data):
@@ -336,11 +355,12 @@ class GOESData:
 
         gridded_data = self._subregion(ds, extent).data
         gridded_data = cv2.resize(gridded_data, (dim, dim))
-        gridded_data = (
-            bilinear_interpolate(gridded_data)
-            if self._data_meets_nonnan_threshold(gridded_data, 0.20)
-            else self._use_prev_frame(self.data, dim, date, verbose)
-        )
+        if use_interpolation:
+            gridded_data = (
+                bilinear_interpolate(gridded_data)
+                if self._data_meets_nonnan_threshold(gridded_data, 0.20)
+                else self._use_prev_frame(self.data, dim, date, verbose)
+            )
         
         return gridded_data
 
@@ -522,7 +542,7 @@ class GOESData:
 
         return subset
 
-    def _quality_flags(self, product, ds):
+    def _quality_flags(self, product, subproduct, ds):
         '''
         Each product has its own data quality flag (DQF).
 
@@ -541,6 +561,19 @@ class GOESData:
                     valid_fire = high
                     valid_nonfire = medium
         '''
+        ADP_products = {
+            'Smoke': {
+                'high' : 0 if 'PQI' in ds else 12,
+                'med' : 4 if 'PQI' in ds else 4,
+                'low' : 8 if 'PQI' in ds else 0,
+                'no_retrieval' : 12 if 'PQI' in ds else np.nan # idk what it is, need to check
+            },
+            'Dust': {
+                'high' : 0 if 'PQI' in ds else 48,
+                'med' : 16 if 'PQI' in ds else 16,
+                'low' : 32 if 'PQI' in ds else 0,
+            }
+        }
         return {
             'ABI-L2-AODC' : {
                 'high' : 0,
@@ -548,12 +581,7 @@ class GOESData:
                 'low' : 2,
                 'no_retrieval' : 3
             },
-            'ABI-L2-ADPC' : {
-                'high' : 0 if 'PQI' in ds else 12,
-                'med' : 4 if 'PQI' in ds else 4,
-                'low' : 8 if 'PQI' in ds else 0,
-                'no_retrieval' : 12 if 'PQI' in ds else np.nan # idk what it is, need to check
-            },
+            'ABI-L2-ADPC' : ADP_products[subproduct],
             'ABI-L2-FDCC' : {
                 'high' : 0,     #'valid_fire' : 0,
                 'med' : 1,      #'valid_nonfire' : 1,
@@ -564,7 +592,7 @@ class GOESData:
             }
         }
 
-    def _high_quality_condition(self, product, ds):
+    def _high_quality_condition(self, product, subproduct, ds):
         '''
         For the most part, you can find documentation that supports the
         usage of "top 2 quality values" for the product you use.
@@ -573,16 +601,24 @@ class GOESData:
 
         Returns a condition you plug into ds.where()
         '''
-        product_quality_flags = self._quality_flags(product, ds)
+        product_quality_flags = self._quality_flags(product, subproduct, ds)
         high = product_quality_flags[product]['high']
         med = product_quality_flags[product]['med']
 
         # https://www.noaasis.noaa.gov/pdf/ps-pvr/goes18/ABI/Aerosol%20Detection/Full/GOES-18_ABI_L2_ADP_Full_ReadMe.pdf
-        # extract only bits 2-3; those are the smoke-relevant ones
         if product == 'ABI-L2-ADPC':
-            dqf = ds['DQF'].astype('uint8')
-            smoke_bits = dqf & 0b1100 
-            top_2_quality = (smoke_bits == high) | (smoke_bits == med)
+            # extract only bits 2-3; those are the smoke-relevant ones
+            if subproduct == 'Smoke':
+                dqf = ds['DQF'].astype('uint8')
+                smoke_bits = dqf & 0b1100 
+                top_2_quality = (smoke_bits == high) | (smoke_bits == med)
+            # dust uses bits 4 and 5
+            elif subproduct == 'Dust':
+                dqf = ds['DQF'].astype('uint8')
+                dust_bits = dqf & 0b110000 
+                top_2_quality = (dust_bits == high) | (dust_bits == med)
+            else:
+                raise ValueError(f'Subproduct of ABI-L2-ADPC must be either Smoke or Dust, not {subproduct}')
         else:
             top_2_quality = (ds['DQF'] == high) | (ds['DQF'] == med)
 
@@ -600,6 +636,7 @@ class GOESData:
         For binary variables, the median could also work here. Mean could
             also work if it's just 0 vs 1, and represent confidence over
             the hour.
+            - we just use a mask. If the pixel ever had a 1, then it'll be 1
 
         For categorical variables (more than 2), then the mode would work.
 
@@ -609,11 +646,12 @@ class GOESData:
         # for FRP (and Area, Temp) specifically, we want the background to 
         # be 0, not nan and thus subject to interpolation
         products_to_fill_with_zero = ['Mask', 'Temp', 'Area', 'Power']
-        mean = (
-            high_quality_values.mean(dim='t', skipna=True)
-            if hourly_mean
-            else high_quality_values 
-        )
+        if hourly_mean:
+            mean = high_quality_values.mean(dim='t', skipna=True)
+            if subproduct == 'Mask':
+                mean = high_quality_values.max(dim='t', skipna=True)
+        else:
+            mean = high_quality_values
         mean = mean.fillna(0) if subproduct in products_to_fill_with_zero else mean
         return ds.assign(product_mean=mean)
 
@@ -626,7 +664,7 @@ class GOESData:
         # NOTE the current pipeline only supports one product at a time
         # if we need the others, we can paramaterize this.
         high_quality_values = ds[subproduct].where(
-            self._high_quality_condition(product, ds)
+            self._high_quality_condition(product, subproduct, ds)
         )
         return self._compute_average(
             hourly_mean, subproduct, ds, high_quality_values
