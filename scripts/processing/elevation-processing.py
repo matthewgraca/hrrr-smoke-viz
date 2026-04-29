@@ -3,6 +3,7 @@ import rasterio
 from rasterio.windows import from_bounds
 from scipy import ndimage
 import matplotlib.pyplot as plt
+import argparse
 
 def load_data_convert_grid(tiff_file, lat_bottom, lat_top, lon_bottom, lon_top, target_size=(40, 40)): 
     with rasterio.open(tiff_file) as src:
@@ -35,12 +36,47 @@ def visualize(data, target_size, output_path):
 
 
 def main():
-    tiff_file = '/mnt/wildfire/raw-data/aster-gdem/ASTGTM_NC.003_ASTER_GDEM_DEM_doy2000061000000_aid0001.tif'
-    lat_bottom, lat_top = 33.60, 34.35
-    lon_bottom, lon_top = -118.615, -117.70
-    target_size = (84, 84)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        'tiff_file_path',
+        help='The file path of the tiff file, e.g.: /home/mgraca/Downloads/ASTGTM_NC.003_ASTER_GDEM_DEM_20000301T000000_aid0001.tif'
+    )
+    parser.add_argument(
+        'lat_min',
+        help='Lower latitude, e.g. 33.60',
+        type=float
+    )
+    parser.add_argument(
+        'lat_max',
+        help='Upper latitude, e.g. 34.35',
+        type=float
+    )
+    parser.add_argument(
+        'lon_min',
+        help='Lower longitude, e.g. -118.615',
+        type=float
+    )
+    parser.add_argument(
+        'lon_max',
+        help='Upper longitude, e.g. -117.70',
+        type=float
+    )
+    parser.add_argument(
+        'dim',
+        help='Dimensions of the grid, e.g. 84',
+        type=int
+    )
+    args = parser.parse_args()
 
-    elevation = load_data_convert_grid(tiff_file, lat_bottom, lat_top, lon_bottom, lon_top, target_size)
+    target_size = (args.dim, args.dim)
+    elevation = load_data_convert_grid(
+        args.tiff_file_path,
+        args.lat_min,
+        args.lat_max,
+        args.lon_min,
+        args.lon_max,
+        target_size
+    )
 
     print(f"Shape: {elevation.shape} | Range: [{elevation.min():.0f}, {elevation.max():.0f}]m | Mean: {elevation.mean():.0f}m")
 

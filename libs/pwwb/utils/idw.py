@@ -49,10 +49,6 @@ class IDW:
             distances, and elevation differences for each pixel prior to 
             interpolation.
         """
-        first_frame = frames[0]
-        if not self._validate_grid_is_interpolatable(first_frame):
-            return frames
-
         # one-time compute
         self.closest_coords_and_dists = (
             self._get_closest_coords_and_dists_per_pixel(
@@ -179,10 +175,6 @@ class IDW:
     
     def _get_sensor_coords(self, frames):
         """
-        Initializes where the locations of the sensors are based on whether the
-            pixel is NaN or not. This means that we expect the frame to contain
-            ALL the sensor values (pre-imputed), and non-sensor locations to be
-            NaN.
         Looks at every frame; any (x, y) coordinate that has ever had a real
             value is considered a sensor location.
         """
