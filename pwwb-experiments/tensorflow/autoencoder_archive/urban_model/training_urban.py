@@ -112,8 +112,8 @@ channel_to_idx = {ch : i for i, ch in enumerate(metadata['channel_names'])}
 # load dataset
 print(f'{TextColor.BLUE}Lazy loading datasets...{TextColor.ENDC}')
 train_ds = PWWBPyDataset(
-    x_path=os.path.join(DATA_PATH, 'X_train.npy'),
-    y_path=os.path.join(DATA_PATH, 'Y_train.npy'),
+    x_path=os.path.join(DATA_PATH, 'npy_files/X_train.npy'),
+    y_path=os.path.join(DATA_PATH, 'npy_files/Y_train.npy'),
     batch_size=BATCH_SIZE,
     shuffle=True,
     workers=WORKERS,
@@ -122,8 +122,8 @@ train_ds = PWWBPyDataset(
 print(f'\tTraining dataset loaded: {len(train_ds)} batches loaded.')
 
 valid_ds = PWWBPyDataset(
-    x_path=os.path.join(DATA_PATH, 'X_valid.npy'),
-    y_path=os.path.join(DATA_PATH, 'Y_valid.npy'),
+    x_path=os.path.join(DATA_PATH, 'npy_files/X_valid.npy'),
+    y_path=os.path.join(DATA_PATH, 'npy_files/Y_valid.npy'),
     batch_size=BATCH_SIZE,
     shuffle=False,
     workers=WORKERS,
@@ -186,9 +186,6 @@ dual_ae = local_model.DualAutoencoder(
     observed_channels=[
         metadata['channel_names'].index(ch)
         for ch in metadata['observed_channels']
-    ] + [
-        metadata['channel_names'].index(ch)
-        for ch in metadata['fire_channels']
     ],
     forecast_channels=[
         metadata['channel_names'].index(ch)

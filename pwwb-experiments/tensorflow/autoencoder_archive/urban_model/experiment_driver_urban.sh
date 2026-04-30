@@ -13,22 +13,20 @@
 # Script assumes that training.py is in the current directory, so make sure to
 #   run the script where the training and vis script is.
 
-MODEL_NAME='dual_ae_conv3d_bn'
+MODEL_NAME='dual_ae_gated_skips'
 LOSS_NAME='grid_mae'
 EPOCHS='1'
-EXPERIMENT_NAME='dense_to_conv3d_bn'
-DATA_LOC='/mnt/wildfire/processed-data/2026-04-29/dataset'
+EXPERIMENT_NAME='rawcon_1_epoch'
+DATA_LOC='/mnt/wildfire/training-data/2026-01-27'
 RESULTS_LOC='/mnt/wildfire/experiments'
 IS_TEST=false
-VIZ_ONLY=true
+VIZ_ONLY=false
 
 if [ "$VIZ_ONLY" = true ]; then
     echo -e "\e[1mConducting visualizations only.\e[0m"
-    python /home/mgraca/Workspace/hrrr-smoke-viz/visualizations/prediction_viz_and_metrics.py \
-        --preds "${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}/y_pred.npy" \
-        --trues "${DATA_LOC}/Y_valid.npy" \
-        --inputs "${DATA_LOC}/X_valid.npy" \
-        --out-dir "${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}"
+    python vis.py \
+        "${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}" \
+        "$DATA_LOC"
     exit 0
 fi
 
@@ -51,10 +49,8 @@ else
         "$DATA_LOC" \
         "$RESULTS_LOC" \
         "$EXPERIMENT_NAME"
-    python /home/mgraca/Workspace/hrrr-smoke-viz/visualizations/prediction_viz_and_metrics.py \
-        --preds "${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}/y_pred.npy" \
-        --trues "${DATA_LOC}/Y_valid.npy" \
-        --inputs "${DATA_LOC}/X_valid.npy" \
-        --out-dir "${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}"
+    python vis.py \
+        "${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}" \
+        "$DATA_LOC"
 fi
 
