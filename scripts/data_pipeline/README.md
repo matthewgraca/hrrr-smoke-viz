@@ -40,7 +40,6 @@ Loads each fire's raw data, builds 24-hour sliding windows
 
 ```bash
 python preprocess_fires_airnow.py
-python preprocess_fires_airnow.py --no-aug
 ```
 
 **Outputs**: `processed_airnow/fires/{fire}_X.npy`, `_Y.npy`,

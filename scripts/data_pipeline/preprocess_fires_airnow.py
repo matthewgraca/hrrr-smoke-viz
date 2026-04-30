@@ -7,9 +7,27 @@ import numpy as np
 import gc
 import pickle
 import pandas as pd
+import argparse
 
+def parse_cli_args():
+    parser = argparse.ArgumentParser(
+        description="Collects channel data, metadata, and prepares dataset to be built out."
+    )
+    parser.add_argument(
+        '--fires_dir',
+        default="/home/moh/nasa/hrrr-smoke-viz/data/new_fire_data/fires",
+        help='Directory where the fire samples are located'
+    )
+    parser.add_argument(
+        '--output_dir',
+        default="/home/moh/nasa/hrrr-smoke-viz/data/new_fire_data/processed_airnow",
+        help="Directory where the processed data will live; same directory given to build_dataset_airnow --processed_dir"
+    )
+    return parser.parse_args()
 
+args = parse_cli_args()
 
+# channel name, long channel name, scale?, temporal?, forecast?, branch name
 CHANNEL_SPEC = [
     ('airnow_pm25',           'AirNow_PM25',                  True,  False,   False,  'observed'),
     ('hrrr_wind_u',           'HRRR_Wind_U',                  True,  False,   False,  'observed'),
@@ -19,7 +37,7 @@ CHANNEL_SPEC = [
     ('hrrr_pbl_height',       'HRRR_PBL_Height',              True,  False,   False,  'observed'),
     ('goes',                  'GOES',                         True,  False,   False,  'observed'),
     ('tempo',                 'TEMPO',                        True,  False,   False,  'observed'),
-    ('ndvi',                  'NDVI',                         True,  False,   False,  'observed'),
+    ('ndvi',                  'NDVI',                         False,  False,   False,  'observed'),
     ('elevation',             'Elevation',                    True,  False,   False,  'observed'),
     ('temporal_0',            'Temporal_Month_Sin',           False, True,    False,  'observed'),
     ('temporal_1',            'Temporal_Month_Cos',           False, True,    False,  'observed'),
@@ -40,8 +58,8 @@ CHANNEL_SPEC = [
     ('temporal_1',            'Temporal_Month_Cos_Forecast',  False, True,    True,   'forecast'),
 ]
 
-FIRES_BASE = "/home/moh/nasa/hrrr-smoke-viz/data/new_fire_data/fires"
-OUTPUT_DIR = "/home/moh/nasa/hrrr-smoke-viz/data/new_fire_data/processed_airnow"
+FIRES_BASE = args.fires_dir
+OUTPUT_DIR = args.output_dir
 
 ALL_FIRES = [
     ("la",  "eldorado_bobcat"),
@@ -190,7 +208,7 @@ def load_fire(region, fire_name):
                             if has_tempo else None),
         'ndvi':            np.load(f"{fdir}/ndvi_processed.npz",
                                    allow_pickle=True)['data'][:n_t].astype(np.float32),
-        'elevation':       None,
+        'elevation':       np.tile(np.load(f"{fdir}/elevation.npy"), (n_t, 1, 1)),
         'smoke_massden':   (hrrr['smoke_massden'][:n_t].astype(np.float32)
                             if 'smoke_massden' in hrrr else None),
         'goes_frp':        frp_raw[:n_t].astype(np.float32),
@@ -198,7 +216,7 @@ def load_fire(region, fire_name):
                                    allow_pickle=True)['data'][:n_t].astype(np.float32),
         'frp_mask':        compute_frp_mask(frp_raw[:n_t]),
         'frp_time_delta':  compute_frp_time_delta(frp_raw[:n_t]),
-        'time_since_ignition': None,
+        'time_since_ignition': np.load(f"{fdir}/scaled_hours_since_ignition.npy"),
         'hrrr_fc_wind_u':     u[:n_t].astype(np.float32),
         'hrrr_fc_wind_v':     v[:n_t].astype(np.float32),
         'hrrr_fc_wind_speed': np.sqrt(u[:n_t]**2 + v[:n_t]**2).astype(np.float32),
