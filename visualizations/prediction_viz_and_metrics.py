@@ -56,12 +56,18 @@ PM25_VMIN, PM25_VMAX = 0, 75
 
 
 def _squeeze_channel(arr):
-    """Accept (N, T, H, W) or (N, T, 1, H, W); return (N, T, H, W)."""
-    if arr.ndim == 5 and arr.shape[2] == 1:
-        return arr[:, :, 0, :, :]
+    """Accept (N, T, H, W), (N, T, 1, H, W), or (N, T, H, W, 1); return (N, T, H, W)."""
+    err_msg = "Expected (N,T,H,W), (N,T,1,H,W), or (N,T,H,W,1); got {arr.shape}"
+    if arr.ndim == 5:
+        if arr.shape[2] == 1:
+            return arr[:, :, 0, :, :]
+        elif arr.shape[4] == 1:
+            return arr[:, :, :, :, 0]
+        else:
+            raise ValueError(err_msg)
     if arr.ndim == 4:
         return arr
-    raise ValueError(f"Expected (N,T,H,W) or (N,T,1,H,W); got {arr.shape}")
+    raise ValueError(err_msg)
 
 
 def pick_sample_indices(truth_all, n_samples=5):
@@ -287,7 +293,7 @@ def save_full_timeseries(pred_all, truth_all, title, out_dir):
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     return {'full_ts_mae': mae, 'full_ts_rmse': rmse,
-            'full_ts_nrmse': nrmse, 'full_ts_bias': bias, 'full_ts_r': r}
+            'full_ts_nrmse': float(nrmse), 'full_ts_bias': bias, 'full_ts_r': r}
 
 
 def save_nrmse_chart(pred_all, truth_all, title, out_dir):
