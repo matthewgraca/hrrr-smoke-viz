@@ -10,9 +10,28 @@ import shutil
 from sklearn.preprocessing import StandardScaler
 from numpy.lib.format import open_memmap
 
+def parse_cli_args():
+    default_valid = ['palisades_eaton']
+    default_processed_dir = "/home/moh/nasa/hrrr-smoke-viz/data/new_fire_data/processed_airnow" 
 
+    parser = argparse.ArgumentParser(description="Build AirNow train/valid dataset from per-fire files")
+    parser.add_argument('--processed_dir', default=default_processed_dir, 
+                        help='Where are your processed data lives')
+    parser.add_argument('--valid', nargs='+', default=default_valid,
+                        help='Fire names for validation (rest go to training)')
+    parser.add_argument('--downsample', type=int, default=None,
+                        help='Downsample spatial dims by this factor (e.g. 4 for 84->21)')
+    parser.add_argument('--log-target', action='store_true',
+                        help='Apply log1p transform to Y target (compresses heavy tail). '
+                             'Predictions need expm1 inverse-transform for raw-µg/m³ metrics.')
+    parser.add_argument('--exclude', nargs='+', default=[],
+                        help='Fire names to exclude from BOTH train and valid pools '
+                             '(e.g. drop the new PNW fires to test their effect).')
+    return parser.parse_args()
 
-PROCESSED_DIR = "/home/moh/nasa/hrrr-smoke-viz/data/new_fire_data/processed_airnow"
+args = parse_cli_args()
+
+PROCESSED_DIR = args.processed_dir
 FIRES_DIR     = f"{PROCESSED_DIR}/fires"
 OUTPUT_DIR    = f"{PROCESSED_DIR}/dataset"
 
@@ -29,7 +48,6 @@ ALL_FIRE_NAMES = [
     "labor_day_portland",
 ]
 
-DEFAULT_VALID = ["palisades_eaton"]
 
 
 def load_channel_spec():
@@ -96,19 +114,6 @@ def scale_array(X, scalers, scalable_channels):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build AirNow train/valid dataset from per-fire files")
-    parser.add_argument('--valid', nargs='+', default=DEFAULT_VALID,
-                        help='Fire names for validation (rest go to training)')
-    parser.add_argument('--downsample', type=int, default=None,
-                        help='Downsample spatial dims by this factor (e.g. 4 for 84->21)')
-    parser.add_argument('--log-target', action='store_true',
-                        help='Apply log1p transform to Y target (compresses heavy tail). '
-                             'Predictions need expm1 inverse-transform for raw-µg/m³ metrics.')
-    parser.add_argument('--exclude', nargs='+', default=[],
-                        help='Fire names to exclude from BOTH train and valid pools '
-                             '(e.g. drop the new PNW fires to test their effect).')
-    args = parser.parse_args()
-
     valid_fires = args.valid
     excluded = set(args.exclude)
     pool = [f for f in ALL_FIRE_NAMES if f not in excluded]
