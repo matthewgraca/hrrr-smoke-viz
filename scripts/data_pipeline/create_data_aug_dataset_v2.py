@@ -1,52 +1,17 @@
 #!/usr/bin/env python3
-"""
-Wind-aware data augmentation for spatio-temporal forecasting datasets.
-
-Generates 16 variants per sample (1 original + 15 augmented) by applying
-geometric transforms (flips, rotations, transpose, zoom 1.5x/2.0x) to a 5D
-input X = (N, T, H, W, C) and target Y = (N, T, H, W, C_y), correctly
-handling wind-vector channels so the physics stays consistent under flips
-and rotations.
-
-CLI
-───
-    python augment_dataset.py \\
-        --x path/to/X_train.npy --y path/to/Y_train.npy \\
-        --u-channels 1 20 --v-channels 2 21 \\
-        --out-dir augmented/
-
-Writes:
-    augmented/X_aug.npy   (16x augmented copies of X)
-    augmented/Y_aug.npy   (16x augmented copies of Y)
-
-Wind handling
-─────────────
---u-channels and --v-channels are parallel lists of channel indices in X.
-The pair (u_channels[i], v_channels[i]) tells the script "channel u is the
-U-component of a wind vector whose V-component is in channel v." Under
-flips and rotations the script adjusts those signs so the wind direction
-stays physically correct relative to the new geometry.
-
-Pass empty lists to skip wind correction entirely (fine for non-wind data).
-
-Library use
-───────────
-    from augment_dataset import augment_arrays
-    X_aug, Y_aug = augment_arrays(X, Y, u_channels=[1, 20], v_channels=[2, 21])
-"""
+"""Stage 3 — see README.md."""
 
 import argparse
 import gc
+import json
 import os
+import pickle
 
 import numpy as np
 from numpy.lib.format import open_memmap
 from scipy.ndimage import zoom as ndimage_zoom
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Core augmentation primitives
-# ═══════════════════════════════════════════════════════════════════════
 
 def _hflip(x, u_ch, v_ch):
     """Horizontal flip (axis=W). U-component sign flips."""
@@ -97,7 +62,6 @@ def _transpose(x, u_ch, v_ch):
     return out
 
 
-# Y has no wind components — these helpers ignore u_ch / v_ch.
 def _y_hflip(y):     return np.flip(y, axis=3).copy()
 def _y_vflip(y):     return np.flip(y, axis=2).copy()
 def _y_rot90(y):     return np.rot90(y, k=1, axes=(2, 3)).copy()
@@ -220,43 +184,86 @@ def augment_arrays(X, Y, u_channels=None, v_channels=None,
     return X_aug, Y_aug
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# CLI
-# ═══════════════════════════════════════════════════════════════════════
+def scale_inplace(X, scalers, scalable_channels):
+    for ch_idx, sk in scalable_channels.items():
+        m = np.float32(scalers[sk].mean_[0])
+        sd = np.float32(scalers[sk].scale_[0])
+        X[..., ch_idx] = (X[..., ch_idx] - m) / sd
+    return X
+
 
 def main():
     p = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=__doc__,
     )
-    p.add_argument('--x', required=True, help='Path to X.npy (N,T,H,W,C)')
-    p.add_argument('--y', required=True, help='Path to Y.npy (N,T,H,W,C)')
-    p.add_argument('--out-dir', required=True, help='Output directory')
-    p.add_argument('--u-channels', type=int, nargs='+', required=True,
-                   help='Wind-U channel indices in X (e.g. 1 20). Pair-wise '
-                        'matched with --v-channels.')
-    p.add_argument('--v-channels', type=int, nargs='+', required=True,
-                   help='Wind-V channel indices in X (e.g. 2 21).')
+    p.add_argument('--dataset-dir', required=True,
+                   help='Path to dataset dir (stage 2 output) containing '
+                        'X_train_raw.npy etc. and scalers.pkl, channel_spec.json')
+    p.add_argument('--no-aug', action='store_true',
+                   help='Skip augmentation; just scale and write final arrays.')
     p.add_argument('--zoom-levels', type=float, nargs='*', default=[1.5, 2.0])
     args = p.parse_args()
 
-    print(f"  X: {args.x}\n  Y: {args.y}")
-    X = np.load(args.x).astype(np.float32)
-    Y = np.load(args.y).astype(np.float32)
-    print(f"  X shape: {X.shape}\n  Y shape: {Y.shape}")
+    d = args.dataset_dir
+    spec_path    = os.path.join(d, 'channel_spec.json')
+    scalers_path = os.path.join(d, 'scalers.pkl')
+    for path in (spec_path, scalers_path):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"{path} not found. Run stage 2 first.")
 
-    os.makedirs(args.out_dir, exist_ok=True)
-    out_x = os.path.join(args.out_dir, 'X_aug.npy')
-    out_y = os.path.join(args.out_dir, 'Y_aug.npy')
+    with open(spec_path) as f:
+        spec = json.load(f)
+    with open(scalers_path, 'rb') as f:
+        scalers = pickle.load(f)
 
-    print(f"\nAugmenting (16x) ...")
-    augment_arrays(
-        X, Y,
-        u_channels=args.u_channels, v_channels=args.v_channels,
-        zoom_levels=tuple(args.zoom_levels),
-        memmap_path=(out_x, out_y),
-    )
-    print(f"\nWrote {out_x}\nWrote {out_y}")
+    u_channels = spec['wind_u_channels']
+    v_channels = spec['wind_v_channels']
+    scalable_channels = {int(idx): sk
+                         for idx, sk in spec['scalable_channels'].items()}
+    print(f"  Wind: U={u_channels}  V={v_channels}")
+    print(f"  Scalable channels: {len(scalable_channels)}")
+
+    print(f"\n[LOAD] reading raw train + valid ...")
+    X_train_raw = np.load(os.path.join(d, 'X_train_raw.npy')).astype(np.float32)
+    Y_train_raw = np.load(os.path.join(d, 'Y_train_raw.npy')).astype(np.float32)
+    X_valid_raw = np.load(os.path.join(d, 'X_valid_raw.npy')).astype(np.float32)
+    Y_valid_raw = np.load(os.path.join(d, 'Y_valid_raw.npy')).astype(np.float32)
+    print(f"  train: X={X_train_raw.shape}  Y={Y_train_raw.shape}")
+    print(f"  valid: X={X_valid_raw.shape}  Y={Y_valid_raw.shape}")
+
+    if args.no_aug:
+        print(f"\n[SCALE-ONLY] --no-aug given; skipping augmentation.")
+        X_train_out = scale_inplace(X_train_raw, scalers, scalable_channels)
+        Y_train_out = Y_train_raw
+    else:
+        print(f"\n[AUG] Augmenting train (16x) on RAW values ...")
+        X_aug, Y_aug = augment_arrays(
+            X_train_raw, Y_train_raw,
+            u_channels=u_channels, v_channels=v_channels,
+            zoom_levels=tuple(args.zoom_levels),
+        )
+        del X_train_raw, Y_train_raw
+        gc.collect()
+        print(f"  augmented train: X={X_aug.shape}  Y={Y_aug.shape}")
+        print(f"\n[SCALE] applying scalers (fit on raw train in stage 2) ...")
+        X_train_out = scale_inplace(X_aug, scalers, scalable_channels)
+        Y_train_out = Y_aug
+
+    print(f"[SCALE] valid (no aug) ...")
+    X_valid_out = scale_inplace(X_valid_raw, scalers, scalable_channels)
+    Y_valid_out = Y_valid_raw
+
+    print(f"\n[WRITE] final arrays ...")
+    np.save(os.path.join(d, 'X_train.npy'), X_train_out)
+    np.save(os.path.join(d, 'Y_train.npy'), Y_train_out)
+    np.save(os.path.join(d, 'X_valid.npy'), X_valid_out)
+    np.save(os.path.join(d, 'Y_valid.npy'), Y_valid_out)
+    print(f"  X_train.npy  {X_train_out.shape}")
+    print(f"  Y_train.npy  {Y_train_out.shape}")
+    print(f"  X_valid.npy  {X_valid_out.shape}")
+    print(f"  Y_valid.npy  {Y_valid_out.shape}")
+    print(f"\nDONE — final scaled arrays written to {d}")
 
 
 if __name__ == '__main__':
