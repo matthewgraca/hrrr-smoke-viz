@@ -2,6 +2,15 @@ import tensorflow as tf
 import numpy as np
 from itertools import product
 
+def msssim_mse_loss(y_true, y_pred, alpha=1.0, beta=1e-1):
+    # assumes data to be scaled to [0, 1]
+    ms_ssim = tf.reduce_mean(
+        tf.image.ssim_multiscale(y_true, y_pred, max_value=1.0)
+    )
+    mse = tf.reduce_mean(tf.square(y_true, y_pred))
+    print(1.0 - ms_ssim, mse)
+    return alpha * mse + beta * (1.0 - ms_ssim)
+
 class NHoodMAE(tf.keras.losses.Loss):
     def __init__(
         self, sensors, dim, source_weight=25, nhood_weight=5, bg_weight=1, r=2
