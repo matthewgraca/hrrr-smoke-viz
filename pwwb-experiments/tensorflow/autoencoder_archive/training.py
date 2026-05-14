@@ -11,29 +11,13 @@ class TextColor:
 
 import argparse
 def argparser(valid_models, valid_losses):
-    parser = argparse.ArgumentParser(
-        description='training script'
-    )
-    parser.add_argument(
-        'model',
-        help=f'the model to train: {valid_models}'
-    )
-    parser.add_argument(
-        'loss',
-        help=f'the loss function to use: {valid_losses}'
-    )
-    parser.add_argument(
-        'epochs',
-        help=f'The number of epochs to train'
-    )
-    parser.add_argument(
-        'data',
-        help='location of the data'
-    )
-    parser.add_argument(
-        'results',
-        help='location results will be saved to.'
-    )
+    parser = argparse.ArgumentParser(description='training script')
+    parser.add_argument('model', help=f'the model to train: {valid_models}')
+    parser.add_argument('loss', help=f'the loss function to use: {valid_losses}')
+    parser.add_argument('epochs', help=f'The number of epochs to train')
+    parser.add_argument('batch_size', help=f'The size of the batch')
+    parser.add_argument('data', help='location of the data')
+    parser.add_argument('results', help='location results will be saved to.')
     parser.add_argument(
         'suffix',
         help='extra string to attach to end of experiment results folder'
@@ -55,13 +39,17 @@ def argparser(valid_models, valid_losses):
     return args
 
 args = argparser(
-    valid_models=set(['classic', 'two_path', 'dual_ae_gated_skips', 'dual_ae_conv3d_bn']),
-    valid_losses=set(['grid_mae', 'grid_mse', 'nhood'])
+    valid_models=set([
+        'classic', 'two_path',
+        'dual_ae_gated_skips',
+        'dual_ae_conv3d_bn', 'dual_ae_conv2d_bn'
+    ]),
+    valid_losses=set(['grid_mae', 'grid_mse', 'nhood', 'ms_ssim'])
 )
 
 # training parameters
 EPOCHS = int(args.epochs)
-BATCH_SIZE = 16
+BATCH_SIZE = int(args.batch_size)
 
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -219,7 +207,9 @@ match args.model:
     case 'dual_ae_gated_skips':
         model = dual_ae.gated_skips()
     case 'dual_ae_conv3d_bn':
-        model = dual_ae.gated_skips()
+        model = dual_ae.conv3d_bn()
+    case 'dual_ae_conv2d_bn':
+        model = dual_ae.conv2d_bn()
     case _:
         raise ValueError(f'Model not implemented.')
 
@@ -234,6 +224,9 @@ match args.loss:
     case 'nhood':
         from libs.loss import NHoodMAE
         model.compile(loss=NHoodMAE(sensors=metadata['sensors'], dim=h), optimizer='adam')
+    case 'ms_ssim':
+        from libs.loss import msssim_mse_loss
+        model.compile(loss=msssim_mse_loss, optimizer='adam')
     case _:
         raise ValueError(f'Invalid loss choice; pick from : {valid_losses}')
 
