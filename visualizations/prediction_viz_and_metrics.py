@@ -209,7 +209,7 @@ def save_per_sensor_timeseries(pred_all, truth_all, sample_idx, sensors,
         t_ts = truth[:, r, c]
         p_ts = pred[:, r, c]
         rmse = float(np.sqrt(np.mean((p_ts - t_ts) ** 2)))
-        nrmse = rmse / (t_ts.mean() + 1e-8) * 100
+        nrmse = float(rmse / (t_ts.mean() + 1e-8) * 100)
         mae = float(np.abs(p_ts - t_ts).mean())
         metrics[name] = {'row': int(r), 'col': int(c),
                          'nrmse': nrmse, 'rmse': rmse, 'mae': mae,
@@ -252,7 +252,7 @@ def save_combined_sensors(pred_all, truth_all, sample_idx, sensors,
         t_ts = truth[:, r, c]
         p_ts = pred[:, r, c]
         rmse = float(np.sqrt(np.mean((p_ts - t_ts) ** 2)))
-        nrmse = rmse / (t_ts.mean() + 1e-8) * 100
+        nrmse = float(rmse / (t_ts.mean() + 1e-8) * 100)
         mae = float(np.abs(p_ts - t_ts).mean())
         ax.plot(hours, t_ts, 'g-o', markersize=3, linewidth=1.5, label='Truth')
         ax.plot(hours, p_ts, 'b-o', markersize=3, linewidth=1.5, label='Pred')
@@ -294,7 +294,7 @@ def save_sensor_mean_timeseries(pred_all, truth_all, sample_idx, sensors,
     t_ts = truth_per_sensor.mean(axis=1)
 
     rmse = float(np.sqrt(np.mean((p_ts - t_ts) ** 2)))
-    nrmse = rmse / (t_ts.mean() + 1e-8) * 100
+    nrmse = float(rmse / (t_ts.mean() + 1e-8) * 100)
     mae = float(np.abs(p_ts - t_ts).mean())
 
     fig, ax = plt.subplots(figsize=(12, 4.5))
@@ -375,7 +375,7 @@ def save_full_timeseries(pred_all, truth_all, out_dir):
     mae = float(np.abs(err_curve).mean())
     rmse = float(np.sqrt((err_curve ** 2).mean()))
     bias = float(err_curve.mean())
-    nrmse = rmse / (avg_truth.mean() + 1e-8) * 100
+    nrmse = float(rmse / (avg_truth.mean() + 1e-8) * 100)
     r = float(np.corrcoef(avg_pred, avg_truth)[0, 1])
 
     ax.set_xlabel('Hour offset from start', fontsize=12)
@@ -392,7 +392,7 @@ def save_full_timeseries(pred_all, truth_all, out_dir):
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     return {'full_ts_mae': mae, 'full_ts_rmse': rmse,
-            'full_ts_nrmse': float(nrmse), 'full_ts_bias': bias, 'full_ts_r': r}
+            'full_ts_nrmse': nrmse, 'full_ts_bias': bias, 'full_ts_r': r}
 
 
 def save_nrmse_chart(pred_all, truth_all, out_dir):
