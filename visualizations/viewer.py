@@ -4,10 +4,11 @@ from matplotlib.widgets import Slider
 from argparse import ArgumentParser
 
 parser = ArgumentParser()
-parser.add_argument('file')
+parser.add_argument('file', help='Expects a .npz file with the keys \'data\', \'start_date\', and \'end_date\'')
 args = parser.parse_args()
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 
@@ -19,7 +20,9 @@ def show_npy_images_with_slider(path_to_npy: str) -> None:
 
     Mouse wheel scroll will move the slider by 1 image at a time.
     """
-    images = np.load(path_to_npy, allow_pickle=True)['data']
+    data = np.load(path_to_npy, allow_pickle=True)
+    images = data['data']
+    dates = pd.date_range(data['start_date'].item(), data['end_date'].item(), freq='h', inclusive='left')
 
     if images.ndim != 3:
         raise ValueError(
@@ -33,7 +36,7 @@ def show_npy_images_with_slider(path_to_npy: str) -> None:
     plt.subplots_adjust(bottom=0.18)
 
     img_artist = ax.imshow(images[current_idx], cmap="gray")
-    ax.set_title(f"Image {current_idx} / {num_samples - 1}")
+    ax.set_title(dates[current_idx].strftime('%Y-%m-%d %H:%M:%S UTC'))
     ax.axis("off")
 
     slider_ax = fig.add_axes([0.15, 0.06, 0.7, 0.04])
@@ -51,7 +54,7 @@ def show_npy_images_with_slider(path_to_npy: str) -> None:
         idx = max(0, min(num_samples - 1, idx))
         current_idx = idx
         img_artist.set_data(images[current_idx])
-        ax.set_title(f"Image {current_idx} / {num_samples - 1}")
+        ax.set_title(dates[current_idx].strftime('%Y-%m-%d %H:%M:%S UTC'))
         fig.canvas.draw_idle()
 
     def update_from_slider(val) -> None:
@@ -70,8 +73,21 @@ def show_npy_images_with_slider(path_to_npy: str) -> None:
         if new_idx != current_idx:
             sample_slider.set_val(new_idx)
 
+    def on_key(event) -> None:
+        if event.key == "right":
+            new_idx = current_idx + 1
+        elif event.key == "left":
+            new_idx = current_idx - 1
+        else:
+            return
+
+        new_idx = max(0, min(num_samples - 1, new_idx))
+        if new_idx != current_idx:
+            sample_slider.set_val(new_idx)
+
     sample_slider.on_changed(update_from_slider)
     fig.canvas.mpl_connect("scroll_event", on_scroll)
+    fig.canvas.mpl_connect("key_press_event", on_key)
 
     plt.show()
 
