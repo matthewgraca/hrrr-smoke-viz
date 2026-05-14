@@ -1,32 +1,16 @@
 #!/bin/bash
 
-# -- PARAMETERS --
-# model name = name of the model you want to train
-# loss name = name of the loss you want to use
-# epochs = number of epochs to train for
-# experiment name = string to be append to experiment description
-# data location = folder containing the training data (in the current directory)
-# is test = is/is not a test. turn false if you want a real run.
-# viz only = run only the visualization script, no training.
-
+# -- PARAMETERS -> see settings.conf --
 # -- Assumptions --
-# Script assumes that training.py is in the current directory, so make sure to
-#   run the script where the training and vis script is.
+# Script assumes that training.py is in the current directory.
+# settings.conf is in the same directory that defines all the args
 
-MODEL_NAME='dual_ae_conv2d_bn'
-LOSS_NAME='grid_mae'
-EPOCHS='100'
-BATCH_SIZE='12'
-DATA_LOC='/mnt/wildfire/processed-data/2026-04-29/dataset'
-RESULTS_LOC='/mnt/wildfire/experiments'
-EXPERIMENT_NAME='1'
-
-FIRE_NAME='palisades_eaton'
-RAW_FIRE_LOC='/mnt/wildfire/processed-data/2026-04-29/la/palisades_eaton'
-
-EXPERIMENT_LOC="${RESULTS_LOC}/${MODEL_NAME}_${LOSS_NAME}_${EXPERIMENT_NAME}"
-IS_TEST=false
-VIZ_ONLY=true
+if [[ -f "settings.conf" ]]; then
+    source settings.conf
+    echo -e "\e[1mLoading config.\e[0m"
+    grep "=" settings.conf
+    echo ""
+fi
 
 if [ "$VIZ_ONLY" = true ]; then
     echo -e "\e[1mConducting visualizations only.\e[0m"
@@ -42,7 +26,7 @@ if [ "$VIZ_ONLY" = true ]; then
 fi
 
 if [ "$IS_TEST" = true ]; then
-    echo -e "\e[1mConducting test experiment only.\e[0m"
+    echo -e "\e[1mConducting test experiment only (forward pass).\e[0m"
     python training.py \
         "$MODEL_NAME" \
         "$LOSS_NAME" \
