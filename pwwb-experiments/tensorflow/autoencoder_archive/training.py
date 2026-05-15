@@ -42,7 +42,8 @@ args = argparser(
     valid_models=set([
         'classic', 'two_path',
         'dual_ae_gated_skips',
-        'dual_ae_conv3d_bn', 'dual_ae_conv2d_bn'
+        'dual_ae_conv3d_bn', 'dual_ae_conv2d_bn',
+        'dual_ae_conv2d_bn_sigmoid_act'
     ]),
     valid_losses=set(['grid_mae', 'grid_mse', 'nhood', 'ms_ssim'])
 )
@@ -210,6 +211,8 @@ match args.model:
         model = dual_ae.conv3d_bn()
     case 'dual_ae_conv2d_bn':
         model = dual_ae.conv2d_bn()
+    case 'dual_ae_conv2d_bn_sigmoid_act':
+        model = dual_ae.conv2d_bn_sigmoid_act()
     case _:
         raise ValueError(f'Model not implemented.')
 
@@ -226,7 +229,11 @@ match args.loss:
         model.compile(loss=NHoodMAE(sensors=metadata['sensors'], dim=h), optimizer='adam')
     case 'ms_ssim':
         from libs.loss import msssim_mse_loss
-        model.compile(loss=msssim_mse_loss, optimizer='adam')
+        # msssim doesn't play well with jit, and optimizer gets loud
+        tf.config.optimizer.set_experimental_options({
+            "layout_optimizer": False,
+        })
+        model.compile(loss=msssim_mse_loss, optimizer='adam', jit_compile=False)
     case _:
         raise ValueError(f'Invalid loss choice; pick from : {valid_losses}')
 
