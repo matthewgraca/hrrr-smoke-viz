@@ -3,12 +3,16 @@ import numpy as np
 from itertools import product
 
 def msssim_mse_loss(y_true, y_pred, alpha=1.0, beta=1e-1):
-    # assumes data to be scaled to [0, 1]
+    # uses factors to limit down to 3 scales
+    MSSSIM_POWER_FACTORS_3_SCALE = (0.0448, 0.2856, 0.3001)
     ms_ssim = tf.reduce_mean(
-        tf.image.ssim_multiscale(y_true, y_pred, max_value=1.0)
+        tf.image.ssim_multiscale(
+            y_true, y_pred,
+            max_val=1.0,
+            power_factors=MSSSIM_POWER_FACTORS_3_SCALE
+        )
     )
-    mse = tf.reduce_mean(tf.square(y_true, y_pred))
-    print(1.0 - ms_ssim, mse)
+    mse = tf.reduce_mean(tf.square(y_true - y_pred))
     return alpha * mse + beta * (1.0 - ms_ssim)
 
 class NHoodMAE(tf.keras.losses.Loss):
