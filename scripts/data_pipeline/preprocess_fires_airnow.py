@@ -27,7 +27,7 @@ def parse_cli_args():
 
 args = parse_cli_args()
 
-# channel name, long channel name, scale?, temporal?, forecast?, branch name
+    # channel name,         long channel name,              scale?, temporal?, forecast?, branch name
 CHANNEL_SPEC = [
     ('airnow_pm25',           'AirNow_PM25',                  True,  False,   False,  'observed'),
     ('hrrr_wind_u',           'HRRR_Wind_U',                  True,  False,   False,  'observed'),

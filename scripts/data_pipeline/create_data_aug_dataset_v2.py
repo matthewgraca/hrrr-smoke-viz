@@ -10,6 +10,7 @@ import pickle
 import numpy as np
 from numpy.lib.format import open_memmap
 from scipy.ndimage import zoom as ndimage_zoom
+from sklearn.preprocessing import MinMaxScaler
 
 
 
@@ -113,21 +114,31 @@ def avg_pool_5d(arr, factor):
 
 
 def scale_inplace(X, scalers, scalable_channels):
-    for ch_idx, sk in scalable_channels.items():
-        m = np.float32(scalers[sk].mean_[0])
-        sd = np.float32(scalers[sk].scale_[0])
-        X[..., ch_idx] = (X[..., ch_idx] - m) / sd
+    for scaler in scalers:
+        for ch_idx, sk in scalable_channels.items():
+            org_shape = X[..., ch_idx].shape
+            X[..., ch_idx] = (scaler[sk]
+                .transform(X[..., ch_idx].reshape(-1, 1))
+                .reshape(org_shape)
+            )
     return X
 
 
-def finalize_block(x_block, y_block, downsample, log_target,
-                   scalers, scalable_channels):
+def finalize_block(x_block, y_block, downsample, log_target, minmax_target,
+                   scalers, scalable_channels, dataset_dir):
     if downsample:
         x_block = avg_pool_5d(x_block, downsample)
         y_block = avg_pool_5d(y_block, downsample)
     scale_inplace(x_block, scalers, scalable_channels)
     if log_target:
         y_block = np.log1p(y_block).astype(np.float32)
+    if minmax_target:
+        org_shape = y_block.shape
+        scaler = MinMaxScaler()
+        y_block = scaler.fit_transform(y_block.reshape(-1, 1)).reshape(org_shape)
+        d = os.path.normpath(dataset_dir)
+        with open(os.path.join(d, 'target_scaler.pkl'), 'wb') as f:
+            pickle.dump(scaler, f)
     return x_block, y_block
 
 
@@ -135,7 +146,7 @@ def process_fire_into_memmap(fire_name, fires_dir,
                              X_out, Y_out, offset,
                              u_ch, v_ch,
                              scalers, scalable_channels,
-                             downsample, log_target,
+                             downsample, log_target, minmax_target, dataset_dir,
                              augment, zoom_levels=(1.5, 2.0)):
     X_src = np.load(f"{fires_dir}/{fire_name}_X.npy", mmap_mode='r')
     Y_src = np.load(f"{fires_dir}/{fire_name}_Y.npy", mmap_mode='r')
@@ -146,7 +157,8 @@ def process_fire_into_memmap(fire_name, fires_dir,
     del X_src, Y_src
 
     xb, yb = finalize_block(x_block.copy(), y_block.copy(),
-                            downsample, log_target, scalers, scalable_channels)
+                            downsample, log_target, minmax_target, 
+                            scalers, scalable_channels, dataset_dir)
     X_out[offset:offset + n_raw] = xb
     Y_out[offset:offset + n_raw] = yb
     del xb, yb
@@ -162,8 +174,9 @@ def process_fire_into_memmap(fire_name, fires_dir,
             if zoom is not None:
                 xa = _zoom_5d(xa, zoom)
                 ya = _zoom_5d(ya, zoom)
-            xa, ya = finalize_block(xa, ya, downsample, log_target,
-                                    scalers, scalable_channels)
+            xa, ya = finalize_block(xa, ya, downsample, log_target, 
+                                    minmax_target, scalers, 
+                                    scalable_channels, dataset_dir)
             X_out[ptr:ptr + n_raw] = xa
             Y_out[ptr:ptr + n_raw] = ya
             ptr += n_raw
@@ -188,6 +201,8 @@ def main():
                    help='Downsample spatial dims by this factor (e.g. 4 for 84->21)')
     p.add_argument('--log-target', action='store_true',
                    help='Apply log1p transform to Y target.')
+    p.add_argument('--minmax-target', action='store_true',
+                   help='Apply minmax transform to Y target.')
     p.add_argument('--zoom-levels', type=float, nargs='*', default=[1.5, 2.0])
     args = p.parse_args()
 
@@ -241,6 +256,7 @@ def main():
     print(f"  Augment:      {'on (' + str(n_variants) + 'x)' if augment else 'off'}")
     print(f"  Downsample:   {args.downsample if args.downsample else 'no'}")
     print(f"  Log target:   {args.log_target}")
+    print(f"  Minmax target:   {args.minmax_target}")
     print(f"  Output shape: X=({n_train_total},){out_x_shape}  "
           f"V=({n_valid_total},){out_x_shape}")
     print("=" * 80)
@@ -270,8 +286,8 @@ def main():
             X_train_out, Y_train_out, offset,
             u_channels, v_channels,
             scalers, scalable_channels,
-            args.downsample, args.log_target,
-            augment, tuple(args.zoom_levels),
+            args.downsample, args.log_target, args.minmax_target, 
+            args.dataset_dir, augment, tuple(args.zoom_levels),
         )
         assert written == n, f"{fire}: wrote {written} expected {n}"
         offset += n
@@ -288,8 +304,8 @@ def main():
             X_valid_out, Y_valid_out, offset,
             u_channels, v_channels,
             scalers, scalable_channels,
-            args.downsample, args.log_target,
-            augment=False,
+            args.downsample, args.log_target, args.minmax_target,
+            args.dataset_dir, augment=False,
         )
         assert written == n, f"{fire}: wrote {written} expected {n}"
         offset += n

@@ -6,7 +6,7 @@ import json
 import numpy as np
 import pickle
 import shutil
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 
 def parse_cli_args():
@@ -20,6 +20,8 @@ def parse_cli_args():
                         help='Fire names for validation (rest go to training)')
     parser.add_argument('--exclude', nargs='+', default=[],
                         help='Fire names to exclude from BOTH train and valid pools')
+    parser.add_argument('--minmax-scale', action='store_true',
+                        help='Whether or not to minmax scale after standard scaling')
     return parser.parse_args()
 
 
@@ -27,7 +29,7 @@ args = parse_cli_args()
 
 PROCESSED_DIR = args.processed_dir
 FIRES_DIR     = f"{PROCESSED_DIR}/fires"
-OUTPUT_DIR    = f"{PROCESSED_DIR}/dataset"
+OUTPUT_DIR    = f"{PROCESSED_DIR}"
 
 ALL_FIRE_NAMES = [
     "eldorado_bobcat",
@@ -56,7 +58,38 @@ def load_channel_spec():
     return spec, scalable
 
 
-def fit_scalers(train_fire_names, scalable_channels):
+def fit_scalers(train_fire_names, scalable_channels, scaler_choices=['standard']):
+    def std_scale(data, sk):
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(data)
+
+        print(
+            f"{sk:<30}{'Standard before/after':<25}"
+            f"{'mean':<8}{scaler.mean_[0]:>9.4f}, {np.mean(scaled_data):>9.4f} "
+            f"{'std':<8}{scaler.scale_[0]:>9.4f}, {np.std(scaled_data):>9.4f} "
+            f"n:{len(concat):>8}"
+        )
+
+        return scaled_data, scaler
+
+    def minmax_scale(data, sk):
+        scaler = MinMaxScaler()
+        scaled_data = scaler.fit_transform(data)
+
+        print(
+            f"{sk:<30}{'MinMax before/after':<25}"
+            f"{'min':<8}{scaler.data_min_[0]:>9.4f}, {np.min(scaled_data):>9.4f} "
+            f"{'max':<8}{scaler.data_max_[0]:>9.4f}, {np.max(scaled_data):>9.4f} "
+            f"n:{len(concat):>8}"
+        )
+
+        return scaled_data, scaler
+
+    valid_scaler_choices = ['standard', 'minmax']
+    for choice in scaler_choices:
+        if choice not in valid_scaler_choices:
+            raise ValueError(f'Invalid scaler choice {choice}, pick from {valid_scaler_chocies}')
+
     print("\n[SCALERS] Fitting on training fires...")
     raw_pools = {}
 
@@ -70,25 +103,29 @@ def fit_scalers(train_fire_names, scalable_channels):
                 raw_pools[sk].append(ch_data.flatten())
         del X
 
-    scalers = {}
+    scalers = []
+    std_scalers = {}
+    minmax_scalers = {}
     for sk in sorted(raw_pools.keys()):
         arrays = raw_pools[sk]
         if arrays:
             concat = np.concatenate(arrays).reshape(-1, 1)
-            scaler = StandardScaler()
-            scaler.fit(concat)
-            scalers[sk] = scaler
-            print(f"    {sk:35s} mean={scaler.mean_[0]:10.4f}  "
-                  f"std={scaler.scale_[0]:10.4f}  (n={len(concat)})")
+            # std scaler -> minmax scaler, if enabled
+            for choice in scaler_choices:
+                if choice == 'standard':
+                    concat, std_scalers[sk] = std_scale(concat, sk)
+                elif choice == 'minmax':
+                    _, minmax_scalers[sk] = minmax_scale(concat, sk)
+                else:
+                    raise NotImplementedError()
             del concat
         else:
-            scaler = StandardScaler()
-            scaler.mean_ = np.array([0.0])
-            scaler.scale_ = np.array([1.0])
-            scaler.var_ = np.array([1.0])
-            scaler.n_features_in_ = 1
-            scalers[sk] = scaler
             print(f"    {sk:35s} identity (no data)")
+            raise NotImplementedError()
+    
+    scalers.append(std_scalers)
+    if minmax_scalers:
+        scalers.append(minmax_scalers)
 
     return scalers
 
@@ -131,7 +168,10 @@ def main():
     shutil.copy(f"{FIRES_DIR}/channel_spec.json",
                 f"{OUTPUT_DIR}/channel_spec.json")
 
-    scalers = fit_scalers(train_fires, scalable_channels)
+    scaler_choices = ['standard']
+    if args.minmax_scale:
+        scaler_choices.append('minmax')
+    scalers = fit_scalers(train_fires, scalable_channels, scaler_choices)
 
     train_counts, sample_shape = fire_n_samples(train_fires)
     valid_counts, _            = fire_n_samples(valid_fires)
@@ -139,8 +179,6 @@ def main():
     n_valid = sum(valid_counts.values())
 
     with open(f"{OUTPUT_DIR}/scalers.pkl", 'wb') as f:
-        pickle.dump(scalers, f)
-    with open(os.path.join(os.path.dirname(OUTPUT_DIR), 'scalers.pkl'), 'wb') as f:
         pickle.dump(scalers, f)
 
     split_info = {
@@ -153,8 +191,9 @@ def main():
         'n_valid':         n_valid,
         'sample_shape':    sample_shape,
         'target':          'AirNow_PM25',
-        'scalers':         {sk: {'mean': s.mean_[0], 'std': s.scale_[0]}
-                            for sk, s in scalers.items()},
+        # NOTE make life easier and turn this off until we need it.
+        #'scalers':         {sk: {'mean': s.mean_[0], 'std': s.scale_[0]}
+        #                    for sk, s in scalers.items()},
     }
     with open(f"{OUTPUT_DIR}/split_info.pkl", 'wb') as f:
         pickle.dump(split_info, f)

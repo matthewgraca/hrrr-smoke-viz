@@ -22,6 +22,7 @@ Optional inputs:
                        auto-detected from the file extension. Renders
                        training_curve.png in the trainer's exact format
                        (best val / best epoch / final-train / final-val info box).
+  --target-scaler : path to a target scaler, so that the target... gets scaled.
 
 Output: a directory containing:
   full_timeseries.png                  - overlap-averaged across all samples
@@ -149,7 +150,7 @@ def load_sensor_locations(path, grid_size, sensor_key=None):
     return sensors, source
 
 
-def save_frames(pred_all, truth_all, X_inputs, input_mean, input_std,
+def save_frames(pred_all, truth_all, X_inputs, scalers, pm25_key,
                 input_channel, sample_idx, fire_name, sample_dir):
     """Frame grid only: last-5-hours input, 24h PRED, 24h TRUTH."""
     fig = plt.figure(figsize=(26, 5.5))
@@ -166,10 +167,15 @@ def save_frames(pred_all, truth_all, X_inputs, input_mean, input_std,
 
     for k in range(5):
         ih = 19 + k
-        inp = np.array(X_inputs[sample_idx, ih, :, :, input_channel],
-                       dtype=np.float32) * input_std + input_mean
-        axes[0, k].imshow(inp, cmap=PM25_CMAP, vmin=PM25_VMIN, vmax=PM25_VMAX)
-        axes[0, k].set_title(f'In {ih+1}\n{inp.mean():.1f}', fontsize=6)
+        x = X_inputs[sample_idx, ih, :, :, input_channel]
+        org_shape = x.shape
+        for scaler in reversed(scalers):
+            x = (scaler[pm25_key]
+                .inverse_transform(x.reshape(-1, 1))
+                .reshape(org_shape)
+            )
+        axes[0, k].imshow(x, cmap=PM25_CMAP, vmin=PM25_VMIN, vmax=PM25_VMAX)
+        axes[0, k].set_title(f'In {ih+1}\n{x.mean():.1f}', fontsize=6)
         axes[0, k].set_xticks([]); axes[0, k].set_yticks([])
     for k in range(5, n_cols):
         axes[0, k].axis('off')
@@ -557,6 +563,8 @@ def main():
                    help='Path to a training history file - either a Keras-style '
                         'history.pkl (with "loss" and "val_loss" lists) or a '
                         'train_*.log. Format is auto-detected from the extension.')
+    p.add_argument('--target-scaler', default=None,
+                   help='Path to a target scaler pkl file.')
     args = p.parse_args()
 
     scalers_path = os.path.join(os.path.dirname(args.inputs), 'scalers.pkl')
@@ -565,13 +573,11 @@ def main():
                  f"it to un-scale the PM2.5 input channel for display.")
     with open(scalers_path, 'rb') as f:
         scalers = pickle.load(f)
-    pm25_key = next((k for k in ('AirNow_PM25', 'OpenAQ_PM25') if k in scalers), None)
+    pm25_key = next((k for k in ('AirNow_PM25', 'OpenAQ_PM25') if k in scalers[0]), None)
     if pm25_key is None:
         sys.exit(f"No PM2.5 scaler in {scalers_path} (looked for "
-                 f"AirNow_PM25 / OpenAQ_PM25). Keys present: {list(scalers.keys())}")
-    input_mean = float(scalers[pm25_key].mean_[0])
-    input_std  = float(scalers[pm25_key].scale_[0])
-    print(f"Auto-loaded scaler '{pm25_key}': mean={input_mean:.3f}, std={input_std:.3f}")
+                 f"AirNow_PM25 / OpenAQ_PM25). Keys present: {list(scalers[0].keys())}")
+    print(f"{len(scalers)} scalers found.")
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -588,6 +594,17 @@ def main():
 
     pred_all = np.array(pred_all, dtype=np.float32)
     truth_all = np.array(truth_all, dtype=np.float32)
+
+    if args.target_scaler:
+        if not os.path.exists(args.target_scaler):
+            raise ValueError(f'Target scaler file on {args.target_scaler} not found.')
+        else:
+            with open(args.target_scaler, 'rb') as f:
+                scaler = pickle.load(f)
+            org_shape = pred_all.shape
+            pred_all = scaler.inverse_transform(pred_all.reshape(-1, 1)).reshape(org_shape)
+            org_shape = truth_all.shape
+            truth_all = scaler.inverse_transform(truth_all.reshape(-1, 1)).reshape(org_shape)
 
     print(f"Loading inputs: {args.inputs}")
     X_inputs = np.load(args.inputs, mmap_mode='r')
@@ -618,7 +635,7 @@ def main():
     for idx in range(len(pred_all)):
         sample_dir = os.path.join(args.out_dir, f'sample_{idx:03d}')
         os.makedirs(sample_dir, exist_ok=True)
-        save_frames(pred_all, truth_all, X_inputs, input_mean, input_std,
+        save_frames(pred_all, truth_all, X_inputs, scalers, pm25_key,
                     args.input_channel, idx, args.fire_name, sample_dir)
         if sensors:
             ps = save_per_sensor_timeseries(pred_all, truth_all, idx, sensors,
