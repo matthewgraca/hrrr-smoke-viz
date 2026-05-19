@@ -43,7 +43,7 @@ args = argparser(
         'classic', 'two_path',
         'dual_ae_gated_skips',
         'dual_ae_conv3d_bn', 'dual_ae_conv2d_bn',
-        'dual_ae_conv2d_bn_sigmoid_act'
+        'dual_ae_conv2d_bn_sigmoid_act', 'dual_ae_dense_bn_sigmoid_act'
     ]),
     valid_losses=set(['grid_mae', 'grid_mse', 'nhood', 'ms_ssim'])
 )
@@ -213,6 +213,8 @@ match args.model:
         model = dual_ae.conv2d_bn()
     case 'dual_ae_conv2d_bn_sigmoid_act':
         model = dual_ae.conv2d_bn_sigmoid_act()
+    case 'dual_ae_dense_bn_sigmoid_act':
+        model = dual_ae.dense_bn_sigmoid_act()
     case _:
         raise ValueError(f'Model not implemented.')
 
