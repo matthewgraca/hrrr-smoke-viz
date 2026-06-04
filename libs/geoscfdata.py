@@ -28,7 +28,7 @@ class GEOSCFData:
         start_date: str,
         end_date: str,
         raw_dir: str,
-        processed_dir: str,
+        processed_path='geos_cf_processed.npz',
         extent=(-118.65, -117.70, 33.60, 34.25),
         dim=84,
         mode='operational',
@@ -48,7 +48,7 @@ class GEOSCFData:
             raise ValueError('Mode must be \'operational\' or \'forecast\'')
         dled_files = self._run_downloads(self.start_dt, self.end_dt, raw_dir, mode)
         data = self._files_to_numpy(extent, dim, dled_files)
-        self._save_data(data, processed_dir, metadata={
+        self._save_data(data, processed_path, metadata={
             'start_date': start_date,
             'end_date': end_date,
             'extent': extent
@@ -518,18 +518,18 @@ class GEOSCFData:
                 files[init_time].append(f)
         return files
 
-    def _save_data(self, data: np.ndarray, processed_dir: str, metadata: dict) -> None:
+    def _save_data(self, data: np.ndarray, processed_path: str, metadata: dict) -> None:
         '''
-        Saves the data. Will use the path: processed_dir/geos_cf_processed.npz. 
+        Saves the data.
 
         Args:
             data (np.ndarray): The data to save.
-            processed_dir (str): The directory to save it.
+            processed_path (str): The path to save it.
             metadata (dict): The metadata to save: start date, end date, extent
         Returns:
             None
         '''
-        save_path = Path(processed_dir) / 'geos_cf_processed.npz'
+        save_path = Path(processed_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(save_path, data=data, **metadata)
         tqdm.write(f'Data shape {data.shape}')
