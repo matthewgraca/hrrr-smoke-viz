@@ -23,6 +23,57 @@ V1_END = pd.to_datetime('2026-01-01')
 V2_START = pd.to_datetime('2025-08-04')
 
 class GEOSCFData:
+    '''
+    A conservative webscraper for NASA GEOS-CF model ingestion and preprocessing.
+    As of June 4th, 2026, NASA's CFAPI 404s, forcing us to use a webscraping 
+    method.
+
+    Highly conservative ingestion:
+        One file at a time, generous backoffs, three-second wait after each 
+        file download.   
+
+    Operational and forecast mode:
+        Since the model intializes every day, operational mode ingests each 
+        day's worth of data and stitches them together. The goal is to 
+        have a continuous timeseries of the best data, so we only care 
+        about the first 24 hours of forecasts for each model initialization
+        period. Expect the data in the shape: (samples, 24, dim, dim), where 
+        the gap between samples (stride) is 1 hour.
+
+        In forecast mode, we explictly want to keep all 120 hours of forecasts. 
+        Use this is you want to evaluate the GEOS-CF model as a whole.
+        Expect the data to be in the form (samples, 120, dim, dim), where the 
+        stride is 24 hours.
+
+    Date range:
+        For operational mode, the date range doesn't matter. It will be the 
+        classic; hourly, right-exclusive [start_date, end_date) or 
+        [start_date, end_date - 1 hour].
+
+        For forecast mode, since the goal is to evaluate the model itself, 
+        we have guardrails that require you to ingest data at the beginning
+        of the model's forecast cycle.i The start date should be the hour of 
+        the first forecast. 
+            For the v1 model, that would be YYYY-MM-DD 13:00 since the model 
+            is initialized daily at 12:00.
+            For the v2 model, that would be YYYY-MM-DD 10:00 since the model
+            is initialized daily at 09:00.
+
+        Here's the model history:
+            [v1 start: 2019-12-21, v1 end: 2026-01-01]
+            [v2 start: 2020-08-04, v2 end: ongoing]
+
+        Be warned that the models may have missing files due to maintenance 
+        and development. In such cases, you'll be asked for a new date range.
+     
+
+    Numpy preprocessing
+        As the data is already in gridded in lat/lon, there's no necessary 
+        reprojection needed. Since the grid is tiny (usually only a few pixels), 
+        the resizing up to something like an (84 x 84) grid requires 
+        interpolation. We just use nearest-neighbor here, so as to not mess 
+        with the inherently coarse resolution.
+    '''
     def __init__(
         self,
         start_date: str,
