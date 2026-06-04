@@ -102,8 +102,10 @@ class GEOSCFData:
         else:
             raise ValueError('Mode must be \'operational\' or \'forecast\'')
         dled_files = self._run_downloads(self.start_dt, self.end_dt, raw_dir, mode)
-        data = self._files_to_numpy(extent, dim, dled_files)
-        self._save_data(data, processed_path, metadata={
+        is_v1 = self.start_dt < V2_START
+        var = 'PM25_RH35_GCC' if is_v1 else 'PM25_RH25'
+        data = self._files_to_numpy(extent, dim, dled_files, var)
+        self._save_data(data, processed_dir, metadata={
             'start_date': start_date,
             'end_date': end_date,
             'extent': extent
@@ -523,7 +525,8 @@ class GEOSCFData:
         self,
         extent: tuple[float, float, float, float],
         dim: int,
-        dled_files: list[Path]
+        dled_files: list[Path],
+        var: str
     ) -> np.ndarray:
         '''
         Opens the list of files with xarray, and converts it to numpy.
@@ -535,7 +538,7 @@ class GEOSCFData:
             #print(k, len(files[k]))
             bundle = []
             for f in sorted(files[k]):
-                bundle.append(self._file_to_numpy(f, extent, dim))
+                bundle.append(self._file_to_numpy(f, extent, dim, var))
             data.append(bundle)
         return np.array(data)
 
