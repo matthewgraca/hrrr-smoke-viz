@@ -52,12 +52,16 @@ class GEOSCFData:
 
         For forecast mode, since the goal is to evaluate the model itself, 
         we have guardrails that require you to ingest data at the beginning
-        of the model's forecast cycle.i The start date should be the hour of 
+        of the model's forecast cycle. The start date should be the hour of 
         the first forecast. 
             For the v1 model, that would be YYYY-MM-DD 13:00 since the model 
             is initialized daily at 12:00.
             For the v2 model, that would be YYYY-MM-DD 10:00 since the model
             is initialized daily at 09:00.
+        
+        The forecast mode date range is also right-exclusive; but since 
+        bundles have strides of 24 hours, it is right-exclusive by day. So 
+        it's still [start_date, end_date), but is [start_date, end_date - 1 day]
 
         Here's the model history:
             [v1 start: 2019-12-21, v1 end: 2026-01-01]
