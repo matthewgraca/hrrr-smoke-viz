@@ -105,7 +105,7 @@ class GEOSCFData:
         is_v1 = self.start_dt < V2_START
         var = 'PM25_RH35_GCC' if is_v1 else 'PM25_RH25'
         data = self._files_to_numpy(extent, dim, dled_files, var)
-        self._save_data(data, processed_dir, metadata={
+        self._save_data(data, processed_path, metadata={
             'start_date': start_date,
             'end_date': end_date,
             'extent': extent
