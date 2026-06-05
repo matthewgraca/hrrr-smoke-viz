@@ -12,6 +12,7 @@ import xarray as xr
 import os
 import cv2
 import numpy as np
+import copy
 
 # pattern to extract the two dates from the geos-cf filename
 # extracts first date to 'init', and the second date to 'fcast'
@@ -97,14 +98,34 @@ class GEOSCFData:
                     'In forecast mode, you\'ll need to start at either hour '
                     '13 (v1) or 10 (v2)'
                 )
+            initial_dates = pd.date_range(
+                pd.to_datetime(start_date) - pd.Timedelta(hours=1),
+                pd.to_datetime(end_date) - pd.Timedelta(hours=1),
+                freq='d',
+                inclusive='left'
+            )
+            time_to_file = {}
+            for init_date in initial_dates:
+                fcast_dates = pd.date_range(
+                    init_date,
+                    init_date + pd.Timedelta(hours=120),
+                    freq='h',
+                    inclusive='right'
+                )
+                for fcast_date in fcast_dates:
+                    if init_date not in time_to_file:
+                        time_to_file[init_date] = {fcast_date : None}
+                    else:
+                        time_to_file[init_date][fcast_date] = None
         elif self.mode == 'operational':
+            raise NotImplementedError('Date to file mapping not implemented') 
             pass
         else:
             raise ValueError('Mode must be \'operational\' or \'forecast\'')
         dled_files = self._run_downloads(self.start_dt, self.end_dt, raw_dir, mode)
         is_v1 = self.start_dt < V2_START
-        var = 'PM25_RH35_GCC' if is_v1 else 'PM25_RH25'
-        data = self._files_to_numpy(extent, dim, dled_files, var)
+        var = 'PM25_RH35_GCC' if is_v1 else 'PM25_RH35'
+        data = self._files_to_numpy(extent, dim, dled_files, var, time_to_file)
         self._save_data(data, processed_path, metadata={
             'start_date': start_date,
             'end_date': end_date,
@@ -163,9 +184,10 @@ class GEOSCFData:
                         save_path = self._download_file(session, raw_dir, url)
                         dled_files.append(save_path)
                         self._validate_nc4_file(save_path, session, raw_dir, url)
-                except:
+                except Exception as e:
                     tqdm.write(f'Failed to ingest for {date}.')
                     tqdm.write(traceback.format_exc())
+                    raise
             elif mode == 'forecast':
                 try:
                     dates = pd.date_range(start_date, end_date, freq='d', inclusive='left')
@@ -184,7 +206,6 @@ class GEOSCFData:
                     else:
                         tqdm.write(f'Failed to ingest.')
                     tqdm.write(traceback.format_exc())
-
             else:
                 raise ValueError('Mode must be \'operational\' or \'forecast\'')
 
@@ -287,13 +308,15 @@ class GEOSCFData:
         '''
         bucket_url = self._bucket_url_builder(timestamp)
         urls = self._ls_files(session, bucket_url)
+        '''
         if len(urls) != 120:
             raise ValueError(
-                f'Bucket for {timestamp} mismatch ({len(urls)/120}). '
+                f'Bucket for {timestamp} mismatch ({len(urls)}/{120}). '
                 'Suggest using a different time period. '
                 'This can happen due to NASA uploading replay/assimilation files, '
                 'or a truncated forecast range due to maintenance.'
             )
+        '''
 
         try:
             found_path = self._find_path_with_timestamp_in_urls(timestamp, urls)
@@ -322,6 +345,7 @@ class GEOSCFData:
         '''
         bucket_url = self._bucket_url_builder(timestamp)
         urls = self._ls_files(session, bucket_url)
+        '''
         if len(urls) != 120:
             raise ValueError(
                 f'Bucket for {timestamp} mismatch ({len(urls)/120}). '
@@ -329,6 +353,7 @@ class GEOSCFData:
                 'This can happen due to NASA uploading replay/assimilation files, '
                 'or a truncated forecast range due to maintenance.'
             )
+        '''
 
         try:
             found_path = self._find_path_with_timestamp_in_urls(timestamp, urls)
@@ -526,23 +551,31 @@ class GEOSCFData:
         extent: tuple[float, float, float, float],
         dim: int,
         dled_files: list[Path],
-        var: str
+        var: str,
+        time_to_file: dict
     ) -> np.ndarray:
         '''
         Opens the list of files with xarray, and converts it to numpy.
         '''
-        files = self._map_init_times_to_files(dled_files)
+        files = self._map_init_times_to_files(dled_files, time_to_file)
         data = []
         tqdm.write('Processing xarrays into numpy bundles...')
-        for k in tqdm(files.keys()):
+        for init_time in tqdm(files.keys()):
             #print(k, len(files[k]))
             bundle = []
-            for f in sorted(files[k]):
-                bundle.append(self._file_to_numpy(f, extent, dim, var))
+            fcast_to_file = files[init_time]
+            for fcast_time in tqdm(fcast_to_file.keys()):
+                f = fcast_to_file[fcast_time]
+                if f is not None:
+                    frame = self._file_to_numpy(f, extent, dim, var)
+                else:
+                    tqdm.write(f'{init_time} with forecast {fcast_time} set to nan.')
+                    frame = np.full((dim, dim), np.nan, dtype=np.float64)
+                bundle.append(frame)
             data.append(bundle)
         return np.array(data)
 
-    def _map_init_times_to_files(self, dled_files: list[Path]) -> dict:
+    def _map_init_times_to_files(self, dled_files: list[Path], time_to_file) -> dict:
         '''
         Grabs the downloaded files, creates as dictionary mapping the 
         model's initialization time to the all its forecast files.
@@ -557,7 +590,8 @@ class GEOSCFData:
                 - 'files' (list[Path]): The file paths of the forecast files 
                     for that model's initialized time.
         '''
-        files = {}
+        files = copy.deepcopy(time_to_file)
+        #files = {}
         for f in dled_files:
             match = GEOS_CF_DATE_PATTERN.search(str(f))
 
@@ -569,11 +603,14 @@ class GEOSCFData:
 
             init_time = pd.to_datetime(init_dt)
             fcast_time = pd.to_datetime(fcast_dt).ceil('h')
-            
+
+            files[init_time][fcast_time] = f
+            '''
             if init_time not in files:
                 files[init_time] = [f]
             else:
                 files[init_time].append(f)
+            '''
         return files
 
     def _save_data(self, data: np.ndarray, processed_path: str, metadata: dict) -> None:
